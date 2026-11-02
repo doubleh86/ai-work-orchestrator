@@ -1,0 +1,41 @@
+/* Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4 */
+/* Hallmark · genre: modern-minimal · tone: technical · anchor: cobalt · macrostructure: Workbench · variation: top project switcher + planning chat + flat task queue + inspector · contrast: pass (40–41) · nav: utility header · footer: none · slop: pass (42–45) · honest: pass (46) · chrome: pass (47) · tokens: pass (48) · responsive: pass (49) · icons: pass (30) · mobile: pass (34, 49, 50–57) */
+:root {
+  color-scheme: dark;
+  --color-canvas: oklch(0.145 0.012 260);
+  --color-rail: oklch(0.165 0.014 260);
+  --color-surface: oklch(0.19 0.014 260);
+  --color-surface-raised: oklch(0.225 0.016 260);
+  --color-surface-hover: oklch(0.255 0.02 260);
+  --color-border: oklch(0.31 0.018 260);
+  --color-border-strong: oklch(0.43 0.025 260);
+  --color-text: oklch(0.93 0.01 260);
+  --color-text-muted: oklch(0.67 0.025 260);
+  --color-text-faint: oklch(0.6 0.022 260);
+  --color-accent: oklch(0.67 0.18 259);
+  --color-accent-ink: oklch(0.145 0.012 260);
+  --color-accent-quiet: oklch(0.3 0.08 259);
+  --color-success: oklch(0.72 0.15 155);
+  --color-warning: oklch(0.78 0.14 75);
+  --color-danger: oklch(0.67 0.2 25);
+  --color-focus: oklch(0.78 0.14 250);
+  --font-ui: "Geist Variable", "Segoe UI Variable", "Malgun Gothic", sans-serif;
+  --font-mono: "JetBrains Mono Variable", Consolas, monospace;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --radius-control: 0.375rem;
+  --radius-panel: 0.5rem;
+  --duration-press: 100ms;
+  --duration-short: 150ms;
+  --duration-medium: 250ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --layer-base: 0;
+  --layer-sticky: 20;
+  --layer-popover: 100;
+  --layer-modal: 200;
+}

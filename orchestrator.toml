@@ -1,0 +1,80 @@
+[project]
+repo = "."
+main_branch = "main"
+remote = "origin"
+state_dir = ".ai-orchestrator"
+worktree_dir = ".ai-worktrees"
+
+[execution]
+max_parallel = 3
+auto_commit = true
+agent_timeout_seconds = 1800
+verify_commands = [
+  ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"],
+]
+
+# 실제 배포 방식이 정해지면 배열 형태로 입력합니다.
+# 예: deploy_command = ["./scripts/deploy.sh", "production"]
+deploy_command = []
+
+[planning]
+agent = "qa-ai"
+max_attempts = 2
+reuse_results = true
+timeout_seconds = 600
+
+[routing]
+default_provider = "codex"
+review_required = false
+max_review_cycles = 2
+
+[[agents]]
+id = "backend-ai"
+provider = "codex"
+capabilities = ["backend", "api", "database", "infra", "security"]
+max_tasks = 4
+sandbox_mode = "workspace-write"
+approval_mode = "auto-review"
+review_sandbox_mode = "read-only"
+review_approval_mode = "deny-all"
+
+[[agents]]
+id = "frontend-ai"
+provider = "codex"
+capabilities = ["frontend", "mobile", "ui"]
+max_tasks = 4
+sandbox_mode = "workspace-write"
+approval_mode = "auto-review"
+review_sandbox_mode = "read-only"
+review_approval_mode = "deny-all"
+
+[[agents]]
+id = "qa-ai"
+provider = "codex"
+capabilities = ["qa", "security", "docs", "general"]
+max_tasks = 4
+sandbox_mode = "workspace-write"
+approval_mode = "auto-review"
+review_sandbox_mode = "read-only"
+review_approval_mode = "deny-all"
+
+[[agents]]
+id = "claude-ai"
+provider = "claude"
+model = "sonnet"
+capabilities = [
+  "general", "planning", "architecture", "backend", "api", "database",
+  "frontend", "mobile", "infra", "security", "qa", "docs", "review",
+]
+max_tasks = 12
+command = [
+  "claude", "-p", "Follow the task instructions provided through standard input.",
+  "--model", "sonnet", "--output-format", "text", "--max-turns", "30",
+  "--allowedTools", "Read,Write,Edit,Glob,Grep,Bash",
+  "--disallowedTools", "Bash(git commit:*),Bash(git merge:*),Bash(git push:*)",
+]
+review_command = [
+  "claude", "-p", "Follow the review instructions provided through standard input.",
+  "--model", "sonnet", "--output-format", "text", "--max-turns", "15",
+  "--allowedTools", "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git status:*)",
+]

@@ -1,0 +1,1 @@
+export const DESKTOP_WINDOW_BACKGROUND = "#15171c";

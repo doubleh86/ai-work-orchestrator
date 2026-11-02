@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-work-orchestrator"
+version = "0.4.0"
+description = "A safe, local-first orchestrator for AI coding agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "AI Work Orchestrator contributors" }]
+dependencies = ["openai-codex==0.163.0"]
+
+[project.optional-dependencies]
+windows-build = ["pyinstaller==6.22.3; sys_platform == 'win32'"]
+
+[project.scripts]
+ai-orchestrator = "ai_orchestrator.cli:main"
+ai-orchestrator-desktop = "ai_orchestrator.desktop_entry:run_desktop"
+ai-orchestrator-backend = "ai_orchestrator.desktop_rpc:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+license-files = ["LICENSE"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 150
+target-version = ["py311"]
+skip-magic-trailing-comma = true

@@ -1,0 +1,46 @@
+{
+  "name": "ai-work-orchestrator-desktop",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Electron and React desktop shell for AI Work Orchestrator",
+  "main": "dist-electron/main/main.js",
+  "scripts": {
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:renderer": "vite build --configLoader bundle",
+    "build": "npm run build:electron && npm run build:renderer",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "check:mac-arm64": "node scripts/macos_architecture.cjs",
+    "prestart": "npm run check:mac-arm64",
+    "package:mac-arm64": "node scripts/package_macos_arm64.cjs",
+    "package:win-x64": "node scripts/package_windows_x64.cjs",
+    "start": "npm run build && electron .",
+    "dev": "vite --host 127.0.0.1 --configLoader bundle"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "lucide-react": "1.34.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "6.1.0",
+    "electron": "44.10.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/doubleh86/ai-work-orchestrator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/doubleh86/ai-work-orchestrator/issues"
+  },
+  "homepage": "https://github.com/doubleh86/ai-work-orchestrator"
+}

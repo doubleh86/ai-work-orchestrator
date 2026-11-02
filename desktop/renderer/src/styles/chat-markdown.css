@@ -1,0 +1,54 @@
+.chat-markdown {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown :is(p, ul, ol, blockquote, pre, .chat-markdown__table) { margin: 0 0 var(--space-3); }
+.chat-markdown > :last-child { margin-bottom: 0; }
+.chat-markdown p { white-space: pre-wrap; }
+.chat-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 1em;
+  line-height: 1.4;
+  font-weight: 650;
+}
+.chat-markdown :is(h1, h2) { font-size: 1.125em; }
+.chat-markdown > :first-child { margin-top: 0; }
+.chat-markdown :is(ul, ol) { padding-left: 1.5em; }
+.chat-markdown ul { list-style: disc; }
+.chat-markdown ol { list-style: decimal; }
+.chat-markdown li { margin-block: var(--space-1); padding-left: var(--space-1); }
+.chat-markdown li > :is(p, ul, ol) { margin-bottom: var(--space-1); }
+.chat-markdown blockquote { padding-left: var(--space-3); border-left: 3px solid var(--color-border-strong); color: var(--color-text-muted); }
+.chat-markdown blockquote > :last-child { margin-bottom: 0; }
+.chat-markdown code { font-family: var(--font-mono); font-size: 0.9em; }
+.chat-markdown :not(pre) > code { padding: 0.1em 0.3em; border-radius: var(--radius-control); background: var(--color-surface-raised); }
+.chat-markdown pre {
+  max-width: 100%;
+  padding: var(--space-3);
+  overflow: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  font-family: var(--font-mono);
+  line-height: 1.6;
+}
+.planning-message-disclosure__body .chat-markdown pre code { font-size: 0.9em; }
+.chat-markdown pre code { padding: 0; border: 0; background: transparent; }
+.chat-markdown__table { max-width: 100%; overflow-x: auto; }
+.chat-markdown table { width: 100%; border-collapse: collapse; font-size: 0.9375em; }
+.chat-markdown :is(th, td) { padding: var(--space-2); border: 1px solid var(--color-border); text-align: start; }
+.chat-markdown th { background: var(--color-surface-raised); font-weight: 650; }
+.chat-markdown hr { margin-block: var(--space-3); border: 0; border-top: 1px solid var(--color-border); }
+.chat-markdown .task-list-item { list-style: none; }
+.chat-markdown .task-list-item > input { margin-right: var(--space-2); }
+.chat-markdown__address, .chat-markdown__image { color: var(--color-text-muted); }
+.chat-markdown :is(pre, .chat-markdown__table):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+
+.planning-message-disclosure__body { min-width: 0; max-width: 100%; }
+.planning-message-disclosure__body[data-expanded="false"] { max-height: 3lh; }
+.planning-message-dialog__body:has(> .chat-markdown) { white-space: normal; }
