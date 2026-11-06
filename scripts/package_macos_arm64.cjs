@@ -66,14 +66,13 @@ function main() {
   run(python, [
     '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--target-arch', 'arm64',
     '--name', 'ai-orchestrator-backend', '--paths', join(root, 'src'),
-    '--collect-all', 'openai_codex', '--collect-all', 'codex_cli_bin', '--collect-data', 'mcp',
+    '--collect-all', 'openai_codex', '--exclude-module', 'codex_cli_bin', '--collect-data', 'mcp',
     '--recursive-copy-metadata', 'mcp',
     '--distpath', backendDist, '--workpath', join(buildRoot, 'pyinstaller-work'),
     '--specpath', buildRoot, join(root, 'scripts', 'desktop_backend.py'),
   ], { ...process.env, PYINSTALLER_CONFIG_DIR: pyinstallerConfig });
   const frozenBackend = join(backendDist, 'ai-orchestrator-backend', 'ai-orchestrator-backend');
   requireArm64(frozenBackend, 'Python backend');
-  requireArm64(join(backendDist, 'ai-orchestrator-backend', '_internal', 'codex_cli_bin', 'bin', 'codex'), 'Codex runtime');
 
   const electronApp = join(root, 'node_modules', 'electron', 'dist', 'Electron.app');
   run('ditto', [electronApp, stagedAppPath]);

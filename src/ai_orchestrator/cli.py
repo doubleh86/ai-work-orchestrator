@@ -28,7 +28,9 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     mcp = sub.add_parser("mcp", help="serve orchestrator tools over MCP stdio")
-    mcp.add_argument("--allow-write", action="store_true", help="enable document, planning, and recovery actions")
+    mcp_mode = mcp.add_mutually_exclusive_group()
+    mcp_mode.add_argument("--allow-write", action="store_true", help="enable document, planning, and recovery actions")
+    mcp_mode.add_argument("--watch-source", action="store_true", help="apply source changes to the open read-only MCP connection")
     mcp.add_argument("--projects-root", type=Path, help="existing host folder in which MCP can create new projects")
 
     start = sub.add_parser("start", help="receive, review, and plan a specification")
@@ -292,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
                 if exc.name not in {"mcp", "anyio", "pydantic"}:
                     raise
                 raise ConfigError("Install MCP support from the source checkout: python -m pip install -e '.[mcp]'") from exc
-            serve(args.registry or None, allow_write=args.allow_write, projects_root=args.projects_root)
+            serve(args.registry or None, allow_write=args.allow_write, projects_root=args.projects_root, watch_source=args.watch_source)
             return 0
         config = load_config(args.config)
         codex_sdk = CodexSdkManager()

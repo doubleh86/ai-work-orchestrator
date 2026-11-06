@@ -1,9 +1,11 @@
-import { join, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
 
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, MenuItemConstructorOptions, Notification, safeStorage, shell } from "electron";
 
 import {
   ApprovedRpcMethod,
+  CodexMcpRegistration,
   isApprovedRpcMethod,
   isRpcMethod,
   PathSelectionKind,
@@ -79,7 +81,23 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === "win32" && packagedBackend) {
+    execFile(packagedBackend, ["mcp-stage"], { cwd: dirname(packagedBackend), timeout: 45_000, windowsHide: true }, (error) => {
+      if (error) console.warn("Could not prepare the bundled Codex runtime", error.code);
+    });
+  }
   ipcMain.handle("orchestrator:mcp-command", () => packagedBackend ?? null);
+  ipcMain.handle("orchestrator:mcp-register-codex", (): Promise<CodexMcpRegistration> => {
+    if (process.platform !== "win32" || !packagedBackend) return Promise.resolve("registration_failed");
+    return new Promise((resolveRegistration) => {
+      execFile(packagedBackend, ["mcp-connect"], { cwd: dirname(packagedBackend), timeout: 45_000, windowsHide: true }, (error, stdout) => {
+        const status = stdout.trim();
+        if (!error && status === "registered") resolveRegistration("registered");
+        else resolveRegistration(status === "codex_missing" ? "codex_missing" : "registration_failed");
+      });
+    });
+  });
+  ipcMain.handle("orchestrator:codex-install-guide", () => shell.openExternal("https://learn.chatgpt.com/docs/codex/cli"));
   messageQueue = new PlanningMessageQueue(join(app.getPath("userData"), "queued-chat-messages.json"), planningRequests, bridge, chatControls);
   const menu: MenuItemConstructorOptions[] = [
     ...(process.platform === "darwin" ? [{ role: "appMenu" as const }] : []),

@@ -94,6 +94,12 @@ const api: DesktopApi = {
   mcpConnectionCommand() {
     return ipcRenderer.invoke("orchestrator:mcp-command");
   },
+  registerCodexMcp() {
+    return ipcRenderer.invoke("orchestrator:mcp-register-codex");
+  },
+  openCodexInstallGuide() {
+    return ipcRenderer.invoke("orchestrator:codex-install-guide");
+  },
   openClaudeLogin() {
     return ipcRenderer.invoke("orchestrator:claude-login");
   },

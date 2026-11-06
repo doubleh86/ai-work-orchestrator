@@ -49,13 +49,11 @@ function verifyPackage(directory, version) {
     join(app, 'licenses', 'npm', 'node_modules', '@fontsource-variable', 'geist', 'LICENSE'),
     join(app, 'licenses', 'npm', 'node_modules', '@fontsource-variable', 'jetbrains-mono', 'LICENSE'),
     join(directory, 'resources', 'backend', 'ai-orchestrator-backend.exe'),
-    join(directory, 'resources', 'backend', '_internal', 'codex_cli_bin', 'bin', 'codex.exe'),
-    join(directory, 'resources', 'backend', '_internal', 'codex_cli_bin', 'bin', 'codex-code-mode-host.exe'),
-    join(directory, 'resources', 'backend', '_internal', 'codex_cli_bin', 'codex-package.json'),
-    join(directory, 'resources', 'backend', '_internal', 'codex_cli_bin', 'codex-resources', 'codex-command-runner.exe'),
-    join(directory, 'resources', 'backend', '_internal', 'codex_cli_bin', 'codex-resources', 'codex-windows-sandbox-setup.exe'),
   ];
   for (const file of required) if (!existsSync(file)) throw new Error(`Portable package is missing: ${file}`);
+  if (existsSync(join(directory, 'resources', 'backend', '_internal', 'codex_cli_bin'))) {
+    throw new Error('Portable package must use the Codex CLI installed on the work PC');
+  }
   const packaged = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'));
   if (packaged.version !== version || packaged.main !== 'dist-electron/main/main.js') {
     throw new Error('Portable product version or main entry does not match the build');
@@ -97,6 +95,9 @@ function writeMcpPackage(directory, backend, notices, info) {
     '오래 걸리는 복구는 같은 블록에 tool_timeout_sec = 3600을 추가하세요.',
     '다른 작업 PC에서는 그 PC에 ZIP을 풀고, 앱과 같은 사용자 계정의 사설망 SSH로 실행하세요.',
     'MCP 실행에 Python 설치나 소스 다운로드는 필요하지 않습니다. Git과 작업별 빌드 도구는 별도로 준비하세요.', '',
+    'AI 작업이 필요하면 작업 PC에 해당 실행기를 설치하세요. 조회는 설치 없이 사용할 수 있습니다.',
+    'Codex CLI 설치: https://learn.chatgpt.com/docs/codex/cli',
+    'Claude Code 설치: https://code.claude.com/docs/en/setup', '',
   ].join('\r\n'), 'utf8');
 }
 
@@ -114,14 +115,13 @@ function main() {
   const python = process.env.AI_ORCHESTRATOR_PYTHON?.trim() || join(root, '.venv', 'Scripts', 'python.exe');
   const details = JSON.parse(execFileSync(python, ['-c', [
     'import json,sys,importlib.metadata as m,PyInstaller,ai_orchestrator',
-    'from codex_cli_bin import bundled_codex_path',
     'print(json.dumps(dict(python=sys.executable,product_version=ai_orchestrator.__version__,',
-    'sdk_version=m.version("openai-codex"),codex=str(bundled_codex_path()),packager_version=PyInstaller.__version__,mcp_version=m.version("mcp"))))',
+    'sdk_version=m.version("openai-codex"),packager_version=PyInstaller.__version__,mcp_version=m.version("mcp"))))',
   ].join('\n')], { cwd: root, encoding: 'utf8', windowsHide: true }));
   if (details.product_version !== version) throw new Error('Python backend and desktop product versions differ');
   if (details.packager_version !== '6.22.3') throw new Error('빌드 환경에 pyinstaller==6.22.3을 설치하세요.');
   const electron = join(root, 'node_modules', 'electron', 'dist');
-  requireX64(join(electron, 'electron.exe')); requireX64(details.python); requireX64(details.codex);
+  requireX64(join(electron, 'electron.exe')); requireX64(details.python);
   const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
   if (!preview) {
     const changes = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--',
@@ -140,8 +140,8 @@ function main() {
   mkdirSync(config);
   run(python, [
     '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--noupx', '--name', 'ai-orchestrator-backend',
-    '--paths', join(root, 'src'), '--collect-all', 'openai_codex', '--collect-all', 'codex_cli_bin', '--collect-data', 'mcp',
-    '--recursive-copy-metadata', 'openai-codex', '--recursive-copy-metadata', 'mcp', '--copy-metadata', 'ai-work-orchestrator',
+    '--paths', join(root, 'src'), '--collect-all', 'openai_codex', '--exclude-module', 'codex_cli_bin', '--collect-data', 'mcp',
+    '--copy-metadata', 'openai-codex', '--recursive-copy-metadata', 'mcp', '--copy-metadata', 'ai-work-orchestrator',
     '--distpath', backendDist, '--workpath', join(output, 'pyinstaller-work'), '--specpath', output,
     join(root, 'scripts', 'desktop_backend.py'),
   ], { ...process.env, PYINSTALLER_CONFIG_DIR: config });
@@ -168,8 +168,10 @@ function main() {
   writeFileSync(join(stage, '사용 안내.txt'), [
     `${productName} v${version} · Windows x64 portable`, '',
     'ZIP 전체를 쓰기 가능한 로컬 폴더에 압축 해제하고 AI Work Orchestrator.exe를 실행하세요.',
-    'Python, Node.js, 별도 Codex CLI 설치는 필요하지 않습니다. Codex 로그인은 앱의 AI 연결에서 직접 진행하세요.',
-    '앱 설정의 MCP 연결에서 Codex에 붙여 넣을 설정을 복사할 수 있습니다.',
+    '앱 자체를 실행하는 데 Python이나 Node.js 설치는 필요하지 않습니다.',
+    'Codex로 작업하려면 Codex CLI를 설치한 뒤 앱의 AI 연결에서 로그인하세요. https://learn.chatgpt.com/docs/codex/cli',
+    'Claude로 작업하려면 Claude Code CLI를 설치하세요. https://code.claude.com/docs/en/setup',
+    '앱 설정에서 Codex에서 진행 상황 보기를 선택하면 조회 연결을 등록합니다.',
     'Git for Windows는 설치하고 PATH에 등록해야 합니다. 대상 프로젝트의 .NET 등 빌드 도구도 별도로 준비하세요.',
     '사용자 설정·프로젝트 목록·인증은 기존 사용자 설정 위치에 저장합니다. 실행 폴더에 인증을 넣지 않습니다.',
     '실행 파일과 resources 폴더를 함께 유지하세요. 기존 작업 폴더 위에 덮어쓰지 말고 새 버전 폴더로 교체하세요.',
@@ -179,7 +181,7 @@ function main() {
   verifyPackage(stage, version);
   renameSync(stage, final);
   const mcpDirectory = join(output, `${productName} MCP`);
-  writeMcpPackage(mcpDirectory, backend, join(app, 'licenses'), { ...info, product: `${productName} MCP` });
+  writeMcpPackage(mcpDirectory, backend, join(final, 'resources', 'app', 'licenses'), { ...info, product: `${productName} MCP` });
   writeArchive(python, final, join(output, `ai-work-orchestrator-v${buildLabel}-win-x64.zip`));
   writeArchive(python, mcpDirectory, join(output, `ai-work-orchestrator-mcp-v${buildLabel}-win-x64.zip`));
 }

@@ -139,8 +139,12 @@ export const APPROVED_RPC_METHODS = [
 export type ApprovedRpcMethod = (typeof APPROVED_RPC_METHODS)[number];
 export type PathSelectionKind = "repository" | "config" | "planningSource" | "dotnet";
 
+export type CodexMcpRegistration = "registered" | "codex_missing" | "registration_failed";
+
 export interface DesktopApi {
   mcpConnectionCommand(): Promise<string | null>;
+  registerCodexMcp(): Promise<CodexMcpRegistration>;
+  openCodexInstallGuide(): Promise<void>;
   openClaudeLogin(): Promise<boolean>;
   nvidiaCredentialStatus(): Promise<import("./nvidiaCredentials").NvidiaCredentialStatus>;
   saveNvidiaCredential(key: string, options?: import("./nvidiaCredentials").NvidiaCredentialOptions): Promise<import("./nvidiaCredentials").NvidiaCredentialStatus>;

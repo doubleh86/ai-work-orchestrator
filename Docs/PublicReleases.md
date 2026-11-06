@@ -21,6 +21,7 @@
 
 ```bash
 npm ci
+npx --no-install install-electron
 npm audit
 npm run typecheck
 node --test tests/renderer/*.test.cjs
@@ -41,6 +42,7 @@ Python 공개 버전에서 일치시킨다. 같은 버전의 기존 산출물을
 
 Windows 빌드는 `python -m pip install -e '.[windows-build,mcp]'`로 준비하고
 `npm run package:win-x64`로 실행한다. 생성된 앱 ZIP, MCP 전용 ZIP, 각 SHA256을
-함께 첨부한다. MCP ZIP은 전체를 푼 뒤 동봉한 `MCP 사용 안내.txt`로 연결한다.
+함께 첨부한다. Windows 앱은 설정에서 동봉된 MCP를 설치한다. 별도 MCP ZIP은 앱 없이 사용할 때
+전체를 푼 뒤 동봉한 `MCP 사용 안내.txt`로 연결한다.
 
 이번 초기 소스 공개는 바이너리의 새 PC 실행이나 정식 릴리즈 검증을 뜻하지 않는다.

@@ -39,7 +39,7 @@ test('output protection preserves an existing successful or failed build', () =>
   assert.equal(readFileSync(marker, 'utf8'), 'keep');
 }));
 
-test('portable verification requires the backend and Codex helpers and rejects wrong versions or architecture', () => fixture((directory) => {
+test('portable verification requires the backend and licenses, and keeps Codex runtime external', () => fixture((directory) => {
   const required = [
     'AI Work Orchestrator.exe', 'LICENSE', 'LICENSES.chromium.html',
     'resources/app/dist-electron/main/main.js', 'resources/app/dist-electron/main/preload.js',
@@ -48,11 +48,6 @@ test('portable verification requires the backend and Codex helpers and rejects w
     'resources/app/licenses/codex/LICENSE', 'resources/app/licenses/npm-licenses.json',
     'resources/app/licenses/npm/node_modules/@fontsource-variable/geist/LICENSE',
     'resources/app/licenses/npm/node_modules/@fontsource-variable/jetbrains-mono/LICENSE',
-    'resources/backend/_internal/codex_cli_bin/bin/codex.exe',
-    'resources/backend/_internal/codex_cli_bin/bin/codex-code-mode-host.exe',
-    'resources/backend/_internal/codex_cli_bin/codex-package.json',
-    'resources/backend/_internal/codex_cli_bin/codex-resources/codex-command-runner.exe',
-    'resources/backend/_internal/codex_cli_bin/codex-resources/codex-windows-sandbox-setup.exe',
   ];
   for (const name of required) {
     const file = join(directory, name); mkdirSync(dirname(file), { recursive: true });
@@ -65,6 +60,6 @@ test('portable verification requires the backend and Codex helpers and rejects w
   const backend = join(directory, 'resources/backend/ai-orchestrator-backend.exe');
   writeFileSync(backend, executable(0xaa64)); assert.throws(() => verifyPackage(directory, '0.3.0'), /x64 executable required/);
   writeFileSync(backend, executable());
-  const helper = join(directory, required.at(-1)); rmSync(helper);
-  assert.throws(() => verifyPackage(directory, '0.3.0'), /missing.*sandbox-setup/);
+  mkdirSync(join(directory, 'resources/backend/_internal/codex_cli_bin'), { recursive: true });
+  assert.throws(() => verifyPackage(directory, '0.3.0'), /installed on the work PC/);
 }));

@@ -12,7 +12,8 @@ Codex와 Claude를 연결해 코딩 작업을 계획하고 실행하는 로컬 �
 
 ## 시작하기
 
-Python 3.11 이상, Node.js 22.12 이상, Git이 필요합니다. 현재는 소스로 실행합니다.
+Windows x64에서는 [v0.5.0 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.5.0)에서 앱 ZIP을 받아 실행할 수 있습니다.
+소스 실행에는 Python 3.11 이상, Node.js 22.12 이상, Git이 필요합니다.
 
 Windows PowerShell:
 
@@ -22,11 +23,12 @@ cd ai-work-orchestrator
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 npm ci
+npx --no-install install-electron
 npm start
 ```
 
 macOS/Linux에서는 `python3 -m venv .venv`로 가상환경을 만들고,
-`.venv/bin/python -m pip install -e .`를 실행한 뒤 `npm ci`, `npm start`를 실행합니다.
+`.venv/bin/python -m pip install -e .`를 실행한 뒤 `npm ci`, `npx --no-install install-electron`, `npm start`를 실행합니다.
 
 ## 사용하기
 
@@ -39,9 +41,10 @@ CLI 명령은 `ai-orchestrator --help`에서 확인할 수 있습니다.
 
 ## Codex에서 MCP 연결
 
-설치형 앱은 **설정 → MCP 연결 → Codex 설정 복사**에서 연결 정보를 제공합니다.
-설정을 Codex의 `~/.codex/config.toml`에 넣고 Codex를 다시 열면 같은 사용자 계정의
-프로젝트를 조회할 수 있습니다. 작업 변경 권한은 설정에서 선택합니다.
+Windows 앱에서 **설정 → Codex 연결 → Codex에서 진행 상황 보기**를 누르면 동봉된 연결 파일을 설치하고 조회 연결을 등록합니다.
+Codex를 다시 열고 “오케스트레이터 작업 진행 상황 알려줘”라고 물어보세요. 새 버전의 앱을 열면 다음 Codex 연결에 동봉된 새 버전이 적용됩니다.
+
+수동 연결과 작업 변경 권한은 같은 화면의 고급 설정에서 설정합니다.
 
 소스로 연결하려면 `python -m pip install -e '.[mcp]'`로 준비한 뒤
 `codex mcp add orchestrator -- ai-orchestrator mcp`로 등록합니다.

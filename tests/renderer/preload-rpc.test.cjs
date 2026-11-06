@@ -453,3 +453,9 @@ test('effort selection, comparison, reservation and plan application use allowed
   assert.equal(calls.length, 4);
   assert.ok(calls.every(([channel]) => channel === 'orchestrator:request'));
 });
+
+test('Codex registration uses the fixed read-only setup channel', async () => {
+  const { api, calls } = bridge(async () => 'registered');
+  assert.equal(await api.registerCodexMcp('untrusted command', '--allow-write'), 'registered');
+  assert.deepEqual(calls, [['orchestrator:mcp-register-codex']]);
+});

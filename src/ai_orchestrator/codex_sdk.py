@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import platform
 import random
 import re
 import sys
@@ -85,7 +87,7 @@ def _auth_failure(error: BaseException, default_code: str, default_message: str)
            or re.search(r"access is denied|permission denied|액세스가 거부|접근이 거부", str(item), re.IGNORECASE) for item in chain):
         return "auth_permission_denied", "Codex 인증 실행에 필요한 파일이나 폴더에 접근할 수 없습니다. 앱 실행 권한과 보안 프로그램의 차단 여부를 확인해 주세요."
     if any(isinstance(item, FileNotFoundError) for item in chain):
-        return "auth_runtime_missing", "Codex 인증 실행 파일을 찾지 못했습니다. 앱의 Python SDK 설치 상태를 확인해 주세요."
+        return "auth_runtime_missing", "Codex 실행 파일을 찾지 못했습니다. 작업 PC에 Codex CLI를 설치하고 앱을 다시 열어 주세요."
     if any(isinstance(item, TimeoutError) or re.search(r"timed? out|timeout", str(item), re.IGNORECASE) for item in chain):
         return "auth_request_timeout", "Codex 인증 요청의 응답 시간이 초과되었습니다. 네트워크와 실행 상태를 확인한 뒤 다시 시도해 주세요."
     if any(type(item).__name__ in {"ValidationError", "ParseError", "InvalidParamsError", "MethodNotFoundError"}
@@ -1026,7 +1028,7 @@ class CodexSdkManager:
                     {
                         "transport": "codex-sdk",
                         "event": "turn-request",
-                        "runtime": "sdk-pinned",
+                        "runtime": "installed-cli" if _uses_external_codex() else "sdk-pinned",
                         "cwd": str(request.cwd.resolve()),
                         "model": request.model,
                         "reasoning_effort": request.reasoning_effort,
@@ -1085,9 +1087,50 @@ def _resolve_execution_profile(client: Codex, request: CodexSdkTurnRequest) -> C
     )
 
 
+def _uses_external_codex() -> bool:
+    return bool(getattr(sys, "frozen", False) or os.environ.get("AI_ORCHESTRATOR_CODEX", "").strip())
+
+
+def installed_codex_executable() -> str:
+    windows = sys.platform == "win32"
+    name = "codex.exe" if windows else "codex"
+    override = os.environ.get("AI_ORCHESTRATOR_CODEX", "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_absolute() and (not windows or candidate.suffix.lower() == ".exe") and candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        raise FileNotFoundError("AI_ORCHESTRATOR_CODEX에 설치된 Codex 실행 파일의 전체 경로를 지정해 주세요.")
+
+    roots = [Path(part.strip('"')) for part in os.environ.get("PATH", "").split(os.pathsep) if part]
+    if windows:
+        local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        roaming = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+        roots.extend((local / "Programs/OpenAI/Codex/bin", roaming / "npm"))
+    else:
+        roots.extend((Path.home() / ".local/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")))
+
+    for root in dict.fromkeys(roots):
+        if not root.is_absolute():
+            continue
+        candidate = root / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        if windows:
+            npm = root / "node_modules/@openai/codex"
+            arm = platform.machine().lower() in {"arm64", "aarch64"}
+            arch, target = ("arm64", "aarch64") if arm else ("x64", "x86_64")
+            vendor = f"vendor/{target}-pc-windows-msvc/bin/{name}"
+            for package in (npm / f"node_modules/@openai/codex-win32-{arch}", npm.parent / f"codex-win32-{arch}", npm):
+                candidate = package / vendor
+                if candidate.is_file():
+                    return str(candidate)
+    raise FileNotFoundError("작업 PC에 Codex CLI를 설치해 주세요.")
+
+
 def _new_client() -> Codex:
     from openai_codex import Codex, CodexConfig
 
+    codex_bin = installed_codex_executable() if _uses_external_codex() else None
     codex_home = application_config_root() / "codex"
     if codex_home.is_symlink():
         raise CodexSdkError("앱 전용 Codex 저장소에 심볼릭 링크를 사용할 수 없습니다.")
@@ -1098,6 +1141,7 @@ def _new_client() -> Codex:
         # isolation so read-only commands do not require escalation.
         overrides += ('features.prefer_mxc=true',)
     return Codex(CodexConfig(
+        codex_bin=codex_bin,
         client_name="ai_work_orchestrator", client_title="AI Work Orchestrator", client_version=__version__,
         config_overrides=overrides,
         env={"CODEX_HOME": str(codex_home), "CODEX_SQLITE_HOME": str(codex_home),
