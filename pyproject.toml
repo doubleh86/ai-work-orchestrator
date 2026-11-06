@@ -13,6 +13,7 @@ authors = [{ name = "AI Work Orchestrator contributors" }]
 dependencies = ["openai-codex==0.163.0"]
 
 [project.optional-dependencies]
+mcp = ["mcp>=1.26,<2"]
 windows-build = ["pyinstaller==6.22.3; sys_platform == 'win32'"]
 
 [project.scripts]

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname } from "node:path";
 import type { RpcMethod, RpcParams } from "../shared/rpc";
 import type { PlanningRequestOwner } from "../shared/planningRequests";
+import { planningRequestFor } from "../shared/planningRequests";
 import type { PlanningMessageQueueSnapshot, QueuedMessageChange, QueuedMessageInput, QueuedPlanningMessage } from "../shared/planningMessageQueue";
 import { chatControlParams, chatExecutionIntent, type ChatControlRun } from "../shared/chatExecution";
 import type { PlanningRequests } from "./planningRequests";
@@ -54,7 +55,6 @@ export class PlanningMessageQueue {
   private items: QueuedPlanningMessage[] = [];
   private error = "";
   private writable = true;
-  private active = "";
   private timer?: ReturnType<typeof setTimeout>;
   private readonly unsubscribe: () => void;
   private readonly unsubscribeControl: () => void;
@@ -101,9 +101,10 @@ export class PlanningMessageQueue {
     const items = this.items.filter(item => item.status !== "sent").concat(this.items.filter(item => item.status === "sent").slice(-20));
     if (items.length >= MAX_MESSAGES) throw new Error("예약 메시지가 너무 많습니다. 기존 예약을 정리해 주세요.");
     const owner = this.owners.snapshot();
+    const active = planningRequestFor(owner, input.projectName, input.runId);
     const previous = input.afterRequestId ? owner.recent.find(item => item.requestId === input.afterRequestId) : undefined;
-    const priorUnknown = Boolean(input.afterRequestId && owner.active?.requestId !== input.afterRequestId && !previous);
-    const blocked = priorUnknown || owner.active?.phase === "confirmation_required" || previous && sameConversation(input, previous) && previous.phase !== "succeeded"
+    const priorUnknown = Boolean(input.afterRequestId && active?.requestId !== input.afterRequestId && !previous);
+    const blocked = priorUnknown || active?.phase === "confirmation_required" || previous && sameConversation(input, previous) && previous.phase !== "succeeded"
       || items.some(item => sameConversation(item, input) && ["paused", "failed", "uncertain"].includes(item.status));
     this.commit([...items, { ...input, status: blocked ? "paused" : "queued", createdAt: Date.now(), revision: 1,
       error: blocked ? "앞선 답변이나 예약 상태를 확인한 뒤 다시 예약해 주세요." : "", waitForRequestId: owner.active?.requestId || "" }]);
@@ -119,7 +120,7 @@ export class PlanningMessageQueue {
     let next: QueuedPlanningMessage | undefined;
     if (change.action === "resume") {
       if (item.status === "uncertain") throw new Error("이전 전송 결과를 대화에서 확인해 주세요. 입력창으로 가져와 다시 보낼 수 있습니다.");
-      next = { ...item, status: "queued", revision: item.revision + 1, error: "", waitForRequestId: this.owners.snapshot().active?.requestId || "" };
+      next = { ...item, status: "queued", revision: item.revision + 1, error: "", waitForRequestId: planningRequestFor(this.owners.snapshot(), item.projectName, item.runId)?.requestId || "" };
     } else if (change.action !== "cancel") throw new Error("지원하지 않는 예약 변경입니다.");
     this.commit(this.items.flatMap(candidate => candidate.id === item.id ? next ? [next] : [] : [candidate]));
     this.kick();
@@ -162,23 +163,24 @@ export class PlanningMessageQueue {
   }
 
   private async drain(): Promise<void> {
-    if (this.closed || this.active || this.error || this.owners.snapshot().active) return;
+    if (this.closed || this.error) return;
     const item = this.items.find((candidate, index) => candidate.status === "queued"
+      && !planningRequestFor(this.owners.snapshot(), candidate.projectName, candidate.runId)
       && !this.controls.snapshot().some(control => sameConversation(candidate, control) && control.status === "running")
-      && !this.items.slice(0, index).some(earlier => sameConversation(earlier, candidate) && ["paused", "failed", "uncertain"].includes(earlier.status)));
+      && !this.items.slice(0, index).some(earlier => sameConversation(earlier, candidate) && ["paused", "failed", "uncertain", "sending"].includes(earlier.status)));
     if (!item) return;
-    this.active = item.id;
     let dispatched = false;
     try {
       // Persist the claim before any asynchronous work; edits and cancellation now reject.
       this.update(item.id, { status: "sending", error: "" });
+      this.kick();
       const run = await this.bridge.request<ChatControlRun>("runs.get", { projectName: item.projectName, runId: item.runId });
       if (this.closed) { this.update(item.id, { status: "paused", error: "앱 종료로 예약을 일시 정지했습니다." }); return; }
       if (run.id !== item.runId) throw new Error("예약한 작업 그룹과 조회 결과가 일치하지 않습니다.");
       if (item.executionMode === "project" && (!run.project_chat_available || run.archive))
         throw new Error("예약한 프로젝트의 AI 실행 기능을 현재 사용할 수 없습니다. 입력창으로 가져와 확인해 주세요.");
-      const intent = chatExecutionIntent(item.text, item.executionMode === "project" ? run : undefined);
-      const latestOwner = this.owners.snapshot().active;
+      const intent = chatExecutionIntent(item.text, item.executionMode === "project" || !run.tasks.length ? run : undefined);
+      const latestOwner = planningRequestFor(this.owners.snapshot(), item.projectName, item.runId);
       if (latestOwner) { this.update(item.id, { status: "queued", waitForRequestId: latestOwner.requestId }); return; }
       if (this.controls.snapshot().some(control => sameConversation(item, control) && control.status === "running")) {
         this.update(item.id, { status: "queued", waitForRequestId: "" }); return;
@@ -206,6 +208,6 @@ export class PlanningMessageQueue {
           status: dispatched ? "uncertain" : "failed", error: message } : candidate.status === "queued" && sameConversation(candidate, item)
             ? { ...candidate, revision: candidate.revision + 1, status: "paused", error: "앞선 예약 메시지를 먼저 확인해 주세요." } : candidate));
       } catch (saveError) { this.error = `전송 상태를 저장하지 못했습니다. ${saveError instanceof Error ? saveError.message : String(saveError)}`; }
-    } finally { this.active = ""; this.kick(); }
+    } finally { this.kick(); }
   }
 }

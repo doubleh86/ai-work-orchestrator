@@ -9,6 +9,7 @@ const ts=require.resolve('typescript/package.json',{paths:[root]});
 execFileSync(process.execPath,[resolve(dirname(ts),require(ts).bin.tsc),'--ignoreConfig','--strict','--target','ES2022','--module','commonjs',
  '--skipLibCheck','--types','node','--outDir',output,'desktop/main/planningRequests.ts','desktop/main/chatControls.ts','desktop/renderer/src/composerInput.ts'],{cwd:root,stdio:'inherit'});
 const {PlanningRequests}=require(join(output,'main/planningRequests.js'));
+const {planningRequestFor}=require(join(output,'shared/planningRequests.js'));
 const {ChatControls}=require(join(output,'main/chatControls.js'));
 const {composerIsComposing}=require(join(output,'renderer/src/composerInput.js'));
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b});return{promise,resolve,reject}};
@@ -38,7 +39,7 @@ test('project chat alternates owned AI decisions and work, keeps one receipt and
  assert.ok(calls.every(([,p])=>p.projectName==='A'&&p.runId==='original'));
 });
 
-test('Planning slot rejects other conversations and mismatched interruption before touching the bridge',async()=>{
+test('Planning rejects duplicate requests in the same conversation and mismatched interruption before touching the bridge',async()=>{
  const work=deferred(),calls=[];
  const bridge={request:async(method,params)=>{calls.push([method,params]);if(method==='runs.beginPlanningRequest')return{kind:'chat'};
   if(method==='runs.sendPlanningMessage')return work.promise;return{};},restartPlanning:async()=>assert.fail('wrong owner must not restart')};
@@ -46,7 +47,7 @@ test('Planning slot rejects other conversations and mismatched interruption befo
  const pending=owner.request('runs.sendPlanningMessage',{projectName:'A',runId:'one'});
  await new Promise(setImmediate);
  const original=owner.snapshot().active;
- await assert.rejects(owner.request('runs.sendPlanningMessage',{projectName:'B',runId:'two'}),/planning_capacity_busy/);
+ await assert.rejects(owner.request('runs.sendPlanningMessage',{projectName:'A',runId:'one'}),/planning_capacity_busy/);
  await assert.rejects(owner.interrupt('B','two',original.requestId),/target_changed/);
  await assert.rejects(owner.interrupt('A','one',''),/request_target_required/);
  assert.equal(owner.snapshot().active.requestId,original.requestId);
@@ -70,6 +71,42 @@ test('completed and archived reply interruption uses its actual owner kind and p
   assert.equal(calls.find(([method])=>method==='runs.finishPlanningRequest')[1].phase,'interrupted');
   assert.equal(await requests.interrupt('A','group',target.requestId),null);assert.equal(restarts,1);
  }
+});
+
+test('same-project conversations run concurrently and interrupting one preserves the other owner and response',async()=>{
+ const a=deferred(),b=deferred(),restarts=[];
+ const bridge={request:async(method,params)=>{
+  if(method==='runs.beginPlanningRequest')return{kind:'chat'};
+  if(method==='runs.sendPlanningMessage')return params.runId==='one'?a.promise:b.promise;
+  return{id:params.runId};
+ },restartPlanning:async(project,run)=>{restarts.push([project,run]);a.reject(Error('only one interrupted'));}};
+ const requests=new PlanningRequests(bridge);
+ const first=requests.request('runs.sendPlanningMessage',{projectName:'A',runId:'one'});
+ const second=requests.request('runs.sendPlanningMessage',{projectName:'A',runId:'two'});
+ await new Promise(setImmediate);
+ const snapshot=requests.snapshot();assert.equal(snapshot.activeRequests.length,2);
+ await assert.rejects(requests.request('projects.remove',{projectName:'A'}),/AI 요청/);
+ const target=planningRequestFor(snapshot,'A','one'),other=planningRequestFor(snapshot,'A','two');
+ assert.ok(target);assert.ok(other);assert.equal(planningRequestFor(snapshot,'B','one'),undefined);
+ await requests.interrupt('A','one',target.requestId);
+ assert.equal((await first).id,'one');assert.deepEqual(restarts,[['A','one']]);
+ assert.equal(planningRequestFor(requests.snapshot(),'A','one'),undefined);
+ assert.equal(planningRequestFor(requests.snapshot(),'A','two').requestId,other.requestId);
+ b.resolve({id:'two'});assert.equal((await second).id,'two');
+ assert.equal(requests.snapshot().activeRequests.length,0);
+ assert.deepEqual(requests.snapshot().recent.map(owner=>owner.phase),['interrupted','succeeded']);
+});
+
+test('a failed conversation does not release or overwrite another in-flight request',async()=>{
+ const a=deferred(),b=deferred();
+ const owners=new PlanningRequests({request:async(method,params)=>method==='runs.beginPlanningRequest'?{kind:'chat'}:
+  method==='runs.sendPlanningMessage'?(params.runId==='one'?a.promise:b.promise):{},restartPlanning:async()=>{}});
+ const first=owners.request('runs.sendPlanningMessage',{projectName:'A',runId:'one'});
+ const second=owners.request('runs.sendPlanningMessage',{projectName:'A',runId:'two'});
+ const failure=assert.rejects(first,/provider failed/);await new Promise(setImmediate);a.reject(Error('provider failed'));await failure;
+ assert.equal(planningRequestFor(owners.snapshot(),'A','two').phase,'running');
+ b.resolve({id:'two'});await second;
+ assert.equal(owners.snapshot().recent.length,2);
 });
 
 test('a registration failure releases the slot and a failed restart stays confirmation-required',async()=>{

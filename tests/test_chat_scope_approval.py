@@ -236,7 +236,7 @@ def test_cancelled_or_changed_approval_never_dispatches_scope_apply(blocked, cha
     apply.assert_not_called()
 
 
-@pytest.mark.parametrize("outcome", ["complete", "legacy_approval", "approve_only", "cancel_after_apply", "retry_failed"])
+@pytest.mark.parametrize("outcome", ["complete", "legacy_approval", "approve_only", "cancel_after_apply", "retry_failed", "mcp_approval"])
 def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_path_factory, outcome):
     import test_pipeline as fixtures
 
@@ -280,13 +280,14 @@ def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_
     original = deepcopy(task)
     original_done = deepcopy(pipeline._find_task(failed, "done"))
     original_next = deepcopy(pipeline._find_task(failed, "next"))
-    offer(pipeline, state.id)
-    if outcome == "legacy_approval":
-        legacy_approval_reply(pipeline, state.id)
-    parent = accept(pipeline, state.id, "파일은 추가하고 실행은 내가 나중에 할게" if outcome == "approve_only" else
-                    "계속해" if outcome == "legacy_approval" else "그 두 개 넣고 마저 해줘")
-    decision = consent_decision(pipeline, state.id, parent, intent="approve_only" if outcome == "approve_only" else "approve")
-    step_id = decision["payload"]["step_id"]
+    if outcome != "mcp_approval":
+        offer(pipeline, state.id)
+        if outcome == "legacy_approval":
+            legacy_approval_reply(pipeline, state.id)
+        parent = accept(pipeline, state.id, "파일은 추가하고 실행은 내가 나중에 할게" if outcome == "approve_only" else
+                        "계속해" if outcome == "legacy_approval" else "그 두 개 넣고 마저 해줘")
+        decision = consent_decision(pipeline, state.id, parent, intent="approve_only" if outcome == "approve_only" else "approve")
+        step_id = decision["payload"]["step_id"]
     fixes = []
 
     def fix(_state, current, _agent, prompt, _log, action):
@@ -309,8 +310,18 @@ def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_
             pipeline.cancel_chat_control(state.id, parent["request_id"])
 
     with patch.object(pipeline, "_invoke_agent", side_effect=fix), patch.object(pipeline.store, "save_operation", side_effect=save_and_cancel):
-        result = pipeline.perform_project_chat(state.id, parent["request_id"], step_id)
-        replay = pipeline.perform_project_chat(state.id, parent["request_id"], step_id)
+        if outcome == "mcp_approval":
+            review = pipeline.task_retry_context(state.id, task.id)["scope_review"]
+            args = {"review_id": review["review_id"], "request_id": str(uuid4())}
+            with pytest.raises(PipelineError, match="사용자 확인"):
+                pipeline.approve_task_scope(state.id, task.id, **args, approved=False)
+            result = pipeline.approve_task_scope(state.id, task.id, **args, approved=True)
+            assert result["scope_applied"] and result["retry_status"] == "succeeded"
+            assert pipeline.approve_task_scope(state.id, task.id, **args, approved=True) == result
+            step_id = pipeline.store.load_operation(state.id, args["request_id"]).payload["step_id"]
+        else:
+            result = pipeline.perform_project_chat(state.id, parent["request_id"], step_id)
+            replay = pipeline.perform_project_chat(state.id, parent["request_id"], step_id)
     updated = pipeline.store.load(state.id)
     target = pipeline._find_task(updated, task.id)
     assert target.expected_paths == [*original.expected_paths, *PATHS]
@@ -328,10 +339,10 @@ def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_
     assert next(item for item in updated.planning_apply_requests if item.request_id == step_id).status == PlanningApplyStatus.SUCCEEDED
     receipt = pipeline.store.load_operation(state.id, step_id)
     assert receipt.finished_at
-    assert receipt.status == {"complete": "succeeded", "legacy_approval": "succeeded", "approve_only": "succeeded",
+    assert receipt.status == {"complete": "succeeded", "legacy_approval": "succeeded", "approve_only": "succeeded", "mcp_approval": "succeeded",
                               "cancel_after_apply": "partial", "retry_failed": "failed"}[outcome], receipt.error
-    assert bool(fixes) == (outcome in {"complete", "legacy_approval", "retry_failed"})
-    if outcome in {"complete", "legacy_approval"}:
+    assert bool(fixes) == (outcome in {"complete", "legacy_approval", "retry_failed", "mcp_approval"})
+    if outcome in {"complete", "legacy_approval", "mcp_approval"}:
         assert fixes == [task.id]
         assert target.status == TaskStatus.COMPLETED
         assert target.action_results[-1].action == TaskAction.VERIFY and target.action_results[-1].status == "succeeded"
@@ -345,7 +356,8 @@ def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_
         else:
             assert "SDK execution failed" in receipt.error
             assert result["payload"]["history"][-1]["error"] == receipt.error
-    assert replay["payload"]["history"] == result["payload"]["history"]
+    if outcome != "mcp_approval":
+        assert replay["payload"]["history"] == result["payload"]["history"]
     if outcome in {"complete", "legacy_approval"}:
         assert pipeline.advance_chat_control(state.id, parent["request_id"])["next_action"] == "decide"
         output = json.dumps({"action": "reply", "message": "두 경로를 반영하고 해당 작업의 검증을 통과했습니다.", "authorized": False})

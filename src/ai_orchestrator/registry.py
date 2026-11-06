@@ -3,13 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
-from typing import Mapping
+from typing import Concatenate, Mapping, ParamSpec, TypeVar
 
 from .app_paths import application_config_root
 from .code_style import CodeStyleError, ProjectCodeStylePreference, normalize_custom_instruction_paths
+from .file_lock import exclusive_file_lock
 
 REGISTRY_SCHEMA_VERSION = 3
 SUPPORTED_REGISTRY_SCHEMA_VERSIONS = {1, 2, REGISTRY_SCHEMA_VERSION}
@@ -17,6 +20,19 @@ SUPPORTED_REGISTRY_SCHEMA_VERSIONS = {1, 2, REGISTRY_SCHEMA_VERSION}
 
 class RegistryError(ValueError):
     pass
+
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _serialized_write(method: Callable[Concatenate["ProjectRegistry", _P], _T]) -> Callable[Concatenate["ProjectRegistry", _P], _T]:
+    @wraps(method)
+    def write(registry: ProjectRegistry, /, *args: _P.args, **kwargs: _P.kwargs) -> _T:
+        with exclusive_file_lock(registry.path.with_name(f"{registry.path.name}.lock")):
+            return method(registry, *args, **kwargs)
+
+    return write
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +119,7 @@ class ProjectRegistry:
                 return project
         raise RegistryError(f"unknown project: {name}")
 
+    @_serialized_write
     def add(
         self, name: str, repo: str | Path, config_path: str | Path | None = None, planning_source_dir: str | Path | None = None
     ) -> RegisteredProject:
@@ -137,18 +154,24 @@ class ProjectRegistry:
         digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
         return (self.path.parent / "project-configs" / digest / "orchestrator.toml").resolve()
 
-    def update_planning_source(self, name: str, planning_source_dir: str | Path | None) -> RegisteredProject:
+    @_serialized_write
+    def update_planning_source(
+        self, name: str, planning_source_dir: str | Path | None, *, expected_project: RegisteredProject | None = None,
+    ) -> RegisteredProject:
         normalized = self._normalize_name(name)
         selected_source = self._planning_source_path(planning_source_dir)
         projects = self._load()
         for index, project in enumerate(projects):
             if project.name.casefold() == normalized:
+                if expected_project is not None and project != expected_project:
+                    raise RegistryError("기획 자료를 연결하기 전에 프로젝트 설정이 변경됐습니다. 최신 상태를 확인해 주세요.")
                 updated = replace(project, planning_source_dir=selected_source)
                 projects[index] = updated
                 self._save(projects)
                 return updated
         raise RegistryError(f"unknown project: {name}")
 
+    @_serialized_write
     def update_dotnet(self, name: str, executable: str) -> RegisteredProject:
         selected = executable.strip()
         if selected:
@@ -168,6 +191,7 @@ class ProjectRegistry:
                 return updated
         raise RegistryError(f"unknown project: {name}")
 
+    @_serialized_write
     def update_code_style_preference(
         self,
         name: str,
@@ -199,6 +223,7 @@ class ProjectRegistry:
             return updated
         raise RegistryError(f"unknown project: {name}")
 
+    @_serialized_write
     def remove(self, name: str) -> RegisteredProject:
         normalized = self._normalize_name(name)
         projects = self._load()

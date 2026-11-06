@@ -57,6 +57,7 @@ function main() {
   if (existsSync(appPath)) throw new Error(`기존 빌드가 있습니다. 먼저 확인하고 별도로 이동하거나 정리하세요: ${appPath}`);
   if (existsSync(stagedAppPath)) throw new Error(`완료되지 않은 빌드가 있습니다. 먼저 확인하세요: ${stagedAppPath}`);
 
+  run(python, ['-c', 'import mcp']);
   run('npm', ['run', 'build']);
   mkdirSync(buildRoot, { recursive: true });
   const backendDist = join(buildRoot, 'backend-dist');
@@ -65,7 +66,8 @@ function main() {
   run(python, [
     '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--target-arch', 'arm64',
     '--name', 'ai-orchestrator-backend', '--paths', join(root, 'src'),
-    '--collect-all', 'openai_codex', '--collect-all', 'codex_cli_bin',
+    '--collect-all', 'openai_codex', '--collect-all', 'codex_cli_bin', '--collect-data', 'mcp',
+    '--recursive-copy-metadata', 'mcp',
     '--distpath', backendDist, '--workpath', join(buildRoot, 'pyinstaller-work'),
     '--specpath', buildRoot, join(root, 'scripts', 'desktop_backend.py'),
   ], { ...process.env, PYINSTALLER_CONFIG_DIR: pyinstallerConfig });

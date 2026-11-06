@@ -33,6 +33,10 @@ IPC와 원자적인 상태 흐름을 우선한다.
 - Electron main은 같은 `desktop_rpc` 모듈을 실행하는 제어용·Planning용·Task 작업용
   Python backend 자식 프로세스를 소유하고 각각 표준 입력과 출력의 JSON Lines RPC로만
   호출한다. localhost HTTP 서버나 임의 포트를 열지 않는다.
+- Planning 요청은 프로젝트·run ID별 소유권과 전용 자식 프로세스를 사용하여 같은
+  프로젝트의 다른 대화도 동시에 처리한다. 같은 대화의 변경 요청은 직렬화하며,
+  답변 중단은 해당 대화의 프로세스만 종료한다. 5분 동안 요청이 없는 대화 프로세스는
+  정리하고, 앱 종료·재시작 시에도 소유한 모든 프로세스를 종료한다.
 - React renderer는 `contextIsolation: true`, `sandbox: true`,
   `nodeIntegration: false`로 실행한다. preload는 method가 제한된 API만 노출하고
   raw `ipcRenderer`, 경로 접근 또는 command 실행 능력을 넘기지 않는다.
@@ -99,8 +103,12 @@ renderer ──typed preload API──> Electron main
                                                     └────────> pipeline
 ```
 
-- `cli`는 자동화 진입점이며 `pipeline`, `registry`, `desktop_entry`의 공개 진입점만
-  호출한다.
+- `cli`는 자동화 진입점이며 `pipeline`, `registry`, `desktop_entry`, `mcp_server`의
+  공개 진입점을 호출한다.
+- 옵트인 `mcp` 진입점은 Codex의 stdio 연결에서 기능별 도구를 제공한다. 작업 PC에서
+  직접 또는 SSH로 실행하며 같은 `DesktopApplication`과 프로젝트 등록 정보를 사용한다.
+  MCP의 실행 권한과 요청 기록은 `mcp_operations`에서 관리하고, 작업 상태 전이와 잠금은
+  `Pipeline`이 처리한다. 앱과 MCP는 등록 정보의 쓰기 잠금을 공유한다.
 - registry 명령은 프로젝트 설정이 선택되기 전에 `registry` 공개 API를 호출한다.
 - React renderer는 화면에 필요한 의미 단위의 typed method만 호출한다. Electron main은
   renderer payload를 shell command나 파일 접근으로 해석하지 않고 Python RPC로 중계한다.

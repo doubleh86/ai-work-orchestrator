@@ -49,6 +49,13 @@ test('Codex API key login uses a fixed channel and explicit arguments', async ()
   assert.deepEqual(calls, [['orchestrator:codex-auth-api-key', 'sk-fixture-only', 'key-request']]);
 });
 
+test('MCP setup reads the bundled path without forwarding renderer arguments', async () => {
+  const executable = 'C:\\Apps\\AI Work Orchestrator\\resources\\backend\\ai-orchestrator-backend.exe';
+  const { api, calls } = bridge(async () => executable);
+  assert.equal(await api.mcpConnectionCommand('untrusted path'), executable);
+  assert.deepEqual(calls, [['orchestrator:mcp-command']]);
+});
+
 test('message reservation uses fixed channels and forwards only explicit API arguments', async () => {
   const { api, calls } = bridge();
   const input = { id: 'message', projectName: 'A', runId: 'one', text: '다음 질문', profile: {} };

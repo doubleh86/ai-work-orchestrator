@@ -91,6 +91,9 @@ const allowedMethods = new Set<RpcMethod>([
 ]);
 
 const api: DesktopApi = {
+  mcpConnectionCommand() {
+    return ipcRenderer.invoke("orchestrator:mcp-command");
+  },
   openClaudeLogin() {
     return ipcRenderer.invoke("orchestrator:claude-login");
   },

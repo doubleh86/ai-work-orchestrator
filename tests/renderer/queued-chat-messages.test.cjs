@@ -45,7 +45,7 @@ function change(queue, id, action) {
 test('busy replies accept a durable queue, keep frozen ownership/profile, edit and cancel before dispatch', async t => {
   const gate = deferred();
   const h = harness(t, (method, params) => method === 'runs.sendPlanningMessage' && params.message === 'first' ? gate.promise : undefined);
-  const first = h.owners.request('runs.sendPlanningMessage', { projectName: 'B', runId: 'two', message: 'first' });
+  const first = h.owners.request('runs.sendPlanningMessage', { projectName: 'A', runId: 'one', message: 'first' });
   await tick();
   const item = input(), second = input({ text: '취소', message: '취소' });
   h.queue.enqueue(item); h.queue.enqueue(item); h.queue.enqueue(second);
@@ -55,7 +55,7 @@ test('busy replies accept a durable queue, keep frozen ownership/profile, edit a
   const edited={...h.queue.snapshot().items[0],id:randomUUID(),text:'수정한 요청',message:'수정한 요청'};
   change(h.queue, item.id, 'cancel');change(h.queue, second.id, 'cancel');h.queue.enqueue(edited);
   await tick(); assert.equal(h.calls.filter(([method]) => method === 'runs.sendPlanningMessage').length, 1);
-  gate.resolve({ id: 'two' }); await first;
+  gate.resolve({ id: 'one' }); await first;
   await until(() => h.queue.snapshot().items[0].status === 'sent');
   const sent = h.calls.filter(([method]) => method === 'runs.sendPlanningMessage').at(-1)[1];
   assert.equal(sent.projectName, 'A'); assert.equal(sent.runId, 'one'); assert.equal(sent.message, '수정한 요청');
@@ -76,6 +76,29 @@ test('queued messages send in order exactly once, and an already claimed item ca
   assert.deepEqual(h.calls.filter(([method]) => method === 'runs.sendPlanningMessage').map(([, params]) => params.message), ['one', 'two']);
 });
 
+test('a queued conversation can proceed while another conversation in the same project is answering', async t => {
+  const gate=deferred();
+  const h=harness(t,(method,params)=>method==='runs.sendPlanningMessage'&&params.runId==='one'&&params.message==='first'?gate.promise:undefined);
+  const first=h.owners.request('runs.sendPlanningMessage',{projectName:'A',runId:'one',message:'first'});
+  await tick();
+  h.queue.enqueue(input({runId:'one',text:'later',message:'later'}));
+  h.queue.enqueue(input({runId:'two',text:'other',message:'other'}));
+  await until(()=>h.queue.snapshot().items.find(item=>item.runId==='two').status==='sent');
+  assert.equal(h.queue.snapshot().items.find(item=>item.runId==='one').status,'queued');
+  gate.resolve({id:'one'});await first;
+  await until(()=>h.queue.snapshot().items.every(item=>item.status==='sent'));
+});
+
+test('queued Task generation in an empty plan stays a planning message instead of execution recovery', async t => {
+  const message='계획 생성이 안 되는 문제 고치고, 합의한 6개 작업으로 이어서 진행해줘';
+  const h=harness(t);
+  h.controls.start=()=>assert.fail('empty planning cannot recover an execution Task');
+  h.queue.enqueue(input({text:message,message}));
+  await until(()=>h.queue.snapshot().items[0].status==='sent');
+  assert.equal(h.calls.filter(([method])=>method==='runs.sendPlanningMessage').length,1);
+  assert.equal(h.calls.find(([method])=>method==='runs.sendPlanningMessage')[1].message,message);
+});
+
 test('failed or interrupted owning replies pause successors; a failed different conversation does not pause this one', async t => {
   for (const interrupted of [false, true]) {
     const gate = deferred();
@@ -88,7 +111,7 @@ test('failed or interrupted owning replies pause successors; a failed different 
     await first; await tick(); assert.equal(h.queue.snapshot().items[0].status, 'paused');
     change(h.queue, queued.id, 'resume'); await until(() => h.queue.snapshot().items[0].status === 'sent');
   }
-  const gate = deferred(), h = harness(t, method => method === 'runs.sendPlanningMessage' && h.owners.snapshot().active?.runId === 'two' ? gate.promise : undefined);
+  const gate = deferred(), h = harness(t, (method, params) => method === 'runs.sendPlanningMessage' && params.runId === 'two' ? gate.promise : undefined);
   const first = h.owners.request('runs.sendPlanningMessage', { projectName: 'B', runId: 'two' }).catch(() => {});
   await tick(); h.queue.enqueue(input()); gate.reject(Error('B failed')); await first;
   await until(() => h.queue.snapshot().items[0].status === 'sent');

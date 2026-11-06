@@ -94,7 +94,7 @@ test('renderer requests the archived scope explicitly and preserves navigation d
   const app = readFileSync(join(root, 'desktop/renderer/src/App.tsx'), 'utf8');
   assert.match(app, /scope: "archived",\s*preferredRun: targetRunId,/);
   assert.match(app, /archiveRefresh: true,/);
-  assert.match(app, /const completionView = archiveCompletionView\(requestContext,/);
+  assert.match(app, /const completionView = targetSelected \? archiveCompletionView\(requestContext,/);
   assert.match(app, /archiveTransitionRef\.current = \{ projectName, runId: targetRunId \}/);
   assert.match(app, /setWorkbenchView\(completionView\)/);
   assert.match(app, /기록 보관 완료 · 목록을 다시 확인하지 못했습니다/);

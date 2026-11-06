@@ -1,6 +1,6 @@
 const { execFileSync, spawnSync } = require('node:child_process');
-const { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } = require('node:fs');
-const { join, resolve } = require('node:path');
+const { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } = require('node:fs');
+const { basename, join, resolve } = require('node:path');
 const { createHash } = require('node:crypto');
 const { copyPublicNotices } = require('./third_party_notices.cjs');
 
@@ -63,26 +63,71 @@ function verifyPackage(directory, version) {
   for (const file of required.filter((file) => file.endsWith('.exe'))) requireX64(file);
 }
 
+function writeArchive(python, directory, zip) {
+  run(python, ['-c', [
+    'import sys,zipfile', 'from pathlib import Path', 'source=Path(sys.argv[1]); target=Path(sys.argv[2])',
+    'with zipfile.ZipFile(target,"x",compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:',
+    '    for path in sorted(source.rglob("*")):',
+    '        if path.is_file(): archive.write(path,path.relative_to(source.parent))',
+    'with zipfile.ZipFile(target) as archive:', '    bad=archive.testzip()',
+    '    if bad: raise RuntimeError("Invalid ZIP entry: "+bad)',
+  ].join('\n'), directory, zip]);
+  const digest = createHash('sha256').update(readFileSync(zip)).digest('hex');
+  writeFileSync(`${zip}.sha256`, `${digest}  ${basename(zip)}\n`, 'utf8');
+  process.stdout.write(`Windows ZIP 빌드 완료: ${zip}\nSHA256: ${digest}\n`);
+}
+
+function writeMcpPackage(directory, backend, notices, info) {
+  cpSync(backend, directory, { recursive: true, errorOnExist: true, force: false });
+  mkdirSync(join(directory, 'licenses', 'codex'), { recursive: true });
+  for (const file of ['APP-LICENSE.txt', 'THIRD_PARTY_NOTICES.md', 'codex/LICENSE']) {
+    cpSync(join(notices, file), join(directory, 'licenses', file));
+  }
+  writeFileSync(join(directory, 'build-info.json'), JSON.stringify(info, null, 2) + '\n', 'utf8');
+  writeFileSync(join(directory, 'MCP 사용 안내.txt'), [
+    `${productName} MCP v${info.version} · Windows x64`, '',
+    '1. ZIP 전체를 로컬 폴더에 풀고 실행 파일과 _internal 폴더를 함께 유지하세요.',
+    '2. Codex의 ~/.codex/config.toml에 아래 블록을 넣으세요. 같은 이름이 있으면 그 블록을 교체하세요.',
+    '   command에는 압축을 푼 실행 파일의 전체 경로를 넣으세요. 경로 구분자로 /를 쓰면 됩니다.', '',
+    '[mcp_servers.orchestrator]', 'command = "C:/MCP/ai-orchestrator-backend.exe"', 'args = ["mcp"]', '',
+    '3. Codex를 다시 열고 “오케스트레이터에 등록된 프로젝트 보여줘”라고 요청하세요.', '',
+    '같은 Windows 사용자로 실행하면 오케스트레이터 앱과 같은 등록 프로젝트를 조회합니다.',
+    '프로젝트가 비어 있으면 먼저 오케스트레이터 앱에 프로젝트를 등록하세요.',
+    '기획서 연결, 작업 복구, 로컬 Main 반영이 필요하면 args = ["mcp", "--allow-write"]로 바꾸세요.',
+    '오래 걸리는 복구는 같은 블록에 tool_timeout_sec = 3600을 추가하세요.',
+    '다른 작업 PC에서는 그 PC에 ZIP을 풀고, 앱과 같은 사용자 계정의 사설망 SSH로 실행하세요.',
+    'MCP 실행에 Python 설치나 소스 다운로드는 필요하지 않습니다. Git과 작업별 빌드 도구는 별도로 준비하세요.', '',
+  ].join('\r\n'), 'utf8');
+}
+
 function main() {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows x64 Node.js에서만 portable ZIP을 빌드할 수 있습니다.');
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length === 1 && args[0] !== '--preview')) throw new Error('빌드 옵션은 --preview만 지원합니다.');
+  const preview = args.length === 1;
   const sourcePackage = require(join(root, 'package.json'));
   const version = sourcePackage.version;
   if (!/^\d+\.\d+\.\d+$/u.test(version)) throw new Error('Portable build requires a stable three-part product version');
-  const output = join(root, 'build', 'windows-x64', version);
+  const buildLabel = preview ? `${version}-preview-${Date.now()}` : version;
+  const output = join(root, 'build', 'windows-x64', buildLabel);
   requireNewOutput(output);
   const python = process.env.AI_ORCHESTRATOR_PYTHON?.trim() || join(root, '.venv', 'Scripts', 'python.exe');
   const details = JSON.parse(execFileSync(python, ['-c', [
     'import json,sys,importlib.metadata as m,PyInstaller,ai_orchestrator',
     'from codex_cli_bin import bundled_codex_path',
     'print(json.dumps(dict(python=sys.executable,product_version=ai_orchestrator.__version__,',
-    'sdk_version=m.version("openai-codex"),codex=str(bundled_codex_path()),packager_version=PyInstaller.__version__)))',
+    'sdk_version=m.version("openai-codex"),codex=str(bundled_codex_path()),packager_version=PyInstaller.__version__,mcp_version=m.version("mcp"))))',
   ].join('\n')], { cwd: root, encoding: 'utf8', windowsHide: true }));
   if (details.product_version !== version) throw new Error('Python backend and desktop product versions differ');
   if (details.packager_version !== '6.22.3') throw new Error('빌드 환경에 pyinstaller==6.22.3을 설치하세요.');
   const electron = join(root, 'node_modules', 'electron', 'dist');
   requireX64(join(electron, 'electron.exe')); requireX64(details.python); requireX64(details.codex);
   const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
-  run('git', ['diff', '--quiet', 'HEAD', '--', 'desktop', 'src', 'scripts', 'package.json', 'package-lock.json', 'pyproject.toml']);
+  if (!preview) {
+    const changes = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--',
+      'desktop', 'src', 'scripts', 'package.json', 'package-lock.json', 'pyproject.toml'], { cwd: root, encoding: 'utf8', windowsHide: true });
+    if (changes.trim()) throw new Error('릴리즈 빌드에는 커밋된 제품 소스가 필요합니다. 로컬 검증에는 --preview를 사용하세요.');
+  }
   const npm = process.env.npm_execpath;
   if (!npm || !existsSync(npm)) throw new Error('npm run package:win-x64로 실행하세요.');
   run(process.execPath, [npm, 'run', 'build']);
@@ -95,11 +140,17 @@ function main() {
   mkdirSync(config);
   run(python, [
     '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--noupx', '--name', 'ai-orchestrator-backend',
-    '--paths', join(root, 'src'), '--collect-all', 'openai_codex', '--collect-all', 'codex_cli_bin',
-    '--recursive-copy-metadata', 'openai-codex', '--copy-metadata', 'ai-work-orchestrator',
+    '--paths', join(root, 'src'), '--collect-all', 'openai_codex', '--collect-all', 'codex_cli_bin', '--collect-data', 'mcp',
+    '--recursive-copy-metadata', 'openai-codex', '--recursive-copy-metadata', 'mcp', '--copy-metadata', 'ai-work-orchestrator',
     '--distpath', backendDist, '--workpath', join(output, 'pyinstaller-work'), '--specpath', output,
     join(root, 'scripts', 'desktop_backend.py'),
   ], { ...process.env, PYINSTALLER_CONFIG_DIR: config });
+  const backend = join(backendDist, 'ai-orchestrator-backend');
+  const internal = join(backend, '_internal');
+  for (const name of readdirSync(internal)) {
+    if (name.endsWith('.dist-info')) rmSync(join(internal, name, 'direct_url.json'), { force: true });
+  }
+  run(python, [join(root, 'scripts', 'smoke_packaged_mcp.py'), join(backend, 'ai-orchestrator-backend.exe')]);
   cpSync(electron, stage, { recursive: true, errorOnExist: true, force: false });
   renameSync(join(stage, 'electron.exe'), join(stage, `${productName}.exe`));
   const app = join(stage, 'resources', 'app');
@@ -108,14 +159,17 @@ function main() {
   cpSync(join(root, 'dist', 'renderer'), join(app, 'dist', 'renderer'), { recursive: true });
   writeFileSync(join(app, 'package.json'), JSON.stringify({ name: sourcePackage.name, version, main: sourcePackage.main }, null, 2) + '\n', 'utf8');
   copyPublicNotices(root, join(app, 'licenses'));
-  cpSync(join(backendDist, 'ai-orchestrator-backend'), join(stage, 'resources', 'backend'), { recursive: true });
+  cpSync(backend, join(stage, 'resources', 'backend'), { recursive: true });
   const info = { product: productName, version, platform: 'win32', architecture: 'x64', source_commit: sourceCommit,
-    codex_sdk: details.sdk_version, pyinstaller: details.packager_version, electron: require(join(root, 'node_modules', 'electron', 'package.json')).version };
-  writeFileSync(join(stage, 'build-info.json'), JSON.stringify(info, null, 2) + '\n', 'utf8');
+    source_tree: preview ? 'working-tree-preview' : 'committed', codex_sdk: details.sdk_version,
+    mcp_sdk: details.mcp_version, pyinstaller: details.packager_version };
+  const electronVersion = require(join(root, 'node_modules', 'electron', 'package.json')).version;
+  writeFileSync(join(stage, 'build-info.json'), JSON.stringify({ ...info, electron: electronVersion }, null, 2) + '\n', 'utf8');
   writeFileSync(join(stage, '사용 안내.txt'), [
     `${productName} v${version} · Windows x64 portable`, '',
     'ZIP 전체를 쓰기 가능한 로컬 폴더에 압축 해제하고 AI Work Orchestrator.exe를 실행하세요.',
     'Python, Node.js, 별도 Codex CLI 설치는 필요하지 않습니다. Codex 로그인은 앱의 AI 연결에서 직접 진행하세요.',
+    '앱 설정의 MCP 연결에서 Codex에 붙여 넣을 설정을 복사할 수 있습니다.',
     'Git for Windows는 설치하고 PATH에 등록해야 합니다. 대상 프로젝트의 .NET 등 빌드 도구도 별도로 준비하세요.',
     '사용자 설정·프로젝트 목록·인증은 기존 사용자 설정 위치에 저장합니다. 실행 폴더에 인증을 넣지 않습니다.',
     '실행 파일과 resources 폴더를 함께 유지하세요. 기존 작업 폴더 위에 덮어쓰지 말고 새 버전 폴더로 교체하세요.',
@@ -124,18 +178,10 @@ function main() {
   ].join('\r\n'), 'utf8');
   verifyPackage(stage, version);
   renameSync(stage, final);
-  const zip = join(output, `ai-work-orchestrator-v${version}-win-x64.zip`);
-  run(python, ['-c', [
-    'import sys,zipfile', 'from pathlib import Path', 'source=Path(sys.argv[1]); target=Path(sys.argv[2])',
-    'with zipfile.ZipFile(target,"x",compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:',
-    '    for path in sorted(source.rglob("*")):',
-    '        if path.is_file(): archive.write(path,path.relative_to(source.parent))',
-    'with zipfile.ZipFile(target) as archive:', '    bad=archive.testzip()',
-    '    if bad: raise RuntimeError("Invalid ZIP entry: "+bad)',
-  ].join('\n'), final, zip]);
-  const digest = createHash('sha256').update(readFileSync(zip)).digest('hex');
-  writeFileSync(`${zip}.sha256`, `${digest}  ${zip.split(/[\\/]/u).at(-1)}\n`, 'utf8');
-  process.stdout.write(`Windows portable 빌드 완료: ${zip}\nSHA256: ${digest}\n`);
+  const mcpDirectory = join(output, `${productName} MCP`);
+  writeMcpPackage(mcpDirectory, backend, join(app, 'licenses'), { ...info, product: `${productName} MCP` });
+  writeArchive(python, final, join(output, `ai-work-orchestrator-v${buildLabel}-win-x64.zip`));
+  writeArchive(python, mcpDirectory, join(output, `ai-work-orchestrator-mcp-v${buildLabel}-win-x64.zip`));
 }
 
 if (require.main === module) {

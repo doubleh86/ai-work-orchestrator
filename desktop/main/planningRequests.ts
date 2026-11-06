@@ -6,19 +6,19 @@ import { PLANNING_REQUEST_METHODS } from "../shared/planningRequests";
 export const PLANNING_OWNER_METHODS = new Set<RpcMethod>(PLANNING_REQUEST_METHODS);
 interface Bridge {
   request<T>(method: RpcMethod, params: RpcParams): Promise<T>;
-  restartPlanning(): Promise<void>;
+  requestPlanning?<T>(method: RpcMethod, params: RpcParams): Promise<T>;
+  restartPlanning(projectName?: string, runId?: string): Promise<void>;
 }
 interface OwnedRequest {
-  owner: PlanningRequestOwner; settled: boolean; registered: Promise<void>; registrationSaved: boolean; generation: number;
+  owner: PlanningRequestOwner; settled: boolean; registered: Promise<void>; registrationSaved: boolean;
   interruption?: { promise: Promise<void>; resolve(): void; reject(error: unknown): void };
   completion?: "succeeded" | "failed";
 }
 
-/** One Planning bridge slot, independent of renderer selection and lifetime. */
+/** One owner per conversation, independent of renderer selection and lifetime. */
 export class PlanningRequests {
-  private active?: OwnedRequest;
+  private readonly active = new Map<string, OwnedRequest>();
   private recent: PlanningRequestOwner[] = [];
-  private generation = 0;
   private readonly listeners = new Set<(owner: PlanningRequestOwner) => void>();
   constructor(private readonly bridge: Bridge) {}
 
@@ -28,20 +28,27 @@ export class PlanningRequests {
   }
 
   snapshot(): PlanningRequestsSnapshot {
-    return { active: this.active ? { ...this.active.owner } : undefined, recent: this.recent.map(item => ({ ...item })) };
+    const activeRequests = [...this.active.values()].map(item => ({ ...item.owner }));
+    return { active: activeRequests[0], activeRequests, recent: this.recent.map(item => ({ ...item })) };
   }
 
   async request<T>(method: RpcMethod, params: RpcParams): Promise<T> {
-    if (!PLANNING_OWNER_METHODS.has(method)) return this.bridge.request<T>(method, params);
-    if (this.active) throw new Error(`planning_capacity_busy: 다른 대화에서 AI가 응답 중입니다 · ${this.active.owner.projectName}`);
+    if (!PLANNING_OWNER_METHODS.has(method)) {
+      if (method === "projects.remove" && [...this.active.values()].some(item => item.owner.projectName === params.projectName)) {
+        throw new Error("이 프로젝트의 AI 요청이 끝난 뒤 등록을 해제할 수 있습니다.");
+      }
+      return this.bridge.request<T>(method, params);
+    }
+    const key = JSON.stringify([params.projectName || "", params.runId || ""]);
+    if (this.active.has(key)) throw new Error("planning_capacity_busy: 이 대화에서 AI가 응답 중입니다.");
     const owner: PlanningRequestOwner = {
       projectName: String(params.projectName || ""), runId: String(params.runId || ""),
       requestId: method !== "runs.decideProjectChat" && typeof params.requestId === "string" ? params.requestId : randomUUID(),
       kind: method === "runs.sendPlanningMessage" || method === "runs.decideProjectChat" ? "chat" : method === "runs.runPlanning" || method === "runs.start" ? "plan" : "replan",
       method, phase: "accepted", startedAt: Date.now(), error: "",
     };
-    const current: OwnedRequest = { owner, settled: false, registered: Promise.resolve(), registrationSaved: false, generation: this.generation };
-    this.active = current;
+    const current: OwnedRequest = { owner, settled: false, registered: Promise.resolve(), registrationSaved: false };
+    this.active.set(key, current);
     try {
       if (owner.runId) {
         current.registered = this.bridge.request<{ kind: PlanningRequestKind }>("runs.beginPlanningRequest", {
@@ -52,7 +59,7 @@ export class PlanningRequests {
       }
       if (owner.phase === "stopping") throw new Error("기획 요청을 중단했습니다.");
       owner.phase = "running";
-      const result = await this.bridge.request<T>(method, params);
+      const result = await (this.bridge.requestPlanning ? this.bridge.requestPlanning<T>(method, params) : this.bridge.request<T>(method, params));
       current.settled = true;
       current.completion = "succeeded";
       if (!this.isStopping(current)) {
@@ -79,7 +86,8 @@ export class PlanningRequests {
   private isStopping(current: OwnedRequest): boolean { return current.owner.phase === "stopping"; }
 
   async interrupt<T>(projectName: string, runId: string, requestId: string): Promise<T | null> {
-    const current = this.active;
+    const key = JSON.stringify([projectName, runId]);
+    const current = this.active.get(key);
     if (!requestId) throw new Error("request_target_required: 중단할 요청 ID가 필요합니다.");
     if (!current || current.owner.projectName !== projectName || current.owner.runId !== runId || current.owner.requestId !== requestId) {
       if (this.recent.some(item => item.projectName === projectName && item.runId === runId && item.requestId === requestId
@@ -94,10 +102,9 @@ export class PlanningRequests {
     current.owner.phase = "stopping";
     try {
       await current.registered;
-      if (this.active !== current || current.generation !== this.generation) throw new Error("target_changed: 대화 요청이 변경됐습니다.");
+      if (this.active.get(key) !== current) throw new Error("target_changed: 대화 요청이 변경됐습니다.");
       if (current.settled) { await this.finish(current, current.completion || "interrupted"); resolve(); return null; }
-      await this.bridge.restartPlanning();
-      this.generation++;
+      await this.bridge.restartPlanning(projectName, runId);
       await this.finish(current, "interrupted");
       resolve();
       return current.owner.runId ? this.bridge.request<T>("runs.get", { projectName, runId }) : null;
@@ -121,7 +128,8 @@ export class PlanningRequests {
       throw error;
     }
     current.owner.phase = phase;
-    if (this.active === current) this.active = undefined;
+    const key = JSON.stringify([current.owner.projectName, current.owner.runId]);
+    if (this.active.get(key) === current) this.active.delete(key);
     this.recent = [...this.recent.filter(item => item.requestId !== current.owner.requestId), { ...current.owner }].slice(-30);
     for (const listener of this.listeners) listener({ ...current.owner });
   }

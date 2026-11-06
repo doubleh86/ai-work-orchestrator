@@ -282,7 +282,7 @@ test('the shared existing-project apply callback also blocks execution without o
   const calls = [];
   const context = { react_1: { useCallback: fn => fn }, planningPreviewRequest_1: localRequire('./planningPreviewRequest.js'),
     selectedProjectName: 'project', selectedRun: { id: 'group', repository_intent: 'existing_structure', active_step: 'agent_execution', tasks: [] },
-    planDirty: false, replaceRun() {}, setNotice: text => calls.push(['notice', text]),
+    planDirty: false, replaceRun() {}, sendPlanningMessage: () => assert.fail('existing execution cannot create initial Tasks'), setNotice: text => calls.push(['notice', text]),
     setPlanningPreviewTarget: target => calls.push(['preview', target.runId]),
     window: { orchestrator: { request: () => assert.fail('entry cannot request work') } } };
   context.beginTaskPlanning = () => () => {};
@@ -292,6 +292,18 @@ test('the shared existing-project apply callback also blocks execution without o
   await context.apply();assert.deepEqual(calls, [['preview', 'group']]);
   calls.length = 0;context.selectedRun.planning_apply_requests = [];context.selectedRun.active_step = null;
   await context.apply();assert.deepEqual(calls, [['preview', 'group']]);
+});
+
+test('initial Task creation uses the existing chat pipeline once and retains unsaved plan edits', async () => {
+  const callback=source.match(/^    const applyPlanningConversation = [\s\S]*?(?=^    const runGreenfieldAction =)/m);
+  const sent=[],errors=[];
+  const context={react_1:{useCallback:fn=>fn},planningPreviewRequest_1:localRequire('./planningPreviewRequest.js'),
+    selectedProjectName:'project',selectedRun:{id:'group',stage:'needs_clarification',repository_intent:'existing_structure',tasks:[]},
+    planDirty:false,beginTaskPlanning(){},replaceRun(){},sendPlanningMessage:async text=>sent.push(text),setError:text=>errors.push(text),
+    setPlanningPreviewTarget:()=>assert.fail('first Tasks do not edit an existing plan preview')};
+  runInNewContext(`${callback[0]}\nthis.apply=applyPlanningConversation;`,context);
+  await context.apply();assert.deepEqual(sent,['논의한 내용으로 Task 만들어줘']);
+  context.planDirty=true;await context.apply();assert.equal(sent.length,1);assert.match(errors.at(-1),/미저장 계획/);
 });
 
 test('waiting for a new answer blocks old answer and failed or queued applies are never called complete', () => {
@@ -749,7 +761,7 @@ test('both chat composers ignore IME Ctrl/Cmd Enter and accept a fresh key after
 });
 
 test('a busy reply offers reservation beside interruption and the shortcut obeys IME composition', () => {
-  for (const busy of [{busyAction:'runs.sendPlanningMessage',interruptible:true}, {planningCapacityOwner:'B'}]) {
+  for (const busy of [{busyAction:'runs.sendPlanningMessage',interruptible:true}, {executionPhase:'working'}]) {
     const actions=[];
     const current=workbench({}, {chatFirst:true,message:'끝나면 다음 요청',...busy,onQueue:()=>actions.push('queue'),onInterrupt:()=>actions.push('stop')});
     const reserve=nodes(current.tree).find(node=>node.type==='button' && text(node)==='예약');
@@ -764,6 +776,25 @@ test('a busy reply offers reservation beside interruption and the shortcut obeys
     input.props.onKeyDown(key({keyCode:13})); assert.deepEqual(actions,['queue','queue']);
     assert.equal(nodes(current.tree).some(node=>node.type==='button'&&text(node)==='전송'),false);
   }
+});
+
+test('one conversation answering never changes another same-project composer into a reservation or blocks a new chat', () => {
+  const {planningRequestFor}=localRequire('../../shared/planningRequests.js');
+  const snapshot={activeRequests:[{projectName:'project',runId:'answering',method:'runs.sendPlanningMessage',phase:'running'}],recent:[]};
+  const currentOwner=planningRequestFor(snapshot,'project','other');
+  const other=workbench({id:'other'}, {chatFirst:true,message:'다른 대화의 질문',busyAction:currentOwner?.method||'',interruptible:Boolean(currentOwner),
+    onQueue:()=>assert.fail('another conversation does not require reservation')});
+  const send=nodes(other.tree).find(node=>node.type==='button'&&text(node)==='전송');
+  assert.ok(send);assert.equal(send.props.disabled,false);send.props.onClick();assert.deepEqual(other.calls,['send']);
+  assert.equal(nodes(other.tree).some(node=>node.type==='button'&&text(node)==='예약'),false);
+  const fresh=components.PlanningWorkbench({...other.props,run:undefined,request:'새 대화의 요청',
+    capabilities:{repository_maturity:{kind:'existing_code',evidence:[],ignored_roots:[],detected_application_roots:[],diagnostics:[],inspected_file_count:0}},
+    onStart:()=>other.calls.push('new-plan')});
+  const start=nodes(fresh).find(node=>node.type==='button'&&node.props.className?.includes('chat-composer__send'));
+  assert.equal(start.props.disabled,false);start.props.onClick();assert.deepEqual(other.calls,['send','new-plan']);
+  const own=planningRequestFor(snapshot,'project','answering');
+  const answering=workbench({id:'answering'},{chatFirst:true,message:'현재 대화의 후속 질문',busyAction:own.method,interruptible:true,onQueue(){}});
+  assert.ok(nodes(answering.tree).some(node=>node.type==='button'&&text(node)==='예약'),'only the answering conversation retains its queue');
 });
 
 test('queue rows are scoped to the selected conversation and waiting items cannot be jumped by normal sends', () => {
@@ -788,7 +819,8 @@ test('reservation clears only the acknowledged original draft, keeps newer input
     let finish;const calls=[],errors=[];
     const context={react_1:{useCallback:fn=>fn},selectedProjectName:'project',selectedRun:{id:'group',tasks:[]},
       selectedPlanningProfile:{agent_id:'claude',model:'opus'},planningMessage:'다음 질문',planningReasoning:'high',taskDrafts:[],planDirty:false,nextExecutionProfileDirty:false,
-      directionChangeDrafts:drafts,planningRequests:{active:{requestId:'first-reply'}},queueSubmittingRef:{current:false},queuedSubmissionRef:{current:undefined},
+      directionChangeDrafts:drafts,planningRequests:{active:{projectName:'project',runId:'group',requestId:'first-reply'}},queueSubmittingRef:{current:false},queuedSubmissionRef:{current:undefined},
+      planningRequests_1:localRequire('../../shared/planningRequests.js'),
       selectedContextRef:{current:{projectName:'project',runId:'group'}},setQueueSubmitting(){},setPlanningRequests(){},setError:value=>errors.push(value),
       chatTaskRecovery_1:localRequire('./chatTaskRecovery.js'),runExecutionControl_1:localRequire('./runExecutionControl.js'),errorMessage:error=>error.message,crypto:require('node:crypto').webcrypto,
       runContextMatches:(a,b,c,d)=>a===c&&b===d,

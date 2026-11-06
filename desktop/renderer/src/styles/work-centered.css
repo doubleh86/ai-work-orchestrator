@@ -244,6 +244,7 @@
 .work-settings__card p, .work-settings__card small, .work-settings__card ul { color: var(--color-text-muted); }
 .work-settings__card .button { max-width: 100%; white-space: normal; }
 .work-settings__card ul { margin: 0; padding-left: var(--space-4); }
+.mcp-connection-config { box-sizing: border-box; width: 100%; margin: 0; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-panel); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .nvidia-connection { display: grid; gap: var(--space-3); width: 100%; min-width: 0; border-block-start: 1px solid var(--color-border); padding-block-start: var(--space-3); }
 .nvidia-connection h4 { margin: 0; }
 .nvidia-connection__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }

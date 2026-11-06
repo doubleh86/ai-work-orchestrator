@@ -45,6 +45,25 @@ test('new request defaults balanced and mode changes update only the session dra
   assert.equal(PlanningEffortPicker({ mode: 'focused', manual: true, disabled: true, onChange() {} }).props.disabled, true);
 });
 
+test('multiple new chats in one project keep separate text, model, reasoning and source without AI or legacy-draft changes', () => {
+  const drafts=new PlanningRequestDrafts();let changes=0;
+  const unsubscribe=drafts.subscribe(()=>changes++);
+  drafts.update('project',{request:'기존 프로젝트 초안',profileKey:'default-model',effortMode:'economy'});
+  drafts.createChat('project','a','Plans/A');drafts.createChat('project','b','Plans/B');
+  drafts.update('project',{request:'A 요청',profileKey:'model-a',reasoning:'high',profileManual:true},'a');
+  drafts.update('project',{request:'B 요청',mode:'auto',reasoning:'low',effortMode:'focused'},'b');
+  const a=drafts.load('project','','','a'),b=drafts.load('project','','','b');
+  assert.equal(a.request,'A 요청');assert.equal(a.path,'Plans/A');assert.equal(a.profileKey,'model-a');assert.equal(a.reasoning,'high');
+  assert.equal(b.request,'B 요청');assert.equal(b.path,'Plans/B');assert.equal(b.profileKey,'default-model');assert.equal(b.reasoning,'low');
+  assert.equal(b.mode,'auto');assert.equal(b.effortMode,'focused');assert.equal(drafts.load('project').request,'기존 프로젝트 초안');
+  assert.deepEqual(Array.from(drafts.chatSnapshot(),chat=>chat.title),['B 요청','A 요청']);
+  drafts.setChatPreparing('project','a',true);assert.equal(drafts.chatSnapshot().find(chat=>chat.id==='a').preparing,true);
+  drafts.removeChat('other','a');assert.equal(drafts.chatSnapshot().length,2);
+  drafts.removeChat('project','a');assert.deepEqual(Array.from(drafts.chatSnapshot(),chat=>chat.id),['b']);
+  assert.equal(drafts.load('project','','','b').request,'B 요청');assert.ok(changes>=5);unsubscribe();
+  const before=changes;drafts.removeChat('project','b');assert.equal(changes,before);
+});
+
 test('request/profile/mode drafts survive returning from another project or group and are isolated', () => {
   const drafts = new PlanningRequestDrafts();
   drafts.load('project-a', 'Plans');

@@ -37,6 +37,15 @@ macOS/Linux에서는 `python3 -m venv .venv`로 가상환경을 만들고,
 Push·Main 반영·배포는 사용자 승인 후 진행합니다.
 CLI 명령은 `ai-orchestrator --help`에서 확인할 수 있습니다.
 
+## Codex에서 MCP 연결
+
+설치형 앱은 **설정 → MCP 연결 → Codex 설정 복사**에서 연결 정보를 제공합니다.
+설정을 Codex의 `~/.codex/config.toml`에 넣고 Codex를 다시 열면 같은 사용자 계정의
+프로젝트를 조회할 수 있습니다. 작업 변경 권한은 설정에서 선택합니다.
+
+소스로 연결하려면 `python -m pip install -e '.[mcp]'`로 준비한 뒤
+`codex mcp add orchestrator -- ai-orchestrator mcp`로 등록합니다.
+
 ## 문서
 
 - [구조와 설계](Docs/Architecture.md)

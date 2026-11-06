@@ -140,6 +140,7 @@ export type ApprovedRpcMethod = (typeof APPROVED_RPC_METHODS)[number];
 export type PathSelectionKind = "repository" | "config" | "planningSource" | "dotnet";
 
 export interface DesktopApi {
+  mcpConnectionCommand(): Promise<string | null>;
   openClaudeLogin(): Promise<boolean>;
   nvidiaCredentialStatus(): Promise<import("./nvidiaCredentials").NvidiaCredentialStatus>;
   saveNvidiaCredential(key: string, options?: import("./nvidiaCredentials").NvidiaCredentialOptions): Promise<import("./nvidiaCredentials").NvidiaCredentialStatus>;

@@ -33,6 +33,8 @@ function host(kind = 'docs_only', savedIntent = '') {
   const context = {
     react_1: { useCallback: (fn) => fn }, planningRequestDrafts_1: draftModule,
     planningStart_1: require(join(output, 'renderer/src/planningStart.js')), planningStartPendingRef: { current: false },
+    planningPreparationsRef: { current: new Set() }, selectedChatDraftRef: { current: { projectName:'empty',id:'' } },
+    setChatDraftSelection(projectName,id=''){context.selectedChatDraftRef.current={projectName,id};},
     planningRequestDrafts: { current: drafts }, selectedContextRef: { current: { projectName: 'empty', runId: '' } },
     projectCapabilitiesRequestRef: { current: 0 }, editedPlanningProfileContext: { current: '' },
     setRepositoryIntent: (value) => { state.intent = typeof value === 'function' ? value(state.intent) : value; },

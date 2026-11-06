@@ -20,6 +20,7 @@ execFileSync(process.execPath, [resolve(dirname(ts), require(ts).bin.tsc), '--ig
 const { projectWork, initialWorkBucket } = require(join(output, 'renderer/src/projectWorkPresentation.js'));
 const { canContinueTaskRetry } = require(join(output, 'renderer/src/taskContinuation.js'));
 const { TaskFlow } = require(join(output, 'renderer/src/TaskFlow.js'));
+const { mcpConnectionConfig } = require(join(output, 'renderer/src/McpConnectionGuide.js'));
 const { TaskStatusOverview, TaskTechnicalRecord, taskDialogPresentation, TaskDetailSummary } = require(join(output, 'renderer/src/TaskStatusOverview.js'));
 const appFile = join(output, 'renderer/src/App.js');
 const appComponents = {};
@@ -34,6 +35,16 @@ runInNewContext(`${readFileSync(appFile, 'utf8')}\nexports.TaskDependencyLinks =
 });
 const operationsComponents = {};
 const appRequire = createRequire(appFile);
+
+test('MCP setup preserves a Windows installation path and only opts in to writes explicitly', () => {
+  const executable = 'C:\\내 앱\\AI Work Orchestrator\\resources\\backend\\ai-orchestrator-backend.exe';
+  const [section, command, args] = mcpConnectionConfig(executable, false).split('\n');
+  assert.equal(section, '[mcp_servers.orchestrator]');
+  assert.equal(JSON.parse(command.slice('command = '.length)), executable);
+  assert.deepEqual(JSON.parse(args.slice('args = '.length)), ['mcp']);
+  const write = mcpConnectionConfig(executable, true);
+  assert.match(write, /args = \["mcp","--allow-write"\]\ntool_timeout_sec = 3600$/);
+});
 runInNewContext(`${readFileSync(appFile, 'utf8')}\nexports.OperationsWorkbench = OperationsWorkbench;`, {
   exports: operationsComponents,
   require: (id) => id === 'react' ? { ...appRequire(id), useState: (value) => [value, () => {}], useEffect: () => {} } : appRequire(id),
@@ -1351,6 +1362,162 @@ function appCallback(name, context) {
   runInNewContext(`${match[0]}\nthis.tested = ${name};`, context); return context.tested;
 }
 
+function treeDeletionFixture() {
+  const calls=[],selection=[];
+  const target=summary('target'),other=summary('other');
+  const context={selectedProjectName:'Project 0',deleteRequestPendingRef:{current:false},archiveRequestPendingRef:{current:false},
+    selectedContextRef:{current:{projectName:'Project 0',runId:'target'}},archiveScopeRef:{current:'active'},newWorkProjectRef:{current:''},
+    authoritativeArchivesRef:{current:{'Project 1\0target':target}},runDetailRequestRef:{current:1},
+    runSummaryCacheRef:{current:{'Project 0':{active:[target,other],archived:[]},'Project 1':{active:[target,other],archived:[target]}}},
+    setDeletingProjectName:value=>calls.push(['projectBusy',value]),setDeletingRunId:value=>calls.push(['busy',value]),
+    setError:value=>calls.push(['error',value]),setNotice:value=>calls.push(['notice',value]),
+    setRunSummaryCache:value=>calls.push(['cache',value]),setSelectedRunId:value=>selection.push(['run',value]),
+    setSelectedRun:value=>selection.push(['detail',value]),setSelectedRunProjectName:value=>selection.push(['project',value]),
+    setSelectedTaskId:value=>selection.push(['task',value]),setSelectedTaskIds:value=>selection.push(['tasks',Array.from(value)]),
+    setWorkbenchView:value=>selection.push(['view',value]),setArchiveScope:value=>selection.push(['scope',value]),
+    loadRuns:async options=>calls.push(['list',{...options}]),replaceRun:(project,run)=>calls.push(['replace',project,run.id]),
+    runDeletion_1:require(join(output,'renderer/src/runDeletion.js')),errorMessage:error=>error.message,
+    window:{orchestrator:{request:async(method,params)=>{calls.push([method,{...params}]);return method==='locks.get'?{state:'unlocked'}:{id:params.runId};},
+      approve:async(method,params)=>{calls.push([method,{...params}]);return{deleted:true};}}}};
+  return{context,calls,selection,remove:appCallback('deleteRun',context)};
+}
+
+test('tree deletion removes only the explicit project from both caches and preserves another selected conversation',async()=>{
+  const f=treeDeletionFixture();f.context.archiveScopeRef.current='archived';
+  await f.remove('target','Project 1','active');
+  assert.deepEqual(f.calls.find(call=>call[0]==='locks.get'),['locks.get',{projectName:'Project 1',runId:'target'}]);
+  assert.deepEqual(f.calls.find(call=>call[0]==='runs.delete'),['runs.delete',{projectName:'Project 1',runId:'target'}]);
+  const cache=f.context.runSummaryCacheRef.current;
+  assert.deepEqual(Array.from(cache['Project 0'].active,item=>item.id),['target','other']);
+  assert.deepEqual(Array.from(cache['Project 1'].active,item=>item.id),['other']);assert.equal(cache['Project 1'].archived.length,0);
+  assert.equal(f.context.authoritativeArchivesRef.current['Project 1\0target'],undefined);
+  assert.deepEqual(f.selection,[]);
+  assert.deepEqual(f.calls.find(call=>call[0]==='list'),['list',{projectName:'Project 1',scope:'active',selectFirst:false}]);
+});
+
+test('deleting the currently viewed conversation clears its details but a move during confirmation preserves the destination',async()=>{
+  for(const move of [false,true]){
+    const f=treeDeletionFixture();let confirm,entered;
+    const ready=new Promise(resolve=>{entered=resolve;});
+    f.context.window.orchestrator.approve=()=>new Promise(resolve=>{confirm=resolve;entered();});
+    const pending=f.remove('target');await ready;
+    if(move)f.context.selectedContextRef.current={projectName:'Project 1',runId:'target'};
+    confirm({deleted:true});await pending;
+    if(move)assert.deepEqual(f.selection,[]);
+    else{
+      assert.equal(f.context.selectedContextRef.current.runId,'');assert.equal(f.context.newWorkProjectRef.current,'Project 0');
+      assert.ok(f.selection.some(call=>call[0]==='view'&&call[1]==='planning'));
+      assert.ok(f.selection.some(call=>call[0]==='run'&&call[1]===''));
+    }
+  }
+});
+
+test('blocked or cancelled tree deletion retains all records and failed deletion cannot select a different group',async()=>{
+  for(const scenario of ['busy','cancel','failed']){
+    const f=treeDeletionFixture();const before=JSON.stringify(f.context.runSummaryCacheRef.current);
+    if(scenario==='busy')f.context.window.orchestrator.request=async()=>({state:'active'});
+    if(scenario==='cancel')f.context.window.orchestrator.approve=async()=>null;
+    if(scenario==='failed')f.context.window.orchestrator.approve=async()=>{throw Error('deletion failed');};
+    await f.remove('target');
+    assert.equal(JSON.stringify(f.context.runSummaryCacheRef.current),before);assert.deepEqual(f.selection,[]);
+    assert.equal(f.context.deleteRequestPendingRef.current,false);
+    assert.deepEqual(f.calls.at(-2),['busy','']);assert.deepEqual(f.calls.at(-1),['projectBusy','']);
+    if(scenario==='failed')assert.equal(f.calls.find(call=>call[0]==='list')[1].selectFirst,false);
+    else assert.equal(f.calls.some(call=>call[0]==='list'),false);
+    if(scenario==='busy')assert.equal(f.calls.some(call=>call[0]==='runs.delete'),false);
+  }
+});
+
+test('rapid deletion and simultaneous archive requests cannot dispatch duplicate mutations',async()=>{
+  const f=treeDeletionFixture();let lock;
+  f.context.window.orchestrator.request=(method,params)=>{f.calls.push([method,params]);return new Promise(resolve=>{lock=resolve;});};
+  const pending=f.remove('target');await f.remove('other','Project 1');
+  assert.equal(f.calls.filter(call=>call[0]==='locks.get').length,1);lock({state:'unlocked'});await pending;
+  const blocked=treeDeletionFixture();blocked.context.archiveRequestPendingRef.current=true;
+  await blocked.remove('target');assert.deepEqual(blocked.calls,[]);
+  const archive=treeArchiveFixture();archive.context.deleteRequestPendingRef.current=true;
+  await archive.archive('target');assert.deepEqual(archive.calls,[]);
+});
+
+function treeArchiveFixture(overrides = {}) {
+  const calls = [], selection = [];
+  const result = { id: 'target', archive: { cleanup_status: 'completed' } };
+  const plan = { can_archive: true, expected_revision: 7, fingerprint: 'fresh-plan', cleanup_targets: [{ id: 'workspace' }] };
+  const context = { selectedProjectName: 'Project 0', archiveRequestPendingRef: { current: false }, deleteRequestPendingRef: { current: false },
+    selectedContextRef: { current: { projectName: 'Project 0', runId: 'viewed' } }, archiveScopeRef: { current: 'active' },
+    archiveTransitionRef: { current: undefined }, setArchivingProjectName: value => calls.push(['projectBusy', value]),
+    setArchivingRunId: value => calls.push(['busy', value]), setError: value => calls.push(['error', value]),
+    setNotice: value => calls.push(['notice', value]), setArchiveScope: value => selection.push(['scope', value]),
+    setSelectedRunId: value => selection.push(['run', value]), setWorkbenchView: value => selection.push(['view', value]),
+    replaceRun: (project, run, select) => calls.push(['replace', project, run.id, select]),
+    loadRuns: async options => calls.push(['list', { ...options }]), crypto: { randomUUID: () => 'request-id' },
+    runArchiveNavigation_1: require(join(output, 'renderer/src/runArchiveNavigation.js')),
+    archiveCleanupReason: () => '작업공간 정리 확인 필요', errorMessage: error => error.message,
+    window: { orchestrator: { request: async (method, params) => { calls.push([method, { ...params }]); return plan; },
+      approve: async (method, params) => { calls.push([method, { ...params }]); return result; } } }, ...overrides };
+  return { context, calls, selection, plan, result, archive: appCallback('archiveRun', context) };
+}
+
+test('tree archive uses its explicit project and current approval plan without replacing another selected group', async () => {
+  for (const project of ['Project 0', 'Project 1']) {
+    const fixture = treeArchiveFixture();
+    await fixture.archive('target', project);
+    assert.deepEqual(fixture.calls.find(call => call[0] === 'runs.archivePlan'), ['runs.archivePlan', { projectName: project, runId: 'target' }]);
+    assert.deepEqual(fixture.calls.find(call => call[0] === 'runs.archive'), ['runs.archive', {
+      projectName: project, runId: 'target', expectedRevision: 7, fingerprint: 'fresh-plan', requestId: 'request-id', cleanupTargetCount: 1,
+    }]);
+    assert.deepEqual(fixture.calls.find(call => call[0] === 'replace'), ['replace', project, 'target', false]);
+    assert.deepEqual(fixture.selection, []);
+    const listing = fixture.calls.find(call => call[0] === 'list')[1];
+    assert.equal(listing.projectName, project); assert.equal(listing.scope, 'archived'); assert.equal(listing.selectFirst, false);
+    assert.equal(fixture.context.archiveRequestPendingRef.current, false);
+  }
+});
+
+test('selected archive keeps its existing details transition while navigation during confirmation is preserved', async () => {
+  for (const move of [false, true]) {
+    const fixture = treeArchiveFixture({ selectedContextRef: { current: { projectName: 'Project 0', runId: 'target' } } });
+    let finishApproval, approvalStarted;
+    const ready = new Promise(resolve => { approvalStarted = resolve; });
+    fixture.context.window.orchestrator.approve = () => new Promise(resolve => { finishApproval = resolve; approvalStarted(); });
+    const pending = fixture.archive('target');
+    await ready;
+    if (move) fixture.context.selectedContextRef.current = { projectName: 'Project 1', runId: 'new-view' };
+    finishApproval(fixture.result); await pending;
+    assert.deepEqual(fixture.selection, move ? [] : [['scope', 'archived'], ['run', 'target'], ['view', 'operations']]);
+    assert.equal(fixture.calls.find(call => call[0] === 'replace')[3], !move);
+  }
+});
+
+test('blocked, cancelled and failed tree archive requests retain the group and release busy controls', async () => {
+  for (const scenario of ['blocked', 'cancelled', 'failed']) {
+    const fixture = treeArchiveFixture();
+    if (scenario === 'blocked') Object.assign(fixture.plan, { can_archive: false, block_reasons: ['작업 실행 중'] });
+    if (scenario === 'cancelled') fixture.context.window.orchestrator.approve = async () => null;
+    if (scenario === 'failed') fixture.context.window.orchestrator.approve = async () => { throw new Error('보관 실패'); };
+    await fixture.archive('target', 'Project 1');
+    assert.equal(fixture.calls.some(call => ['replace', 'list'].includes(call[0])), false);
+    assert.deepEqual(fixture.selection, []);
+    assert.equal(fixture.context.archiveRequestPendingRef.current, false);
+    assert.deepEqual(fixture.calls.at(-2), ['busy', '']);
+    assert.deepEqual(fixture.calls.at(-1), ['projectBusy', '']);
+    if (scenario !== 'cancelled') assert.ok(fixture.calls.some(call => call[0] === 'error' && call[1]));
+    if (scenario === 'blocked') assert.equal(fixture.calls.some(call => call[0] === 'runs.archive'), false);
+  }
+});
+
+test('a rapid second tree archive cannot start another approval request', async () => {
+  const fixture = treeArchiveFixture(); let finishPlan;
+  fixture.context.window.orchestrator.request = (method, params) => {
+    fixture.calls.push([method, { ...params }]); return new Promise(resolve => { finishPlan = resolve; });
+  };
+  const pending = fixture.archive('target', 'Project 1');
+  await fixture.archive('other', 'Project 0');
+  assert.equal(fixture.calls.filter(call => call[0] === 'runs.archivePlan').length, 1);
+  finishPlan(fixture.plan); await pending;
+  assert.equal(fixture.calls.filter(call => call[0] === 'runs.archive').length, 1);
+});
+
 test('completed-result action opens the full group result, closes task detail and focuses its destination without execution', () => {
   const calls=[];const forbidden=()=>assert.fail('result navigation must not execute or open another action');
   const context={selectedRun:{id:'completed',stage:'pushed',waiting_prompt:null},
@@ -1413,20 +1580,26 @@ test('planning lock banners preserve the exact error in closed details and disti
   }
 });
 
-test('new work restores the chosen registered project draft and clears old group navigation without creating or running it', () => {
+test('opening independent new chats preserves project defaults and never starts an AI request', () => {
   const state = { home: 'overview', run: 'old-group', view: 'tasks', inspector: true, picking: true, notices: [] };
   const restored = []; const selected = []; const focused = [];
   const drafts = { 'Project 0': '원래 프로젝트 초안', 'Project 1': '선택 프로젝트 초안' };
+  const draftStore=new (require(join(output,'renderer/src/planningRequestDrafts.js')).PlanningRequestDrafts)();
   const context = { projectsRef: { current: [{ name: 'Project 0', planning_source_dir: 'Docs/A' }, { name: 'Project 1', planning_source_dir: 'Docs/B' }] },
     pendingGlobalGroupRef: { current: { projectName: 'Project 0', runId: 'old-group' } }, pendingNotificationRef: { current: {} }, pendingAttentionRef: { current: {} },
     newWorkProjectRef: { current: '' }, selectedContextRef: { current: { projectName: 'Project 0', runId: 'old-group' } },
     runDetailRequestRef: { current: 2 }, archiveScopeRef: { current: 'archived' },
+    planningRequestDrafts:{current:draftStore}, selectedChatDraftRef:{current:{projectName:'Project 0',id:''}},
+    setChatDraftSelection(projectName,id=''){context.selectedChatDraftRef.current={projectName,id};},
+    crypto:require('node:crypto').webcrypto,
     selectProject: (name) => selected.push(name), restorePlanningDraft: (name, path) => restored.push([name, path, drafts[name]]),
     setSelectedRunId: (id) => { state.run = id; }, setSelectedRun: () => {}, setSelectedRunProjectName: () => {}, setSelectedTaskIds: () => {},
+    setPlanningIndex() {}, setPlanningIndexElapsed() {}, setPlanningStartElapsed() {}, setPlanningPreparationMessage() {}, setError() {},
     setArchiveScope: (scope) => { state.scope = scope; }, setChoosingNewWorkProject: (picking) => { state.picking = picking; },
     setHomeView: (home) => { state.home = home; }, setSideInspectorOpen: (open) => { state.inspector = open; },
     setWorkbenchView: (view) => { state.view = view; }, setNotice: (notice) => state.notices.push(notice),
     window: { requestAnimationFrame: (fn) => fn() }, document: { querySelector: (selector) => ({ focus: () => focused.push(selector) }) } };
+  context.openChatDraft=appCallback('openChatDraft',context);
   const start = appCallback('startProjectWork', context);
   start('missing');
   assert.equal(state.home, 'overview'); assert.equal(state.run, 'old-group'); assert.equal(selected.length, 0);
@@ -1440,6 +1613,13 @@ test('new work restores the chosen registered project draft and clears old group
   assert.equal(context.newWorkProjectRef.current, 'Project 1'); assert.equal(context.pendingGlobalGroupRef.current, undefined);
   assert.deepEqual(drafts, { 'Project 0': '원래 프로젝트 초안', 'Project 1': '선택 프로젝트 초안' });
   assert.deepEqual(focused, ['#planning-sidebar textarea']);
+  const firstId=context.selectedChatDraftRef.current.id;
+  draftStore.update('Project 1',{request:'첫 채팅의 독립 요청'},firstId);
+  start('Project 1');const secondId=context.selectedChatDraftRef.current.id;
+  assert.notEqual(secondId,firstId);assert.equal(draftStore.chatSnapshot().length,2);
+  assert.equal(draftStore.load('Project 1','','',firstId).request,'첫 채팅의 독립 요청');
+  assert.equal(draftStore.load('Project 1','','',secondId).request,'');
+  context.openChatDraft('Project 1',firstId);assert.equal(context.selectedChatDraftRef.current.id,firstId);
 });
 
 test('project selection navigation preserves the old work and focuses the project cards for either selection intent', () => {
@@ -1451,6 +1631,69 @@ test('project selection navigation preserves the old work and focuses the projec
   open(true); assert.equal(state.picking, true); assert.equal(state.home, 'overview'); assert.equal(state.inspector, false);
   open(); assert.equal(state.picking, false);
   assert.deepEqual(focus, ['chat-home-title', 'chat-home-title']);
+});
+
+test('deleting a chat draft preserves other chats and only navigates when deleting the current idle draft', () => {
+  for (const scenario of ['background', 'current', 'last', 'preparing', 'saved-chat']) {
+    const store = new (require(join(output, 'renderer/src/planningRequestDrafts.js')).PlanningRequestDrafts)();
+    store.createChat('Project 1', 'target');
+    store.update('Project 1', { request: '현재 초안' }, 'target');
+    if (scenario !== 'last') {
+      store.createChat('Project 1', 'other');
+      store.update('Project 1', { request: '보존할 초안' }, 'other');
+    }
+    store.createChat('Project 2', 'foreign');
+    if (scenario === 'preparing') store.setChatPreparing('Project 1', 'target', true);
+    const navigation = [];
+    const context = {
+      planningRequestDrafts: { current: store },
+      selectedContextRef: { current: { projectName: 'Project 1', runId: scenario === 'saved-chat' ? 'saved' : '' } },
+      selectedChatDraftRef: { current: { projectName: 'Project 1', id: scenario === 'background' ? 'other' : 'target' } },
+      projectsRef: { current: [{ name: 'Project 1', planning_source_dir: 'Docs' }] },
+      openChatDraft: (...args) => navigation.push(['open', ...args]),
+      setChatDraftSelection: (...args) => navigation.push(['select', ...args]),
+      restorePlanningDraft: (...args) => navigation.push(['restore', ...args]),
+    };
+    const remove = appCallback('deleteChatDraft', context);
+    remove('Project 2', 'target');
+    assert.ok(store.chatSnapshot().some(chat => chat.id === 'target'));
+    remove('Project 1', 'target');
+    assert.equal(store.chatSnapshot().some(chat => chat.id === 'target'), scenario === 'preparing');
+    assert.ok(store.chatSnapshot().some(chat => chat.id === 'foreign'));
+    if (scenario !== 'last') assert.equal(store.load('Project 1', '', '', 'other').request, '보존할 초안');
+    if (scenario === 'current') assert.deepEqual(navigation, [['open', 'Project 1', 'other']]);
+    else if (scenario === 'last') assert.deepEqual(navigation, [['select', 'Project 1'], ['restore', 'Project 1', 'Docs']]);
+    else assert.deepEqual(navigation, []);
+  }
+});
+
+test('late document indexing results and errors stay with their originating new chat', async () => {
+  for (const switched of [false, true]) for (const failed of [false, true]) {
+    let resolveIndex, rejectIndex;
+    const changes = [];
+    const context = {
+      selectedProjectName: 'Project 1', planningPath: 'Docs/A',
+      selectedContextRef: { current: { projectName: 'Project 1', runId: '' } },
+      selectedChatDraftRef: { current: { projectName: 'Project 1', id: 'draft-a' } },
+      runContextMatches: (a, b, c, d) => a === c && b === d,
+      setError: value => { if (value) changes.push(['error', value]); },
+      setNotice: value => { if (value) changes.push(['notice', value]); },
+      setPlanningIndex: value => changes.push(['index', value.document_count]),
+      setPlanningIndexElapsed() {}, setBusyAction() {}, errorMessage: error => error.message,
+      window: { setInterval: () => 1, clearInterval() {}, orchestrator: { request(method, params) {
+        assert.equal(method, 'planning.refreshIndex'); assert.equal(params.sourceRoot, 'Docs/A');
+        return new Promise((resolve, reject) => { resolveIndex = resolve; rejectIndex = reject; });
+      } } },
+    };
+    const pending = appCallback('refreshPlanningIndex', context)();
+    if (switched) context.selectedChatDraftRef.current.id = 'draft-b';
+    if (failed) rejectIndex(new Error('문서 분석 실패'));
+    else resolveIndex({ document_count: 3, added_count: 0, modified_count: 0, deleted_count: 0 });
+    await pending;
+    if (switched) assert.deepEqual(changes, []);
+    else if (failed) assert.deepEqual(changes, [['error', '문서 분석 실패']]);
+    else { assert.deepEqual(changes[0], ['index', 3]); assert.match(changes[1][1], /색인 3개/); }
+  }
 });
 
 test('a late group list updates the cache without replacing new planning; normal group selection and list errors stay visible', async () => {
@@ -2015,6 +2258,9 @@ test('project removal guards only the target project requests, shared restart an
   const reason = appComponents.projectRemovalReason;
   const requests = {[JSON.stringify(['running-other', 'run'])]: {id: 1, method: 'runs.execute'}};
   assert.equal(reason('idle', requests, '', '', ''), '');
+  const planning = {activeRequests:[{projectName:'running-other',runId:'one'},{projectName:'running-other',runId:'two'}],recent:[]};
+  assert.equal(reason('idle', requests, '', '', '', planning), '');
+  assert.match(reason('running-other', {}, '', '', '', planning), /이 프로젝트의 AI 요청/);
   assert.equal(reason('idle', requests, 'runs.sendPlanningMessage', 'running-other', ''), '');
   assert.match(reason('running-other', requests, '', '', ''), /이 프로젝트의 실행 요청/);
   assert.match(reason('idle', requests, 'runs.sendPlanningMessage', 'idle', ''), /이 프로젝트의 요청/);
@@ -2029,7 +2275,7 @@ function removalHarness(outcome) {
   const requests = {[JSON.stringify(['other', 'run'])]: {id: 1, method: 'runs.execute'}};
   let settle;
   const context = {react_1: {useCallback: callback => callback}, selectedProjectName: 'idle', executionRequests: requests,
-    busyAction: 'runs.sendPlanningMessage', busyProjectRef: {current: 'other'}, removingProjectRef: {current: ''},
+    busyAction: 'runs.sendPlanningMessage', busyProjectRef: {current: 'other'}, removingProjectRef: {current: ''}, planningRequests: {recent:[]},
     projectRemovalReason: appComponents.projectRemovalReason,
     setRemovingProjectName: value => states.push(value),
     loadProjects: async () => calls.push('refresh registry'), setNotice: value => notices.push(value),

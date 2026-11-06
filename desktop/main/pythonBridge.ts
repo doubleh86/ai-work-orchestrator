@@ -192,6 +192,7 @@ export function requestTimeoutMilliseconds(method: RpcMethod): number | undefine
 }
 
 export class PythonBridge {
+  private readonly planningSessions = new Map<string, { bridge: PythonBridge; active: number; idle?: NodeJS.Timeout }>();
   private nvidiaApiKey: string | undefined;
   private nvidiaModelApiKeys: Readonly<Record<string, string>> = {};
   private controlProcess: ChildProcessWithoutNullStreams | null = null;
@@ -208,6 +209,36 @@ export class PythonBridge {
   setNvidiaApiKey(key: string | undefined, modelKeys: Readonly<Record<string, string>> = {}): void {
     this.nvidiaApiKey = key;
     this.nvidiaModelApiKeys = { ...modelKeys };
+    for (const session of this.planningSessions.values()) session.bridge.setNvidiaApiKey(key, modelKeys);
+  }
+
+  async requestPlanning<Result>(method: RpcMethod, params: RpcParams): Promise<Result> {
+    if (!PLANNING_REQUEST_METHODS.has(method)) return this.request<Result>(method, params);
+    const key = JSON.stringify([params.projectName || "", params.runId || ""]);
+    let session = this.planningSessions.get(key);
+    if (!session || !session.bridge.planningProcess) {
+      if (session?.idle) clearTimeout(session.idle);
+      const bridge = new PythonBridge(this.backendExecutable);
+      bridge.setNvidiaApiKey(this.nvidiaApiKey, this.nvidiaModelApiKeys);
+      bridge.startBackend("planning");
+      session = { bridge, active: 0 };
+      this.planningSessions.set(key, session);
+    }
+    if (session.idle) clearTimeout(session.idle);
+    session.active++;
+    try { return await session.bridge.requestOnBackend<Result>("planning", method, params); }
+    finally {
+      session.active--;
+      if (!session.active && this.planningSessions.get(key) === session) {
+        const settled = session;
+        settled.idle = setTimeout(() => {
+          if (settled.active || this.planningSessions.get(key) !== settled) return;
+          this.planningSessions.delete(key);
+          void settled.bridge.stop().catch(error => process.stderr.write(`[python-planning-backend] idle cleanup failed: ${String(error)}\n`));
+        }, 5 * 60 * 1000);
+        settled.idle.unref();
+      }
+    }
   }
 
   start(): void {
@@ -344,6 +375,9 @@ export class PythonBridge {
   }
 
   async stop(): Promise<void> {
+    const sessions = [...this.planningSessions.values()];
+    this.planningSessions.clear();
+    for (const session of sessions) if (session.idle) clearTimeout(session.idle);
     const children = [
       this.controlProcess,
       this.planningProcess,
@@ -355,7 +389,7 @@ export class PythonBridge {
     this.planningProcess = null;
     this.workProcess = null;
     this.failAll(new Error("Python backend stopped"));
-    await Promise.all(children.map((child) => terminateProcessTree(child)));
+    await Promise.all([...children.map((child) => terminateProcessTree(child)), ...sessions.map(session => session.bridge.stop())]);
   }
 
   async restart(): Promise<void> {
@@ -374,7 +408,19 @@ export class PythonBridge {
     await this.requestOnBackend("work", "system.hello", {});
   }
 
-  async restartPlanning(): Promise<void> {
+  async restartPlanning(projectName?: string, runId?: string): Promise<void> {
+    if (projectName !== undefined && runId !== undefined) {
+      const key = JSON.stringify([projectName, runId]);
+      const session = this.planningSessions.get(key);
+      if (!session) return;
+      if (session.idle) clearTimeout(session.idle);
+      const child = session.bridge.planningProcess;
+      if (child) await terminateProcessTree(child);
+      if (session.bridge.planningProcess === child) session.bridge.planningProcess = null;
+      session.bridge.failBackend("planning", new Error("Python planning conversation stopped"));
+      this.planningSessions.delete(key);
+      return;
+    }
     const child = this.planningProcess;
     this.planningProcess = null;
     this.failBackend("planning", new Error("Python planning backend stopped"));

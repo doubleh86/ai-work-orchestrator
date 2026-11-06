@@ -123,10 +123,12 @@ function planningStartHarness(request) {
     react_1: { useCallback: (callback) => callback }, planningStart_1: localRequire('./planningStart.js'),
     planningRequestDrafts_1: localRequire('./planningRequestDrafts.js'),
     planningStartPendingRef: { current: false }, selectedContextRef: { current: { projectName: 'empty' } },
+    planningPreparationsRef: { current: new Set() }, selectedChatDraftRef: { current: { projectName:'empty',id:'' } },
+    setChatDraftSelection(projectName,id=''){context.selectedChatDraftRef.current={projectName,id};},
     selectedProjectName: 'empty', projectCapabilities: { repository_maturity: { kind: 'docs_only' } },
     planningPath: '', planningMode: 'directed', planningRequest: 'same request', repositoryIntent: 'new_project',
     planningReasoning: '', planningEffortMode: 'balanced', planningProfileManual: false, selectedPlanningProfile: undefined,
-    planningRequestDrafts: { current: { update: ignore } }, archiveScopeRef: { current: 'active' },
+    planningRequestDrafts: { current: new (localRequire('./planningRequestDrafts.js').PlanningRequestDrafts)() }, archiveScopeRef: { current: 'active' },
     replaceRun: (name, run) => calls.push(['replace', name, run.id]), setSelectedRunId: ignore, setWorkbenchView: ignore,
     setError: (error) => { if (error) errors.push(error); }, errorMessage: String,
     setBusyAction: ignore, setNotice: ignore, setPlanningStartElapsed: ignore, setPlanningPreparationMessage: ignore, setPlanningIndex: ignore, setPlanningStartErrors: ignore,
@@ -154,6 +156,54 @@ test('two starts before React rerenders prepare only one group', async () => {
   assert.equal(fixture.calls.filter(([method]) => method === 'runs.runPlanning').length, 1);
   assert.equal(fixture.context.planningStartPendingRef.current, false);
   assert.deepEqual(fixture.errors, []);
+});
+
+test('separate chat drafts in one project prepare different runs and a late first result cannot replace the second chat', async () => {
+  let releasePrepare,finishA,finishB,readyA,readyB;
+  const prepareA=new Promise(resolve=>{releasePrepare=resolve;});
+  const aiA=new Promise(resolve=>{finishA=resolve;}),aiB=new Promise(resolve=>{finishB=resolve;});
+  const startedA=new Promise(resolve=>{readyA=resolve;}),startedB=new Promise(resolve=>{readyB=resolve;});
+  let count=0;
+  const fixture=planningStartHarness(async(method,params)=>{
+    if(method==='runs.preparePlanning')return ++count===1?prepareA:{id:'run-b'};
+    if(method==='runs.runPlanning'){if(params.runId==='run-a'){readyA();return aiA;}readyB();return aiB;}
+    if(method==='runs.get')return{id:params.runId};
+    assert.fail(`unexpected shared reuse: ${method}`);
+  });
+  const ctx=fixture.context,store=ctx.planningRequestDrafts.current,selections=[],replacements=[],listings=[];
+  ctx.selectedContextRef.current={projectName:'empty',runId:''};
+  ctx.setSelectedRunId=id=>selections.push(id);ctx.replaceRun=(project,run,select)=>replacements.push([run.id,select]);
+  ctx.loadRuns=async options=>listings.push({...options});
+  store.createChat('empty','draft-a');store.update('empty',{request:'A 요청'},'draft-a');
+  ctx.selectedChatDraftRef.current={projectName:'empty',id:'draft-a'};
+  const first=fixture.start();
+  store.createChat('empty','draft-b');store.update('empty',{request:'B 요청',profileKey:'model-b'},'draft-b');
+  ctx.selectedChatDraftRef.current={projectName:'empty',id:'draft-b'};
+  releasePrepare({id:'run-a'});await startedA;
+  assert.deepEqual(selections,[]);assert.equal(store.load('empty','','','draft-b').request,'B 요청');
+  assert.equal(ctx.planningPreparationsRef.current.has('empty'),false);
+  ctx.planningRequest='B 요청';const second=fixture.start();await startedB;
+  assert.deepEqual(selections,['run-b']);assert.equal(count,2);
+  finishA({id:'run-a'});await first;
+  assert.deepEqual(selections,['run-b']);assert.equal(listings[0].selectFirst,false);
+  assert.equal(replacements.filter(([id])=>id==='run-a').every(([,select])=>!select),true);
+  finishB({id:'run-b'});await second;
+  assert.equal(listings.at(-1).selectFirst,true);assert.equal(store.chatSnapshot().length,0);
+});
+
+test('a late preparation failure keeps its original chat draft and never writes an error into another draft', async () => {
+  let rejectPrepare;
+  const pending=new Promise((resolve,reject)=>{rejectPrepare=reject;});
+  const fixture=planningStartHarness(async method=>method==='runs.preparePlanning'?pending:assert.fail(method));
+  const ctx=fixture.context,store=ctx.planningRequestDrafts.current,errors={};
+  ctx.selectedContextRef.current={projectName:'empty',runId:''};ctx.setPlanningStartErrors=update=>Object.assign(errors,update(errors));
+  store.createChat('empty','a');store.update('empty',{request:'보존할 A'},'a');
+  ctx.selectedChatDraftRef.current={projectName:'empty',id:'a'};const first=fixture.start();
+  store.createChat('empty','b');ctx.selectedChatDraftRef.current={projectName:'empty',id:'b'};
+  rejectPrepare(Error('prepare failed'));await first;
+  assert.equal(store.load('empty','','','a').request,'보존할 A');assert.equal(store.chatSnapshot().length,2);
+  assert.match(errors[JSON.stringify(['empty','a'])],/prepare failed/);assert.equal(errors[JSON.stringify(['empty','b'])],undefined);
+  assert.equal(fixture.errors.length,0);assert.equal(ctx.planningPreparationsRef.current.size,0);
 });
 
 test('retry after a lost preparation response recovers the saved group instead of creating another', async () => {
@@ -249,7 +299,7 @@ test('a prepared group is exposed before its AI response and late success cannot
   const first=fixture.start();
   await starting;
   assert.deepEqual(selections,['prepared']);
-  assert.equal(fixture.context.planningStartPendingRef.current,true);
+  assert.equal(fixture.context.planningPreparationsRef.current.has('empty'),false,'the AI turn no longer holds the new-chat preparation slot');
   fixture.context.selectedContextRef.current={projectName:'other',runId:'different'};
   finish({id:'prepared'}); await first;
   assert.deepEqual(selections,['prepared']);

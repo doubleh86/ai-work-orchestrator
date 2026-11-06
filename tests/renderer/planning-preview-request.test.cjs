@@ -22,8 +22,23 @@ try {
 } catch (error) { cleanup(); throw error; }
 process.on('exit', cleanup);
 
-const { PlanningPreviewSession, openPlanningPreviewForMessage, planningPreviewSurface, previewRetryTask, previewPhaseLabel } =
+const { PlanningPreviewSession, initialTaskPlanningAvailable, openPlanningPreviewForMessage, planningPreviewSurface, previewRetryTask, previewPhaseLabel } =
   require(join(output, 'renderer/src/planningPreviewRequest.js'));
+
+test('initial Task requests stay in planning chat while existing Task changes retain preview confirmation', () => {
+  const initial={stage:'needs_clarification',tasks:[],repository_intent:'existing_structure'};
+  assert.equal(initialTaskPlanningAvailable(initial),true);
+  assert.equal(initialTaskPlanningAvailable({...initial,stage:'failed',failed_step:'planning'}),true);
+  let previews=0;
+  assert.equal(openPlanningPreviewForMessage('반영',initial.repository_intent,()=>previews++,initial),false);
+  assert.equal(openPlanningPreviewForMessage('Task에 반영해줘',initial.repository_intent,()=>previews++,initial),false);
+  assert.equal(previews,0);
+  for(const changes of [{tasks:[{id:'existing'}]},{archive:{}},{repository_intent:'new_project'},
+    {stage:'executing'},{stage:'failed',failed_step:'agent_execution'}])
+    assert.equal(initialTaskPlanningAvailable({...initial,...changes}),false);
+  assert.equal(openPlanningPreviewForMessage('Task에 반영해줘',initial.repository_intent,()=>previews++,{...initial,tasks:[{id:'existing'}]}),true);
+  assert.equal(previews,1);
+});
 
 test('preview is visible outside a closed task dialog and stays within the matching open task context', () => {
   const target = { projectName: 'project', runId: 'group' };

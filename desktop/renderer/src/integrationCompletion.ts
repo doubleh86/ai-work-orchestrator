@@ -112,7 +112,9 @@ export function mainCompletionLabel(run: RunState, workspaces: WorkspaceStatus[]
   if (retry?.status === "succeeded" && (retry.phase === "cleanup_completed" || workspaceCleaned)) return "Main Push 완료";
   if (retry?.status === "failed") return "Main 반영 완료 · Push 재시도 실패";
   if (["pushing", "confirming_remote"].includes(merge?.phase || "") && merge?.status === "failed") return "Main 반영 완료 · Push 실패";
-  if (run.integration_control?.status === "main_push_pending") return "Main 반영 완료 · Push 확인/재시도 필요";
+  if (run.integration_control?.status === "main_push_pending") {
+    return run.stage === "merged" ? "Main 반영 완료 · Push 승인 대기" : "Main 반영 완료 · Push 확인/재시도 필요";
+  }
   if (merge?.phase === "cleanup_deferred" && !workspaceCleaned) return run.stage === "pushed" ? "Main Push 완료 · 작업공간 정리 보류" : "Main 반영 완료 · 작업공간 정리 보류";
   if (run.stage === "pushed" || run.stage === "deployed") {
     if (run.workspace_mode === "shared" && merge?.phase !== "cleanup_completed" && retry?.phase !== "cleanup_completed" && !workspaceCleaned) return "Main Push 완료 · 작업공간 상태 확인 필요";

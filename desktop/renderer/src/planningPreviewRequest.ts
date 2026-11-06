@@ -5,6 +5,11 @@ import { isTaskScopeReview } from "./failurePresentation";
 
 type RequestApi = Pick<DesktopApi, "request">;
 
+export function initialTaskPlanningAvailable(run: RunState | undefined): boolean {
+  return Boolean(run && !run.archive && run.repository_intent !== "new_project" && run.tasks?.length === 0
+    && (["needs_clarification", "planned"].includes(run.stage) || run.stage === "failed" && run.failed_step === "planning"));
+}
+
 export interface TaskPlanningTarget {
   projectName: string;
   runId: string;
@@ -37,6 +42,7 @@ export function openPlanningPreviewForMessage(
   openPreview: () => void,
   run?: RunState,
 ): boolean {
+  if (initialTaskPlanningAvailable(run)) return false;
   if (run?.project_chat_available && !run.archive && run.stage === "failed" && run.failed_step === "agent_execution"
     && run.tasks.some(task => task.status === "failed" && isTaskScopeReview(task.error || ""))) return false;
   const command = message.trim().replace(/\s+/gu, " ");

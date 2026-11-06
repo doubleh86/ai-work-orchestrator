@@ -27,6 +27,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    mcp = sub.add_parser("mcp", help="serve orchestrator tools over MCP stdio")
+    mcp.add_argument("--allow-write", action="store_true", help="enable document, planning, and recovery actions")
+    mcp.add_argument("--projects-root", type=Path, help="existing host folder in which MCP can create new projects")
+
     start = sub.add_parser("start", help="receive, review, and plan a specification")
     start.add_argument("spec", help="planning document file or directory")
 
@@ -281,6 +285,15 @@ def main(argv: list[str] | None = None) -> int:
             from .desktop_entry import run_desktop
 
             return run_desktop(args.registry or None)
+        if args.command == "mcp":
+            try:
+                from .mcp_server import serve
+            except ModuleNotFoundError as exc:
+                if exc.name not in {"mcp", "anyio", "pydantic"}:
+                    raise
+                raise ConfigError("Install MCP support from the source checkout: python -m pip install -e '.[mcp]'") from exc
+            serve(args.registry or None, allow_write=args.allow_write, projects_root=args.projects_root)
+            return 0
         config = load_config(args.config)
         codex_sdk = CodexSdkManager()
         pipeline = Pipeline(config, codex_sdk=codex_sdk)

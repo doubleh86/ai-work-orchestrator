@@ -23,7 +23,8 @@ import { ChatControls } from "./chatControls";
 import { PlanningMessageQueue } from "./planningMessageQueue";
 import type { QueuedMessageInput, QueuedMessageChange } from "../shared/planningMessageQueue";
 
-const bridge = new PythonBridge(bundledBackendExecutable(process.resourcesPath));
+const packagedBackend = bundledBackendExecutable(process.resourcesPath);
+const bridge = new PythonBridge(packagedBackend);
 const planningRequests = new PlanningRequests(bridge);
 const chatControls = new ChatControls(bridge, undefined, planningRequests);
 const codexAuth = new CodexAuthController(bridge, {
@@ -78,6 +79,7 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
+  ipcMain.handle("orchestrator:mcp-command", () => packagedBackend ?? null);
   messageQueue = new PlanningMessageQueue(join(app.getPath("userData"), "queued-chat-messages.json"), planningRequests, bridge, chatControls);
   const menu: MenuItemConstructorOptions[] = [
     ...(process.platform === "darwin" ? [{ role: "appMenu" as const }] : []),

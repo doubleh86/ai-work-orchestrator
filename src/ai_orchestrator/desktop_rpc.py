@@ -21,7 +21,7 @@ from .git import (
     preview_git_initialization,
     preview_initial_commit,
 )
-from .models import Stage, utc_now
+from .models import RunState, Stage, utc_now
 from .pipeline import Pipeline, PipelineError
 from .nvidia_agent import current_nvidia_model_keys, nvidia_credential_scope, redact_nvidia_output
 from .repository_maturity import inspect_repository_maturity
@@ -530,6 +530,7 @@ class DesktopApplication:
         repository_intent: str = "",
         effort_mode: str = "balanced",
         planning_profile_source: str | None = None,
+        reserved_run_id: str = "",
     ) -> object:
         pipeline = self._pipeline(project_name)
         selected_agent_id = self._desktop_planning_agent_id(pipeline, planning_agent_id)
@@ -551,6 +552,7 @@ class DesktopApplication:
             repository_intent=repository_intent,
             effort_mode=effort_mode,
             planning_profile_source=planning_profile_source,
+            **({"reserved_run_id": reserved_run_id} if reserved_run_id else {}),
         )
 
     @staticmethod
@@ -649,6 +651,9 @@ class DesktopApplication:
 
     def task_retry_context(self, project_name: str, run_id: str, task_id: str) -> object:
         return self._pipeline(project_name).task_retry_context(run_id, task_id)
+
+    def record_task_diagnosis(self, project_name: str, run_id: str, task_id: str, fingerprint: str, diagnosis: str) -> None:
+        self._pipeline(project_name).record_task_diagnosis(run_id, task_id, fingerprint, diagnosis)
 
     def save_task_retry_instruction(
         self, project_name: str, run_id: str, task_id: str, *, request_id: str, text: str, fingerprint: str
@@ -851,6 +856,18 @@ class DesktopApplication:
         if action == "deploy":
             return pipeline.deploy(run_id, approved=approved)
         raise RpcError("invalid_params", f"unsupported run action: {action}")
+
+    def preview_main_apply(self, project_name: str, run_id: str) -> dict[str, object]:
+        return self._pipeline(project_name).preview_main_apply(run_id)
+
+    def apply_reviewed_main(self, project_name: str, run_id: str, *, request_id: str, review_id: str,
+                            approved: bool) -> tuple[RunState, str]:
+        return self._pipeline(project_name).apply_reviewed_main(run_id, request_id=request_id, review_id=review_id, approved=approved)
+
+    def approve_task_scope(self, project_name: str, run_id: str, task_id: str, *, request_id: str, review_id: str,
+                           approved: bool) -> dict[str, object]:
+        return self._pipeline(project_name).approve_task_scope(run_id, task_id, request_id=request_id, review_id=review_id,
+                                                               approved=approved)
 
     def delete_run(self, project_name: str, run_id: str, *, approved: bool) -> object:
         return self._pipeline(project_name).delete_run(run_id, approved=approved)

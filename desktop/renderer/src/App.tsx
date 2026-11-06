@@ -61,13 +61,14 @@ import { WorkOverview } from "./WorkOverview";
 import { PlanningMessageDialog, type FullPlanningMessage } from "./PlanningMessageDialog";
 import { NavigationSidebar } from "./NavigationSidebar";
 import { AiConnectionDialog } from "./AiConnectionDialog";
+import { McpConnectionGuide } from "./McpConnectionGuide";
 import { CodexApiKeyConnection } from "./CodexApiKeyConnection";
 import { ChatProjectNavigation } from "./ChatProjectNavigation";
 import { ChatHome } from "./ChatHome";
 import { ChatWorkActivity, ChatWorkStatus } from "./ChatWorkActivity";
 import type { ChatControlView } from "../../shared/chatControls";
 import type { PlanningRequestsSnapshot } from "../../shared/planningRequests";
-import { PLANNING_REQUEST_METHODS } from "../../shared/planningRequests";
+import { PLANNING_REQUEST_METHODS, planningRequestFor } from "../../shared/planningRequests";
 import { composerIsComposing } from "./composerInput";
 import { QueuedChatMessages } from "./QueuedChatMessages";
 import type { PlanningMessageQueueSnapshot, QueuedMessageChange, QueuedPlanningMessage } from "../../shared/planningMessageQueue";
@@ -97,7 +98,7 @@ import { installDetailsDismissal } from "./dismissibleDetails";
 import { NextStepWaitingBanner } from "./NextStepWaitingBanner";
 import { NotificationRefreshStatus } from "./NotificationRefreshStatus";
 import { readWaitingPromptAction, waitingPromptAction } from "./waitingPrompt";
-import { openPlanningPreviewForMessage, planningApplyEntryBlocked, planningPreviewSurface, taskPlanningInProgress, type TaskPlanningTarget } from "./planningPreviewRequest";
+import { initialTaskPlanningAvailable, openPlanningPreviewForMessage, planningApplyEntryBlocked, planningPreviewSurface, taskPlanningInProgress, type TaskPlanningTarget } from "./planningPreviewRequest";
 import { DirectionChangePanel } from "./DirectionChangePanel";
 import { DirectionChangeDrafts } from "./directionChangeDrafts";
 import { AttentionInbox, AttentionInboxTrigger } from "./AttentionInbox";
@@ -433,7 +434,11 @@ export function App() {
   const [stopRequestExecutionId, setStopRequestExecutionId] = useState("");
   const [executionClock, setExecutionClock] = useState(() => Date.now());
   const [deletingRunId, setDeletingRunId] = useState("");
+  const [deletingProjectName, setDeletingProjectName] = useState("");
+  const deleteRequestPendingRef = useRef(false);
   const [archivingRunId, setArchivingRunId] = useState("");
+  const [archivingProjectName, setArchivingProjectName] = useState("");
+  const archiveRequestPendingRef = useRef(false);
   const [planningIndexElapsed, setPlanningIndexElapsed] = useState(0);
   const [planningStartElapsed, setPlanningStartElapsed] = useState(0);
   const [executionElapsed, setExecutionElapsed] = useState(0);
@@ -495,19 +500,30 @@ export function App() {
   const [planningEffortMode, setPlanningEffortMode] = useState<EffortMode>("balanced");
   const [planningProfileManual, setPlanningProfileManual] = useState(false);
   const planningRequestDrafts = useRef(new PlanningRequestDrafts());
+  const chatDrafts = useSyncExternalStore(planningRequestDrafts.current.subscribe, planningRequestDrafts.current.chatSnapshot);
+  const [selectedChatDraft, setSelectedChatDraftState] = useState({ projectName: "", id: "" });
+  const selectedChatDraftRef = useRef(selectedChatDraft);
+  const setChatDraftSelection = useCallback((projectName: string, id = "") => {
+    const target = { projectName, id };
+    selectedChatDraftRef.current = target;
+    setSelectedChatDraftState(target);
+  }, []);
+  const planningPreparationsRef = useRef(new Set<string>());
   const planningStartPendingRef = useRef(false);
   const greenfieldActionPendingRef = useRef(false);
   const techStackEntryPendingRef = useRef(false);
   const editedPlanningProfileContext = useRef("");
   const updatePlanningDraft = useCallback((patch: Partial<PlanningRequestDraft>) => {
-    if (selectedProjectName && !selectedRunId) planningRequestDrafts.current.update(selectedProjectName, patch);
+    if (selectedProjectName && !selectedRunId) planningRequestDrafts.current.update(selectedProjectName, patch,
+      selectedChatDraftRef.current.projectName === selectedProjectName ? selectedChatDraftRef.current.id : "");
   }, [selectedProjectName, selectedRunId]);
   const restorePlanningDraft = useCallback((
     projectName: string, path: string, intent: PlanningRequestDraft["repositoryIntent"] = "", fallbackProfileKey = "",
   ) => {
-    let draft = planningRequestDrafts.current.load(projectName, path, intent);
+    const chatId = selectedChatDraftRef.current.projectName === projectName ? selectedChatDraftRef.current.id : "";
+    let draft = planningRequestDrafts.current.load(projectName, path, intent, chatId);
     if (!draft.profileKey && !draft.profileManual && fallbackProfileKey) {
-      draft = planningRequestDrafts.current.update(projectName, { profileKey: fallbackProfileKey });
+      draft = planningRequestDrafts.current.update(projectName, { profileKey: fallbackProfileKey }, chatId);
     }
     setPlanningPath(draft.path);
     setPlanningMode(draft.mode);
@@ -644,8 +660,8 @@ export function App() {
   const removingProjectRef = useRef("");
   const setBusyAction = useCallback((action: string, expectedProject?: string, expectedRun?: string) => {
     if (!action && expectedProject !== undefined && (busyProjectRef.current !== expectedProject || busyRunRef.current !== expectedRun)) return;
-    busyRunRef.current = action ? selectedContextRef.current.runId : "";
-    busyProjectRef.current = action ? selectedContextRef.current.projectName : "";
+    busyRunRef.current = action ? expectedRun ?? selectedContextRef.current.runId : "";
+    busyProjectRef.current = action ? expectedProject ?? selectedContextRef.current.projectName : "";
     setBusyActionState(action);
   }, []);
   const selectedRunRef = useRef<RunState | undefined>(undefined);
@@ -674,7 +690,10 @@ export function App() {
   projectsRef.current = projects;
   newWorkProjectRef.current = homeView === "work" && workbenchView === "planning" && !selectedRunId ? selectedProjectName : "";
 
-  const planningOwner = planningRequests.active;
+  const planningOwner = planningRequestFor(planningRequests, selectedProjectName, selectedRunId);
+  const planningStartErrorKey = selectedChatDraft.id && selectedChatDraft.projectName === selectedProjectName && !selectedRunId
+    ? JSON.stringify([selectedProjectName, selectedChatDraft.id]) : selectedProjectName;
+  const planningStartError = planningStartErrors[planningStartErrorKey];
   const ownsPlanning = Boolean(planningOwner && planningOwner.projectName === selectedProjectName && planningOwner.runId === selectedRunId);
   const latestPlanningReceipt = [...planningRequests.recent].reverse().find(item => item.projectName === selectedProjectName && item.runId === selectedRunId);
   const planningBusy = PLANNING_REQUEST_METHODS.some(method => method === rawBusyAction) || rawBusyAction === "system.interruptPlanning";
@@ -866,6 +885,7 @@ export function App() {
     if (pendingAttentionRef.current?.project_name !== projectName) pendingAttentionRef.current = undefined;
     const context = projectRunContext(selectedContextRef.current, projectName);
     if (context !== selectedContextRef.current) {
+      setChatDraftSelection(projectName);
       selectedContextRef.current = context;
       runDetailRequestRef.current += 1;
       operationsRequestRef.current += 1;
@@ -875,7 +895,7 @@ export function App() {
       setError("");
     }
     setSelectedProjectName(projectName);
-  }, []);
+  }, [setChatDraftSelection]);
 
   const loadProjects = useCallback(async () => {
     setBackendChecked(false);
@@ -1184,23 +1204,24 @@ export function App() {
       setPlanningProfiles(profiles);
       setProviderStatuses(statuses);
       setProjectCapabilities(capabilities);
-      const draft = planningRequestDrafts.current.load(projectName);
+      const chatId = selectedChatDraftRef.current.projectName === projectName ? selectedChatDraftRef.current.id : "";
+      const draft = planningRequestDrafts.current.load(projectName, "", "", chatId);
       const intent = planningRepositoryIntent(capabilities.repository_maturity.kind, draft.repositoryIntent);
-      planningRequestDrafts.current.update(projectName, { repositoryIntent: intent });
+      planningRequestDrafts.current.update(projectName, { repositoryIntent: intent }, chatId);
       setRepositoryIntent(intent);
       setPlanningProfileKey((current) => {
         if (profiles.some((profile) => providerProfileKey(profile) === current)) {
           return current;
         }
         if (selectedContextRef.current.runId && current) return current;
-        const draft = planningRequestDrafts.current.load(projectName);
+        const draft = planningRequestDrafts.current.load(projectName, "", "", chatId);
         if (!selectedContextRef.current.runId && draft.profileManual && draft.profileKey) return draft.profileKey;
         const defaultProfile = profiles.find(
           (profile) =>
             profile.is_default && profile.model === profile.configured_model,
         );
         const key = providerProfileKey(defaultProfile || profiles[0]);
-        if (!selectedContextRef.current.runId) planningRequestDrafts.current.update(projectName, { profileKey: key });
+        if (!selectedContextRef.current.runId) planningRequestDrafts.current.update(projectName, { profileKey: key }, chatId);
         return key;
       });
       return true;
@@ -2507,12 +2528,27 @@ export function App() {
   }, [loadOperations, planDirty, replaceRun, requestApplySummaryCommand, selectedProjectName, selectedRun]);
 
   const deleteRun = useCallback(
-    async (targetRunId: string) => {
-      if (!selectedProjectName || !targetRunId || deletingRunId) return;
-      const projectName = selectedProjectName;
+    async (targetRunId: string, projectName = selectedProjectName, scope: RunListScope = archiveScopeRef.current) => {
+      if (!projectName || !targetRunId || deleteRequestPendingRef.current || archiveRequestPendingRef.current) return;
+      deleteRequestPendingRef.current = true;
+      setDeletingProjectName(projectName);
       setDeletingRunId(targetRunId);
       setError("");
       setNotice("");
+      const clearDeletedSelection = () => {
+        if (selectedContextRef.current.projectName !== projectName || selectedContextRef.current.runId !== targetRunId) return;
+        selectedContextRef.current = { projectName, runId: "" };
+        newWorkProjectRef.current = projectName;
+        archiveScopeRef.current = "active";
+        setArchiveScope("active");
+        runDetailRequestRef.current += 1;
+        setSelectedRunId("");
+        setSelectedRun(undefined);
+        setSelectedRunProjectName("");
+        setSelectedTaskId("");
+        setSelectedTaskIds([]);
+        setWorkbenchView("planning");
+      };
       try {
         const lock = await window.orchestrator.request<RunLockStatus>("locks.get", {
           projectName,
@@ -2529,31 +2565,26 @@ export function App() {
         });
         if (result === null) return;
         delete authoritativeArchivesRef.current[`${projectName}\0${targetRunId}`];
-        setRunSummaryCache((current) => {
-          const projectCache = current[projectName];
-          if (!projectCache) return current;
+        const current = runSummaryCacheRef.current;
+        const projectCache = current[projectName];
+        if (projectCache) {
           const next = {
             ...current,
             [projectName]: {
               ...projectCache,
-              [archiveScopeRef.current]: projectCache[archiveScopeRef.current]
-                .filter((run) => run.id !== targetRunId),
+              active: projectCache.active.filter((run) => run.id !== targetRunId),
+              archived: projectCache.archived.filter((run) => run.id !== targetRunId),
             },
           };
           runSummaryCacheRef.current = next;
-          return next;
-        });
-        if (targetRunId === selectedRunId) {
-          runDetailRequestRef.current += 1;
-          setSelectedRunId("");
-          setSelectedRun(undefined);
-          setSelectedTaskId("");
-          setSelectedTaskIds([]);
+          setRunSummaryCache(next);
         }
-        await loadRuns({ projectName, scope: archiveScopeRef.current });
+        clearDeletedSelection();
+        await loadRuns({ projectName, scope, selectFirst: false });
         setNotice("작업 그룹을 삭제했습니다.");
       } catch (requestError) {
         const missingMessage = runDeletionMissingMessage(requestError);
+        if (missingMessage) clearDeletedSelection();
         if (!missingMessage) {
           try {
             const current = await window.orchestrator.request<RunState>("runs.get", {
@@ -2567,27 +2598,31 @@ export function App() {
         }
         await loadRuns({
           projectName,
-          scope: archiveScopeRef.current,
-          preferredRun: targetRunId,
+          scope,
+          selectFirst: false,
         });
         if (selectedContextRef.current.projectName === projectName) {
           setError(missingMessage || errorMessage(requestError));
         }
       } finally {
+        deleteRequestPendingRef.current = false;
         setDeletingRunId("");
+        setDeletingProjectName("");
       }
     },
-    [deletingRunId, loadRuns, replaceRun, selectedProjectName, selectedRunId],
+    [loadRuns, replaceRun, selectedProjectName, setSelectedTaskId],
   );
 
-  const archiveRun = useCallback(async (targetRunId: string) => {
-    if (!selectedProjectName || !targetRunId || archivingRunId) return;
-    const projectName = selectedProjectName;
+  const archiveRun = useCallback(async (targetRunId: string, projectName = selectedProjectName) => {
+    if (!projectName || !targetRunId || archiveRequestPendingRef.current || deleteRequestPendingRef.current) return;
+    archiveRequestPendingRef.current = true;
     const requestContext = {
       projectName: selectedContextRef.current.projectName,
       runId: selectedContextRef.current.runId,
       scope: archiveScopeRef.current,
     };
+    const targetSelected = requestContext.projectName === projectName && requestContext.runId === targetRunId;
+    setArchivingProjectName(projectName);
     setArchivingRunId(targetRunId);
     setError("");
     setNotice("");
@@ -2610,11 +2645,11 @@ export function App() {
       });
       if (!result) return;
       const currentContext = selectedContextRef.current;
-      const completionView = archiveCompletionView(requestContext, {
+      const completionView = targetSelected ? archiveCompletionView(requestContext, {
         projectName: currentContext.projectName,
         runId: currentContext.runId,
         scope: archiveScopeRef.current,
-      });
+      }) : null;
       const shouldNavigate = completionView !== null;
       replaceRun(projectName, result, shouldNavigate);
       if (completionView) {
@@ -2637,9 +2672,11 @@ export function App() {
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
+      archiveRequestPendingRef.current = false;
       setArchivingRunId("");
+      setArchivingProjectName("");
     }
-  }, [archivingRunId, loadRuns, replaceRun, selectedProjectName]);
+  }, [loadRuns, replaceRun, selectedProjectName]);
 
   const retryArchiveCleanup = useCallback(async () => {
     if (!selectedProjectName || !selectedRun?.archive || busyAction) return;
@@ -2672,7 +2709,7 @@ export function App() {
 
   const removeProject = useCallback(async () => {
     const projectName = selectedProjectName;
-    if (projectRemovalReason(projectName, executionRequests, busyAction, busyProjectRef.current, removingProjectRef.current)) return;
+    if (projectRemovalReason(projectName, executionRequests, busyAction, busyProjectRef.current, removingProjectRef.current, planningRequests)) return;
     removingProjectRef.current = projectName;
     setRemovingProjectName(projectName);
     try {
@@ -2687,7 +2724,7 @@ export function App() {
       removingProjectRef.current = "";
       setRemovingProjectName("");
     }
-  }, [loadProjects, selectedProjectName, executionRequests, busyAction]);
+  }, [loadProjects, selectedProjectName, executionRequests, busyAction, planningRequests]);
 
   const choosePath = useCallback(
     async (kind: "repository" | "config" | "planningSource") => {
@@ -2730,7 +2767,9 @@ export function App() {
   const refreshPlanningIndex = useCallback(async () => {
     if (!selectedProjectName || !planningPath) return;
     const projectName = selectedProjectName, runId = selectedContextRef.current.runId;
-    const isCurrent = () => runContextMatches(selectedContextRef.current.projectName, selectedContextRef.current.runId, projectName, runId);
+    const chatId = selectedChatDraftRef.current.projectName === projectName ? selectedChatDraftRef.current.id : "";
+    const isCurrent = () => runContextMatches(selectedContextRef.current.projectName, selectedContextRef.current.runId, projectName, runId)
+      && (Boolean(runId) || (selectedChatDraftRef.current.projectName === projectName ? selectedChatDraftRef.current.id : "") === chatId);
     const startedAt = Date.now();
     const elapsedTimer = window.setInterval(() => {
       if (isCurrent()) setPlanningIndexElapsed(Math.floor((Date.now() - startedAt) / 1000));
@@ -2763,16 +2802,22 @@ export function App() {
 
   const startPlanning = useCallback(async () => {
     const planningSourcePath = planningPath.trim();
+    const chatId = selectedChatDraftRef.current.projectName === selectedProjectName ? selectedChatDraftRef.current.id : "";
+    const errorKey = chatId ? JSON.stringify([selectedProjectName, chatId]) : selectedProjectName;
     if (
-      planningStartPendingRef.current || !selectedProjectName ||
+      planningPreparationsRef.current.has(selectedProjectName) || !selectedProjectName ||
       !projectCapabilities ||
       (planningMode === "auto" && !planningSourcePath)
     ) return;
-    planningStartPendingRef.current = true;
+    planningPreparationsRef.current.add(selectedProjectName);
+    planningRequestDrafts.current.setChatPreparing(selectedProjectName, chatId, true);
     const initialRunId = selectedContextRef.current.runId;
     let preparedRunId = "";
+    let preparationReleased = false;
     const currentStart = () => selectedContextRef.current.projectName === selectedProjectName
-      && (selectedContextRef.current.runId === initialRunId || selectedContextRef.current.runId === preparedRunId);
+      && (Boolean(preparedRunId) && selectedContextRef.current.runId === preparedRunId
+        || selectedContextRef.current.runId === initialRunId
+          && (selectedChatDraftRef.current.projectName === selectedProjectName ? selectedChatDraftRef.current.id : "") === chatId);
     let pollInFlight = false;
     let pollingTimer: number | undefined;
     const pollPlanningState = async () => {
@@ -2793,9 +2838,9 @@ export function App() {
         pollInFlight = false;
       }
     };
-    setBusyAction("runs.start");
+    setBusyAction("runs.start", selectedProjectName, initialRunId);
     setError("");
-    setPlanningStartErrors((errors) => ({ ...errors, [selectedProjectName]: "" }));
+    setPlanningStartErrors((errors) => ({ ...errors, [errorKey]: "" }));
     setNotice("");
     setPlanningStartElapsed(0);
     setPlanningPreparationMessage(
@@ -2805,14 +2850,14 @@ export function App() {
     );
     const elapsedStartedAt = Date.now();
     const elapsedTimer = window.setInterval(() => {
-      setPlanningStartElapsed(
+      if (currentStart()) setPlanningStartElapsed(
         Math.floor((Date.now() - elapsedStartedAt) / 1000),
       );
     }, 1000);
     try {
       let prepared: RunState | undefined;
       const intent = planningRepositoryIntent(projectCapabilities.repository_maturity.kind, repositoryIntent);
-      if (intent === "new_project") {
+      if (intent === "new_project" && !chatId) {
         const summaries = await window.orchestrator.request<RunSummary[]>("runs.list", { projectName: selectedProjectName, scope: "active" });
         const existing = await findPendingTechnologyPlanning(summaries,
           (runId) => window.orchestrator.request<RunState>("runs.get", { projectName: selectedProjectName, runId }),
@@ -2871,13 +2916,20 @@ export function App() {
         );
       }
       preparedRunId = prepared.id;
-      planningRequestDrafts.current.update(selectedProjectName, { request: "" });
-      replaceRun(selectedProjectName, prepared, currentStart());
-      if (currentStart()) {
+      const selectPrepared = currentStart();
+      planningRequestDrafts.current.update(selectedProjectName, { request: "" }, chatId);
+      if (chatId) planningRequestDrafts.current.removeChat(selectedProjectName, chatId);
+      replaceRun(selectedProjectName, prepared, selectPrepared);
+      if (selectPrepared) {
+        setChatDraftSelection(selectedProjectName);
+        selectedContextRef.current = { projectName: selectedProjectName, runId: prepared.id };
         setSelectedRunId(prepared.id);
         setWorkbenchView("planning");
         setPlanningPreparationMessage("이 그룹에서 기획 AI를 시작하고 있습니다.");
       }
+      planningPreparationsRef.current.delete(selectedProjectName);
+      preparationReleased = true;
+      setBusyAction("runs.runPlanning", selectedProjectName, prepared.id);
       pollingTimer = window.setInterval(() => {
         void pollPlanningState();
       }, 1500);
@@ -2901,16 +2953,16 @@ export function App() {
       }
     } catch (requestError) {
       const message = errorMessage(requestError);
-      setPlanningStartErrors((errors) => ({ ...errors, [selectedProjectName]: message }));
+      setPlanningStartErrors((errors) => ({ ...errors, [errorKey]: message }));
       if (currentStart()) setError(message);
       await pollPlanningState();
     } finally {
-      planningStartPendingRef.current = false;
+      if (!preparationReleased) planningPreparationsRef.current.delete(selectedProjectName);
+      planningRequestDrafts.current.setChatPreparing(selectedProjectName, chatId, false);
       window.clearInterval(elapsedTimer);
       if (pollingTimer !== undefined) window.clearInterval(pollingTimer);
-      setPlanningStartElapsed(0);
-      if (currentStart()) setPlanningPreparationMessage("");
-      setBusyAction("");
+      if (currentStart()) { setPlanningStartElapsed(0); setPlanningPreparationMessage(""); }
+      setBusyAction("", selectedProjectName, preparedRunId || initialRunId);
     }
   }, [
     loadProjects,
@@ -2926,6 +2978,7 @@ export function App() {
     replaceRun,
     selectedPlanningProfile,
     selectedProjectName,
+    setChatDraftSelection,
   ]);
 
   const runPreparedRevisionPlanning = useCallback(async () => {
@@ -2995,7 +3048,7 @@ export function App() {
     queueSubmittingRef.current = true; setQueueSubmitting(true);
     try {
       const snapshot = await window.orchestrator.queuePlanningMessage({ id, projectName, runId, text, message, taskId, profile,
-        afterRequestId: planningRequests.active?.requestId, controlTarget, executionMode: intent === "project" ? "project" : undefined });
+        afterRequestId: planningRequestFor(planningRequests, projectName, runId)?.requestId, controlTarget, executionMode: intent === "project" ? "project" : undefined });
       setPlanningRequests(current => ({ ...current, messageQueue: snapshot }));
       if (directionChangeDrafts.read(projectName, runId).text.trim() === text) directionChangeDrafts.edit(projectName, runId, "");
       queuedSubmissionRef.current = undefined;
@@ -3003,7 +3056,7 @@ export function App() {
     } catch (requestError) {
       if (runContextMatches(selectedContextRef.current.projectName, selectedContextRef.current.runId, projectName, runId)) setError(errorMessage(requestError));
     } finally { queueSubmittingRef.current = false; setQueueSubmitting(false); }
-  }, [selectedProjectName, selectedRun, selectedPlanningProfile, planningReasoning, planningMessage, taskDrafts, planDirty, nextExecutionProfileDirty, directionChangeDrafts, planningRequests.active?.requestId]);
+  }, [selectedProjectName, selectedRun, selectedPlanningProfile, planningReasoning, planningMessage, taskDrafts, planDirty, nextExecutionProfileDirty, directionChangeDrafts, planningRequests]);
 
   const changeQueuedMessage = useCallback(async (change: QueuedMessageChange): Promise<boolean> => {
     try {
@@ -3331,6 +3384,11 @@ export function App() {
 
   const applyPlanningConversation = useCallback(async () => {
     if (!selectedProjectName || !selectedRun) return;
+    if (initialTaskPlanningAvailable(selectedRun)) {
+      if (planDirty) { setError("미저장 계획 편집을 저장하거나 취소한 뒤 Task를 만들어 주세요."); return; }
+      await sendPlanningMessage("논의한 내용으로 Task 만들어줘");
+      return;
+    }
     if (selectedRun.repository_intent !== "new_project") {
       if (planningApplyEntryBlocked(selectedRun)) {
         setNotice("작업 실행 중입니다. 작업이 끝나면 변경안을 확인해 주세요.");
@@ -3375,7 +3433,7 @@ export function App() {
       }
     } catch (requestError) { if (isCurrent()) setError(errorMessage(requestError)); }
     finally { finishTaskPlanning(); setBusyAction("", selectedProjectName, runId); }
-  }, [beginTaskPlanning, planDirty, replaceRun, selectedProjectName, selectedRun]);
+  }, [beginTaskPlanning, planDirty, replaceRun, selectedProjectName, selectedRun, sendPlanningMessage]);
 
   const runGreenfieldAction = useCallback(async (kind: "answer" | "confirm" | "plan" | "start" | "features", answer = "", optionId = "", revision = 0) => {
     if (!selectedProjectName || !selectedRun || greenfieldActionPendingRef.current) return;
@@ -3468,12 +3526,12 @@ export function App() {
   const interruptPlanning = useCallback(async () => {
     if (!selectedProjectName || !selectedRunId) return;
     const projectName = selectedProjectName, runId = selectedRunId;
-    const target = planningRequests.active;
+    const target = planningRequestFor(planningRequests, projectName, runId);
     const current = () => runContextMatches(selectedContextRef.current.projectName, selectedContextRef.current.runId, projectName, runId);
     try {
       const snapshot = await window.orchestrator.planningRequests();
       setPlanningRequests(snapshot);
-      const owner = snapshot.active;
+      const owner = planningRequestFor(snapshot, projectName, runId);
       if (!target || target.projectName !== projectName || target.runId !== runId) throw new Error("중단할 대화 요청을 확인하지 못했습니다. 상태를 다시 확인해 주세요.");
       if (!owner || owner.requestId !== target.requestId || owner.projectName !== projectName || owner.runId !== runId) {
         if (snapshot.recent.some(item => item.requestId === target.requestId && ["succeeded", "interrupted"].includes(item.phase))) {
@@ -3487,7 +3545,7 @@ export function App() {
       if (updated) replaceRun(projectName, updated);
       if (current()) { setError(""); setNotice(updated ? "해당 AI 요청을 중단했습니다. 기존 작업 결과는 유지됩니다." : "요청이 이미 종료됐습니다."); }
     } catch (requestError) { if (current()) setError(errorMessage(requestError)); }
-  }, [replaceRun, selectedProjectName, selectedRunId, planningRequests.active]);
+  }, [replaceRun, selectedProjectName, selectedRunId, planningRequests]);
 
   const restartBackend = useCallback(async () => {
     setBusyAction("system.restartBackend");
@@ -3506,6 +3564,7 @@ export function App() {
   }, []);
 
   const openGlobalGroup = useCallback((projectName: string, runId: string, archived = false, view?: "operations") => {
+    setChatDraftSelection(projectName);
     newWorkProjectRef.current = "";
     setChoosingNewWorkProject(false);
     setHomeView("work");
@@ -3531,7 +3590,7 @@ export function App() {
       selectProject(projectName);
     }
     if (view === "operations" && selectedContextRef.current.projectName === projectName && selectedRunRef.current?.id === runId) openApplySummary();
-  }, [loadActiveGroups, loadRuns, openApplySummary, selectProject]);
+  }, [loadActiveGroups, loadRuns, openApplySummary, selectProject, setChatDraftSelection]);
 
   const openProjectSelection = useCallback((forNewWork = false) => {
     setChoosingNewWorkProject(forNewWork);
@@ -3540,17 +3599,21 @@ export function App() {
     window.requestAnimationFrame(() => document.getElementById("chat-home-title")?.focus({ preventScroll: true }));
   }, []);
 
-  const startProjectWork = useCallback((projectName: string) => {
+  const openChatDraft = useCallback((projectName: string, chatId: string) => {
     const project = projectsRef.current.find((item) => item.name === projectName);
     if (!project) {
       setNotice("선택한 프로젝트가 등록 목록에 없습니다. 프로젝트 목록을 다시 확인해 주세요.");
       return;
+    }
+    if (!planningRequestDrafts.current.chatSnapshot().some(chat => chat.projectName === projectName && chat.id === chatId)) {
+      setNotice("선택한 새 채팅 초안을 찾지 못했습니다."); return;
     }
     pendingGlobalGroupRef.current = undefined;
     pendingNotificationRef.current = undefined;
     pendingAttentionRef.current = undefined;
     newWorkProjectRef.current = projectName;
     selectProject(projectName);
+    setChatDraftSelection(projectName, chatId);
     selectedContextRef.current = { projectName, runId: "" };
     runDetailRequestRef.current += 1;
     setSelectedRunId("");
@@ -3562,11 +3625,37 @@ export function App() {
     setChoosingNewWorkProject(false);
     setHomeView("work");
     setSideInspectorOpen(false);
+    setError("");
+    setPlanningIndex(undefined);
+    setPlanningIndexElapsed(0);
+    setPlanningStartElapsed(0);
+    setPlanningPreparationMessage("");
     restorePlanningDraft(projectName, project.planning_source_dir || "");
     setWorkbenchView("planning");
     setNotice("");
     window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("#planning-sidebar textarea")?.focus({ preventScroll: true }));
-  }, [restorePlanningDraft, selectProject]);
+  }, [restorePlanningDraft, selectProject, setChatDraftSelection]);
+
+  const startProjectWork = useCallback((projectName: string) => {
+    const project = projectsRef.current.find(item => item.name === projectName);
+    if (!project) { setNotice("선택한 프로젝트가 등록 목록에 없습니다. 프로젝트 목록을 다시 확인해 주세요."); return; }
+    const chatId = crypto.randomUUID();
+    planningRequestDrafts.current.createChat(projectName, chatId, project.planning_source_dir || "");
+    openChatDraft(projectName, chatId);
+  }, [openChatDraft]);
+
+  const deleteChatDraft = useCallback((projectName: string, chatId: string) => {
+    const draft = planningRequestDrafts.current.chatSnapshot().find(chat => chat.projectName === projectName && chat.id === chatId);
+    if (!draft || draft.preparing) return;
+    planningRequestDrafts.current.removeChat(projectName, chatId);
+    if (selectedContextRef.current.projectName !== projectName || selectedContextRef.current.runId || selectedChatDraftRef.current.id !== chatId) return;
+    const next = planningRequestDrafts.current.chatSnapshot().find(chat => chat.projectName === projectName);
+    if (next) openChatDraft(projectName, next.id);
+    else {
+      setChatDraftSelection(projectName);
+      restorePlanningDraft(projectName, projectsRef.current.find(project => project.name === projectName)?.planning_source_dir || "");
+    }
+  }, [openChatDraft, restorePlanningDraft, setChatDraftSelection]);
 
   const addProject = useCallback(
     async (event: FormEvent) => {
@@ -3668,7 +3757,7 @@ export function App() {
 
   const currentReasoningOptions = selectedPlanningProfile?.reasoning_efforts || [];
   const isBusy = Boolean(busyAction || hasExecutionRequests);
-  const removeProjectReason = projectRemovalReason(selectedProjectName, executionRequests, busyAction, busyProjectRef.current, removingProjectName);
+  const removeProjectReason = projectRemovalReason(selectedProjectName, executionRequests, busyAction, busyProjectRef.current, removingProjectName, planningRequests);
   const planningPaneMax = Math.max(320, Math.min(576, workMainWidth - 488));
   const visiblePlanningPaneWidth = clamp(planningPaneWidth, 320, planningPaneMax);
   const workspaceStyle = {
@@ -3748,7 +3837,13 @@ export function App() {
               onClick={() => { setAttentionOpen(true); void loadAttentionItems(); }} />
             <button type="button" data-navigation-action aria-current={homeView === "history" ? "page" : undefined} onClick={() => { setHomeView("history"); setSideInspectorOpen(false); }}>완료한 작업</button>
             <ChatProjectNavigation projects={projects} cache={runSummaryCache} projectName={selectedProjectName} run={selectedRun}
+              drafts={chatDrafts} selectedDraftId={!selectedRunId ? selectedChatDraft.id : undefined}
+              onOpenDraft={openChatDraft} onDeleteDraft={deleteChatDraft}
+              planning={planningRequests} deleting={deletingRunId ? { projectName: deletingProjectName, runId: deletingRunId } : undefined}
+              archiving={archivingRunId ? { projectName: archivingProjectName, runId: archivingRunId } : undefined}
               onProject={selectProject} onOpen={openGlobalGroup} onNew={startProjectWork}
+              onArchive={(projectName, runId) => void archiveRun(runId, projectName)}
+              onDelete={(projectName, runId) => void deleteRun(runId, projectName, "active")}
               onHistory={(projectName) => { selectProject(projectName); setWorkDetailsOpen(true); setWorkListOpen(true); }} />
             {selectedRun && !runSummaryCache[selectedProjectName]?.active.some(item => item.id === selectedRun.id) ? <CurrentWorkNavigation projectName={selectedProjectName} run={selectedRun}
               active={homeView === "work"} onOpen={() => setHomeView("work")} /> : null}
@@ -3862,7 +3957,7 @@ export function App() {
 
             {attentionOpen ? <AttentionInbox snapshot={attentionSnapshot} loading={attentionLoading} error={attentionError}
               onRefresh={() => void loadAttentionItems()} onOpen={openAttentionItem} onClose={closeAttentionInbox} /> : null}
-        {error && (backendRecoveryNeeded || !(homeView === "work" && workbenchView === "planning" && !selectedRun && error === planningStartErrors[selectedProjectName])) ? (
+        {error && (backendRecoveryNeeded || !(homeView === "work" && workbenchView === "planning" && !selectedRun && error === planningStartError)) ? (
           <ApplicationErrorBanner message={error}>
             {backendRecoveryNeeded ? <button type="button" disabled={busyAction === "system.restartBackend"} onClick={() => void restartBackend()}>{busyAction === "system.restartBackend" ? "재시작 중…" : "실행 엔진 재시작"}</button> : null}
           </ApplicationErrorBanner>
@@ -3913,6 +4008,7 @@ export function App() {
                   <p>설치: <code>npm install -g opencode-ai@1.19.3</code></p>
                   <p>기본 AI 배정은 유지됩니다. NVIDIA는 직접 선택한 작업에 사용하며, 체험 API는 이용 조건을 확인하고 공개 예제로 먼저 시험하세요.</p>
                 </details></section>
+                <McpConnectionGuide visible={homeView === "settings"} />
                 <section className="work-settings__card"><h3>프로젝트 환경</h3><p>{selectedProjectName || "프로젝트를 먼저 선택하세요"}</p>
                 <button className="button button--secondary" disabled={!selectedProject || isBusy} onClick={() => setProjectSettingsOpen(true)}>프로젝트 설정</button>
                 <button className="button button--secondary" onClick={() => setProjectDialogOpen(true)}>프로젝트 등록</button>
@@ -4090,7 +4186,7 @@ export function App() {
                 indexElapsed={planningIndexElapsed}
                 planningElapsed={ownsPlanning && planningOwner ? Math.max(0, Math.floor((Date.now() - planningOwner.startedAt) / 1000)) : busyAction ? planningStartElapsed : 0}
                 preparationMessage={planningPreparationMessage}
-                startError={planningStartErrors[selectedProjectName]}
+                startError={planningStartError}
                 preparing={busyAction === "runs.start" && busyProjectRef.current === selectedProjectName}
                 busyAction={busyAction}
                 messageQueue={planningRequests.messageQueue}
@@ -4098,13 +4194,6 @@ export function App() {
                 onQueue={() => void queuePlanningMessage(repairTask?.id)}
                 onChangeQueued={changeQueuedMessage}
                 onRestoreQueued={restoreQueuedMessage}
-                planningCapacityOwner={!ownsPlanning ? planningOwner?.projectName : undefined}
-                onOpenPlanningOwner={() => {
-                  if (!planningOwner) return;
-                  if (planningOwner.runId) openGlobalGroup(planningOwner.projectName, planningOwner.runId);
-                  else { selectProject(planningOwner.projectName); setSelectedRunId(""); setHomeView("work"); }
-                  setWorkbenchView("planning"); setWorkDetailsOpen(false);
-                }}
                 planningRequestError={!error && ownsPlanning && planningOwner?.phase === "confirmation_required" ? `중단 여부 확인 필요 · ${planningOwner.error}`
                   : !error && latestPlanningReceipt?.phase === "failed" ? latestPlanningReceipt.error : undefined}
                 interruptLabel={ownsPlanning && ["chat", "archived_chat"].includes(planningOwner?.kind || "") ? "답변 중단" : "기획 중단"}
@@ -4197,8 +4286,8 @@ export function App() {
                 busyAction={executionAction || busyAction}
                 executionElapsed={executionAction ? selectedExecutionElapsed : executionElapsed}
                 stopRequestPending={stopRequestExecutionId === selectedRun?.execution_control?.execution_id}
-                deleting={deletingRunId === selectedRun?.id}
-                archiving={archivingRunId === selectedRun?.id}
+                deleting={deletingProjectName === selectedProjectName && deletingRunId === selectedRun?.id}
+                archiving={archivingProjectName === selectedProjectName && archivingRunId === selectedRun?.id}
                 checking={applySummaryChecking}
                 planDirty={planDirty}
                 actionError={applySummaryError}
@@ -4768,11 +4857,14 @@ function ApplicationErrorBanner({ message, children }: { message: string; childr
   </div>;
 }
 
-function projectRemovalReason(projectName: string, requests: Record<string, PendingExecutionRequest>, busyAction: string, busyProjectName: string, removingProjectName: string): string {
+function projectRemovalReason(projectName: string, requests: Record<string, PendingExecutionRequest>, busyAction: string, busyProjectName: string, removingProjectName: string, planning?: PlanningRequestsSnapshot): string {
   if (!projectName) return "프로젝트를 먼저 선택하세요.";
   if (removingProjectName) return `${removingProjectName} 등록 해제 결과를 확인 중입니다.`;
   const prefix = JSON.stringify([projectName]).slice(0, -1) + ",";
   if (Object.keys(requests).some((key) => key.startsWith(prefix))) return "이 프로젝트의 실행 요청이 끝난 뒤 등록을 해제할 수 있습니다.";
+  if ((planning?.activeRequests ?? (planning?.active ? [planning.active] : [])).some(owner => owner.projectName === projectName)) {
+    return "이 프로젝트의 AI 요청이 끝난 뒤 등록을 해제할 수 있습니다.";
+  }
   if (busyAction === "system.restartBackend") return "실행 엔진 재시작이 끝난 뒤 다시 시도하세요.";
   if (busyAction && busyProjectName === projectName) return "이 프로젝트의 요청이 끝난 뒤 등록을 해제할 수 있습니다.";
   return "";
@@ -4807,6 +4899,8 @@ function RunNextActionBanner({ action, recovery, busy, expanded, onToggle, onInv
   onToggle(): void;
   onInvoke(): void;
 }) {
+  // Task 실패는 채팅의 오류 상세와 작업 카드에서 확인한다.
+  if (recovery?.taskId && action.tone === "danger") return null;
   const mutating = ["confirm_plan", "execute", "resume", "retry", "verify", "refresh"].includes(action.kind);
   const processing = busy && mutating;
   const inlineDescription = action.kind === "none" && action.tone === "active";
@@ -5058,8 +5152,6 @@ interface PlanningWorkbenchProps {
   onQueue?(): void;
   onChangeQueued?(change: QueuedMessageChange): Promise<boolean>;
   onRestoreQueued?(item: QueuedPlanningMessage): Promise<boolean>;
-  planningCapacityOwner?: string;
-  onOpenPlanningOwner?(): void;
   planningRequestError?: string;
   interruptLabel?: string;
   planDirty: boolean;
@@ -5098,7 +5190,7 @@ function PlanningWorkbench(props: PlanningWorkbenchProps) {
   const preparing = props.preparing ?? props.busyAction === "runs.start";
   const repairActive = props.repairStartedAt !== undefined;
   const busy = Boolean(props.busyAction || repairActive);
-  const sendBlocked = busy || Boolean(props.planningCapacityOwner);
+  const sendBlocked = busy;
   const selectedProfile = props.profiles.find(
     (profile) => providerProfileKey(profile) === props.selectedProfileKey,
   );
@@ -5271,7 +5363,7 @@ function PlanningWorkbench(props: PlanningWorkbenchProps) {
     "ready_to_merge", "verified", "work_branch_pushed", "merged", "pushed", "deployed",
   ].includes(props.run.stage);
   const queuedMessages = props.messageQueue?.items.filter(item => item.projectName === props.project?.name && item.runId === props.run?.id) || [];
-  const queueMode = Boolean(props.onQueue && props.run && (props.interruptible || planningActive || props.executionPhase === "working" || props.planningCapacityOwner
+  const queueMode = Boolean(props.onQueue && props.run && (props.interruptible || planningActive || props.executionPhase === "working"
     || queuedMessages.some(item => item.status !== "sent")));
   const messageAllowed = chatAllowed || Boolean(props.run && props.interruptible && props.run.stage === "reviewed");
   const composerHint = props.run?.archive ? "보관된 결과는 유지됩니다" : props.planDirty
@@ -5295,6 +5387,7 @@ function PlanningWorkbench(props: PlanningWorkbenchProps) {
   const conversationRevision = props.run?.planning_conversation_revision || 0;
   const appliedConversationRevision = props.run?.planning_applied_conversation_revision || 0;
   const hasUnappliedConversation = conversationRevision > appliedConversationRevision || followUpCount > 0;
+  const initialTasksAvailable = initialTaskPlanningAvailable(props.run);
   const showApplyReceipt = !guided && (latestApply || followUpCount) && (latestApply?.status !== "succeeded"
     || (!planningActive && !visiblePendingMessage && !hasUnappliedConversation
       && conversationRevision <= (latestApply.conversation_revision ?? appliedConversationRevision)));
@@ -5406,7 +5499,7 @@ function PlanningWorkbench(props: PlanningWorkbenchProps) {
       {!startReadiness.ready ? <p id="planning-start-reason" className="planning-start-reason" role="status"><AlertCircle aria-hidden="true" size={14} />{startReadiness.reason}</p> : null}
       {props.startError ? <p className="inline-error" role="alert">{props.startError}</p> : null}
       {preparing ? <p role="status">{progressMessage}</p> : null}
-      <button className="button button--primary planning-start" type="button" aria-describedby={!startReadiness.ready ? "planning-start-reason" : undefined} disabled={!startReadiness.ready || busy} onClick={props.onStart}><Play aria-hidden="true" size={16} />{preparing ? `자료 확인 중… ${props.planningElapsed}초` : planningRepositoryIntent(props.capabilities?.repository_maturity.kind, props.repositoryIntent) === "new_project" ? "기술 구성 추천받기" : "계획 만들기"}</button>
+      <button className="button button--primary planning-start" type="button" aria-describedby={!startReadiness.ready ? "planning-start-reason" : undefined} disabled={!startReadiness.ready || busy} onClick={props.onStart}><Play aria-hidden="true" size={16} />{preparing ? `자료 확인 중… ${props.planningElapsed}초` : planningRepositoryIntent(props.capabilities?.repository_maturity.kind, props.repositoryIntent) === "new_project" ? "기술 구성 추천받기" : props.mode === "auto" ? "분석하고 Task 만들기" : "계획 만들기"}</button>
     </div>
   );
   const maturity = props.run?.repository_maturity || props.capabilities?.repository_maturity;
@@ -5587,7 +5680,19 @@ function PlanningWorkbench(props: PlanningWorkbenchProps) {
           {props.chatFirst ? planningDecisions : null}
           {props.executionPhase !== "thinking" && (props.executionPhase || !props.chatFirst || !planningActive && !visiblePendingMessage) ? props.workActivity : null}
           {props.chatFirst ? planningActivity : null}
-          {!hasConversation ? <EmptyState icon={<MessageSquare aria-hidden="true" size={22} />} title={props.chatFirst ? "무엇을 만들거나 바꿀까요?" : "기획 대화 준비"}
+          {props.chatFirst && !props.run ? <section className="planning-document-entry" aria-label="기획서로 작업 시작">
+            <FolderOpen aria-hidden="true" size={24} /><h3>기획서로 Task 만들기</h3>
+            <p>기획서 폴더를 선택하면 AI가 문서를 분석해 작업을 나눠줍니다.</p>
+            {props.path.trim() ? <span className="planning-document-entry__source" title={props.path}><FolderKanban aria-hidden="true" size={15} />{props.path.trim().split(/[\\/]/).filter(Boolean).at(-1)}</span> : null}
+            <button className="button button--primary" type="button" aria-haspopup="dialog" disabled={busy || !props.project}
+              onClick={() => { props.onModeChange("auto"); setStartDialogOpen(true); }}><FolderOpen aria-hidden="true" size={16} />기획서 선택·분석</button>
+            <small>직접 요청하려면 아래 채팅창에 입력하세요.</small>
+          </section> : initialTasksAvailable && props.chatFirst ? <section className="planning-initial-tasks" aria-label="처음 작업 만들기">
+            <div><strong>논의한 내용을 Task로 만들 수 있어요</strong><p>아직 생성된 Task가 없습니다. 작업 생성 후 실행할 내용을 확인합니다.</p></div>
+            <button className="button button--primary" type="button"
+              disabled={applyDisabled || planningActive || applyPending || Boolean(visiblePendingMessage) || Boolean(props.planDirty)}
+              onClick={props.onApply}><ListChecks aria-hidden="true" size={16} />대화 내용으로 Task 만들기</button>
+          </section> : !hasConversation ? <EmptyState icon={<MessageSquare aria-hidden="true" size={22} />} title={props.chatFirst ? "무엇을 만들거나 바꿀까요?" : "기획 대화 준비"}
             detail={props.chatFirst ? "AI와 대화하며 작업을 진행하세요. 진행 상황과 필요한 확인도 이곳에서 알려드립니다." : "계획을 시작하면 준비 과정과 기획 AI의 질문이 이곳에 이어서 표시됩니다."} /> : null}
         </div>
 
@@ -5605,7 +5710,7 @@ function PlanningWorkbench(props: PlanningWorkbenchProps) {
                 onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }}
                 onKeyDown={(event) => { if (!composerIsComposing(composingRef.current, event.nativeEvent) && messageAllowed && !excludedPlanningSelection
                   && event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); sendMessage(); } }} />
-            </label>{props.planningCapacityOwner ? <small role="status">다른 대화에서 AI가 응답 중입니다 · {props.planningCapacityOwner} <button className="button button--quiet" type="button" onClick={props.onOpenPlanningOwner}>해당 대화로 이동</button></small> : null}{composerHint ? <small>{composerHint}</small> : null}</div>
+            </label>{composerHint ? <small>{composerHint}</small> : null}</div>
             {queueMode ? <small className="chat-composer__queue-hint">답변이 끝나면 예약 순서대로 보냅니다.</small> : null}
             <div className="chat-composer__actions">
               {props.chatFirst ? chatModel : null}
@@ -5636,7 +5741,6 @@ function PlanningWorkbench(props: PlanningWorkbenchProps) {
             onKeyDown={event => { if (!composerIsComposing(composingRef.current, event.nativeEvent) && (event.ctrlKey || event.metaKey) && event.key === "Enter" && !sendBlocked && props.request.trim()) {
               event.preventDefault(); if (startReadiness.ready) props.onStart(); else setStartDialogOpen(true);
             } }} /></label>
-          {props.planningCapacityOwner ? <p role="status">다른 대화에서 AI가 응답 중입니다 · {props.planningCapacityOwner} <button className="button button--quiet" type="button" onClick={props.onOpenPlanningOwner}>해당 대화로 이동</button></p> : null}
           {props.startError ? <p role="alert">{props.startError}</p> : null}
           <div className="chat-composer__actions">{chatModel}
             <button className="button button--primary chat-composer__send" type="button" title="계획 만들기 (Ctrl/Cmd+Enter)"
@@ -6322,7 +6426,7 @@ function OperationsWorkbench({ summaryOnly = false, statusTarget, statusVisible 
                   ? <button className="button button--secondary" type="button" disabled={busy} onClick={() => void onRefresh()}>상태 다시 확인</button> : null}
               {operationsReady && integration?.status === "main_push_pending" ? <button className="button button--primary" type="button"
                 disabled={busy || !canRetryMainPush(run, runLock)} onClick={() => onApprovedAction("runs.retryMainPush", { workspaceMode: run.workspace_mode })}>
-                <UploadCloud aria-hidden="true" size={16} />변경 내용 업로드 재시도
+                <UploadCloud aria-hidden="true" size={16} />{run.stage === "merged" ? "변경 내용 업로드" : "변경 내용 업로드 재시도"}
               </button> : null}
               {operationsReady && runLock?.state !== "unlocked" && runLock?.state !== "active" && onInspectRunLock && !mainApplyInterrupted
                 ? <button className="button button--secondary" type="button" onClick={onInspectRunLock}>잠금 상태 확인</button> : null}

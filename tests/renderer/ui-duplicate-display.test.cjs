@@ -197,15 +197,37 @@ test('central questions suppress only synthetic chat copies and preserve real co
   assert.equal(fallback[0].props['data-central-question'], undefined);
 });
 
-test('failure banners name the task in the body and keep the same log or detail action in a short button', () => {
-  for (const [kind, label] of [['task_log', '실패 로그 보기'], ['task_detail', '실패 작업 확인']]) {
-    let invoked = 0;
-    const tree = app.RunNextActionBanner({ action: { kind, tone: 'danger', label: '긴 작업 제목 실패 확인', status: '실패', description: '' },
-      recovery: { location: '긴 작업 제목', cause: '실패', recommendation: '확인', effect: '조회', evidence: '원문' },
-      busy: false, expanded: false, onToggle() {}, onInvoke() { invoked++; } });
-    const action = nodes(tree).find(node => node.type === 'button' && text(node) === label);
-    assert.ok(action); assert.match(text(tree), /실패 위치 · 긴 작업 제목/);
-    action.props.onClick(); assert.equal(invoked, 1);
+test('task failures omit the duplicate recovery banner while keeping chat status and raw failure evidence', () => {
+  const { runNextAction } = require(modulePath('runNextAction.js'));
+  const { runRecoveryGuidance } = require(modulePath('runRecoveryGuidance.js'));
+  const { ChatWorkActivity, ChatWorkStatus } = require(modulePath('ChatWorkActivity.js'));
+  for (const error of ['task_scope_review_required: {"reason":"범위 확인","paths":["src/Adapter.cs"]}',
+    'agent worker produced no commit', 'verification command failed']) {
+    const current = run({ stage: 'failed', failed_step: 'agent_execution', repository_intent: 'existing_structure', workspace_mode: 'shared',
+      execution_control: { situation: 'attention_required', action: 'none', lock_state: 'unlocked', reason: '실패 기록 확인' },
+      tasks: [task({ id: 'failed-task', title: '실패한 작업', status: 'failed', completed_commit: '', error })], planning_questions: [] });
+    const action = runNextAction(current, { planDirty: false, pendingAction: '' });
+    const recovery = runRecoveryGuidance(current);
+    assert.equal(recovery.taskId, 'failed-task'); assert.equal(action.tone, 'danger');
+    for (const expanded of [false, true]) {
+      assert.equal(app.RunNextActionBanner({ action, recovery, busy: false, expanded,
+        onToggle() { assert.fail('removed banner'); }, onInvoke() { assert.fail('render cannot invoke recovery'); } }), null);
+    }
+    const chat = html(ChatWorkActivity({ run: current, action, busy: false, repairing: false,
+      onAction() { assert.fail('render cannot execute'); }, onDiscuss() {}, onTasks() {} }));
+    assert.match(chat, /오류 상세/); assert.ok(chat.includes(error.replaceAll('"', '&quot;')));
+    const status = html(ChatWorkStatus({ run: current, action }));
+    assert.match(status, /수정 범위 확인 대기|실패 · 복구 확인 필요/);
+    const cards = app.TaskWorkbench({ run: current, cardsOnly: true,
+      selectedTaskId: '', selectedTaskIds: [], profiles: {}, profileOptions: {}, planDirty: false,
+      draftConflict: false, draftErrorCount: 0, busyAction: '', executionAction: '',
+      nextAction: createElement(app.RunNextActionBanner, { action, recovery, busy: false, expanded: false,
+        onToggle() {}, onInvoke() { assert.fail('render cannot invoke recovery'); } }),
+      onAddTask() {}, onResetPlan() {}, onSavePlan() {} });
+    const cardsMarkup = html(cards);
+    assert.match(cardsMarkup, /실패한 작업/);
+    assert.doesNotMatch(cardsMarkup, /run-next-action|실패 복구|실패 위치|수정 범위 논의|안내 펼치기/);
+    assert.equal(current.tasks[0].status, 'failed'); assert.equal(current.tasks[0].error, error);
   }
 });
 

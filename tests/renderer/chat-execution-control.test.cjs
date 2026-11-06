@@ -67,6 +67,16 @@ test('natural stop and recovery requests execute without requiring a special phr
  }
 });
 
+test('planning without Tasks never dispatches an execution recovery, including the reported agreed-plan request', () => {
+ const planning={...failed,stage:'needs_clarification',tasks:[],project_chat_available:false,
+  execution_control:{...failed.execution_control,can_stop:false}};
+ for(const message of ['계획 생성이 안 되는 문제 고치고, 합의한 6개 작업으로 이어서 진행해줘',
+  '합의한 작업으로 계속 진행해줘','고쳐서 계속해줘','논의한 내용으로 Task 만들어줘','진행 멈춰줘'])
+  assert.equal(chatExecutionIntent(message,planning),undefined,message);
+ assert.equal(chatExecutionIntent('진행 멈춰줘',{...planning,execution_control:{...planning.execution_control,can_stop:true}}),'stop');
+ assert.equal(chatExecutionIntent('고쳐서 계속해줘',failed),'repair','real execution recovery remains available');
+});
+
 test('a chat command sends one captured request to main, independent of the selected conversation',async()=>{
  const calls=[],observed=[],phases=[];
  const result=await controlExecutionFromChat(options({isCurrent:()=>false,onPhase:phase=>phases.push(phase),onRun:run=>observed.push(run),

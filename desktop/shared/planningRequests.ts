@@ -17,6 +17,12 @@ export interface PlanningRequestOwner {
 }
 export interface PlanningRequestsSnapshot {
   active?: PlanningRequestOwner;
+  activeRequests?: PlanningRequestOwner[];
   recent: PlanningRequestOwner[];
   messageQueue?: import("./planningMessageQueue").PlanningMessageQueueSnapshot;
+}
+
+export function planningRequestFor(snapshot: PlanningRequestsSnapshot, projectName: string, runId: string): PlanningRequestOwner | undefined {
+  return (snapshot.activeRequests ?? (snapshot.active ? [snapshot.active] : []))
+    .find(owner => owner.projectName === projectName && owner.runId === runId);
 }

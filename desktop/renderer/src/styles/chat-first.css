@@ -54,6 +54,17 @@
 .chat-first .chat-work-status__task { flex: 1; min-width: 0; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .chat-first .planning-sidebar .planning-messages { flex: 1 1 0%; padding: var(--space-6) max(var(--space-6), calc((100% - 52rem) / 2)); scroll-padding-block: var(--space-4); }
 .chat-first .planning-messages > * { flex-shrink: 0; }
+.planning-document-entry { display: grid; justify-items: center; gap: var(--space-4); margin-block: auto; padding: var(--space-6) 0; text-align: center; min-width: 0; }
+.planning-document-entry > svg { color: var(--color-accent); }
+.planning-document-entry h3 { margin: 0; font-size: 1.25rem; }
+.planning-document-entry p { margin: 0; max-width: 28rem; color: var(--color-text-muted); line-height: 1.7; }
+.planning-document-entry small { color: var(--color-text-muted); }
+.planning-document-entry__source { display: flex; align-items: center; gap: var(--space-2); max-width: 100%; overflow-wrap: anywhere; color: var(--color-text-muted); }
+.planning-document-entry__source > svg { flex-shrink: 0; }
+.planning-document-entry .button { max-width: 100%; white-space: normal; }
+.planning-initial-tasks { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-panel); background: var(--color-surface); }
+.planning-initial-tasks p { margin: var(--space-2) 0 0; color: var(--color-text-muted); }
+.planning-initial-tasks .button { justify-self: start; max-width: 100%; white-space: normal; }
 .chat-first .planning-sidebar .chat-message { padding: var(--space-3) 0; margin-block: 0 var(--space-3); border: 0; border-radius: 0; background: transparent; line-height: 1.8; }
 .chat-first .planning-sidebar .chat-message--user { align-self: flex-end; max-width: 90%; padding: var(--space-3) var(--space-4); border-radius: var(--radius-panel); background: var(--color-surface-raised); }
 .chat-first .chat-message > span { font-size: 0.75rem; color: var(--color-text-muted); margin-bottom: 0; }
@@ -231,11 +242,32 @@
 .chat-first .chat-projects__heading { display: flex; align-items: center; min-width: 0; }
 .chat-first .chat-projects__heading > button:first-child { display: flex; align-items: center; flex: 1; gap: var(--space-2); min-width: 0; font-size: 0.8125rem; color: var(--color-text); }
 .chat-first .chat-projects__heading [data-open="false"] { transform: rotate(-90deg); }
+.chat-first .chat-projects__heading > button:first-child > svg { flex-shrink: 0; }
+.chat-first .chat-projects__project-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-first .chat-projects__heading > .chat-projects__new { display: flex; align-items: center; flex-shrink: 0; gap: var(--space-1); padding: var(--space-2); color: var(--color-accent); font-size: 0.75rem; white-space: nowrap; }
+.chat-first .chat-projects__draft small { flex-shrink: 0; color: var(--color-text-muted); font-size: 0.625rem; }
 .chat-first .chat-projects__heading > .icon-button { flex-shrink: 0; padding: var(--space-2); }
 .chat-first .chat-projects__conversations { padding-left: var(--space-4); }
-.chat-first .chat-projects__conversations > button { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-width: 0; font-size: 0.75rem; padding: var(--space-2); }
-.chat-first .chat-projects__conversations > button > svg { flex-shrink: 0; }
-.chat-first .chat-projects__conversations > button > span:not(.chat-projects__active) { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-first .chat-projects__conversations > button,
+.chat-first .chat-projects__conversation > button { display: flex; align-items: center; gap: var(--space-2); min-width: 0; font-size: 0.75rem; padding: var(--space-2); }
+.chat-first .chat-projects__conversations > button { width: 100%; }
+.chat-first .chat-projects__conversation { display: flex; align-items: center; min-width: 0; min-height: 2.25rem; gap: var(--space-1); border-radius: var(--radius-control); }
+.chat-first .chat-projects__conversation:has([aria-current="page"]) { background: var(--color-surface-raised); }
+.chat-first .chat-projects__conversation:hover { background: var(--color-surface-hover); }
+.chat-first .chat-projects__conversation > .chat-projects__open { flex: 1; border-color: transparent; background: transparent; }
+.chat-first .chat-projects__conversation > button > svg { flex-shrink: 0; }
+.chat-first .chat-projects__open > span:not(.chat-projects__active) { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-first .chat-projects__actions { display: flex; align-items: center; flex-shrink: 0; gap: var(--space-1); padding-inline-end: var(--space-1); }
+.chat-first .chat-projects__actions > button { display: flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; min-height: 1.75rem; padding: 0; border: 0; color: var(--color-text-muted); }
+.chat-first .chat-projects__actions > button > svg { flex-shrink: 0; }
+.chat-first .chat-projects__actions > .chat-projects__archive { color: var(--color-accent); }
+.chat-first .chat-projects__actions > button:hover:not(:disabled), .chat-first .chat-projects__actions > button:focus-visible { background: var(--color-surface-raised); }
+.chat-first .chat-projects__delete:hover:not(:disabled), .chat-first .chat-projects__delete:focus-visible { color: var(--color-danger); }
+.chat-first .chat-projects__actions > button:disabled { color: var(--color-text-muted); }
+@media (pointer: coarse) {
+  .chat-first .chat-projects__conversation > button, .chat-first .chat-projects__actions > button { min-height: 2.75rem; }
+  .chat-first .chat-projects__actions > button { width: 2.75rem; }
+}
 .chat-first .chat-projects__active { width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--color-accent); flex-shrink: 0; }
 .chat-first .chat-projects__history { color: var(--color-text-faint); }
 .chat-first .chat-home { display: flex; flex-direction: column; align-items: center; justify-content: center; max-width: 52rem; min-height: 100%; margin-inline: auto; padding: var(--space-8) var(--space-6); gap: var(--space-6); }

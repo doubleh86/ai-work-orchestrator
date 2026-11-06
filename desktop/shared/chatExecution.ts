@@ -29,6 +29,7 @@ export function chatControlParams(projectName: string, run: ChatControlRun, mess
 // Require an explicit request, not a status question or a quoted suggestion.
 export function chatExecutionIntent(message: string, run?: ChatControlRun): ChatExecutionIntent | undefined {
   const direct = explicitChatExecutionIntent(message);
+  if (run && !run.archive && run.tasks?.length === 0) return direct === "stop" && run.execution_control?.can_stop ? "stop" : undefined;
   if (run?.project_chat_available && !run.archive && run.tasks.length) return direct === "stop" ? "stop" : "project";
   return direct;
 }

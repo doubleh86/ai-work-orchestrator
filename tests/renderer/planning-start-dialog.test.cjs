@@ -67,6 +67,43 @@ test('task execution settings mount only when the composer menu opens and keep d
   assert.deepEqual(f.calls,[]);
 });
 
+test('new chat exposes document analysis outside settings and opens directly at source selection without starting', () => {
+  const f=fixture({chatFirst:true,request:'기존 요청 초안',path:'C:/Example/Plans'});
+  let tree=f.render();
+  const entry=nodes(tree).find(node=>node.props?.className==='planning-document-entry');
+  assert.ok(entry); assert.match(text(entry),/기획서로 Task 만들기.*기획서 선택·분석/);
+  const open=nodes(entry).find(node=>node.type==='button');
+  assert.equal(open.props.disabled,false); assert.equal(open.props['aria-haspopup'],'dialog');
+  open.props.onClick();
+  const modal=f.dialog(f.render()); assert.ok(modal);
+  assert.equal(f.props.mode,'auto'); assert.equal(f.props.request,'기존 요청 초안');
+  assert.match(text(modal),/확인할 기획 자료/); assert.equal(text(f.generate(modal)),'분석하고 Task 만들기');
+  assert.equal(f.generate(modal).props.disabled,false); assert.deepEqual(f.calls,[]);
+  nodes(modal).find(node=>node.type==='button'&&text(node)==='폴더 변경').props.onClick();
+  assert.deepEqual(f.calls,['choose']);
+  modal.props.onClose(); assert.equal(f.dialog(f.render()),undefined);
+  assert.equal(f.props.request,'기존 요청 초안');
+  f.props.busyAction='runs.start'; tree=f.render();
+  assert.equal(nodes(tree).find(node=>node.props?.className==='planning-document-entry').props.children.find(node=>node?.type==='button').props.disabled,true);
+});
+
+test('empty initial plans offer Task generation while completed, executing and new-project plans keep their original flow', () => {
+  const run={id:'initial',summary:'합의한 계획',stage:'needs_clarification',repository_intent:'existing_structure',tasks:[],events:[],
+    planning_messages:[{role:'assistant',text:'합의한 작업은 6개입니다.'}],planning_questions:[],planning_follow_up_requests:[]};
+  const f=fixture({chatFirst:true,run,onApply:()=>f.calls.push('create')});
+  const entry=nodes(f.render()).find(node=>node.props?.className==='planning-initial-tasks'); assert.ok(entry);
+  const create=nodes(entry).find(node=>node.type==='button'); assert.equal(create.props.disabled,false);
+  assert.deepEqual(f.calls,[]); create.props.onClick(); assert.deepEqual(f.calls,['create']);
+  f.props.busyAction='runs.sendPlanningMessage';
+  assert.equal(nodes(f.render()).find(node=>node.props?.className==='planning-initial-tasks').props.children[1].props.disabled,true);
+  f.props.busyAction='';
+  for(const changes of [{stage:'pushed'},{stage:'executing'},{tasks:[{id:'one',status:'pending',action_results:[]}]},
+    {archive:{}},{repository_intent:'new_project'},{stage:'failed',failed_step:'agent_execution'}]) {
+    f.props.run={...run,...changes};
+    assert.equal(nodes(f.render()).some(node=>node.props?.className==='planning-initial-tasks'),false);
+  }
+});
+
 test('planning entry opens with missing input/auth/inspection and performs no start, save or indexing', () => {
   for (const changes of [{}, {profiles:[],providerStatuses:[]}, {capabilities:undefined},
     {mode:'auto'}, {busyAction:'runs.start',preparationMessage:'자료 확인 중'}]) {

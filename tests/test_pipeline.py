@@ -3009,6 +3009,8 @@ class PipelineTest(unittest.TestCase):
                 self.assertIn("verification command failed", failed.tasks[0].error)
                 self.assertEqual(failed.tasks[0].completed_commit, "")
                 self.assertEqual(sum(item.status == "failed" for item in failed.tasks[0].action_results), len(calls))
+                handoff = [event.message for event in failed.events if event.kind == "task_repair_handoff"]
+                self.assertEqual(handoff, [f"{failed.tasks[0].id}:{failed.tasks[0].last_attempt_id}"])
                 self.assertEqual(calls[-1].count("Automatic correction of this Task"), 1)
                 if repeated:
                     self.assertIn("test a different cause or corrective approach", calls[-1])
@@ -6353,6 +6355,87 @@ class PipelineTest(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertFalse(Pipeline._planning_message_requests_apply(message))
 
+    def test_initial_task_creation_materializes_agreed_discussion_in_same_run_without_execution(self) -> None:
+        for message in ("계획 생성이 안 되는 문제 고치고, 합의한 6개 작업으로 이어서 진행해줘", "논의한 내용으로 Task 만들어줘"):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                pipeline, state = self._scope_test_run(Path(directory))
+                proposals = [deepcopy(state.tasks[0]) for _ in range(6)]
+                for index, task in enumerate(proposals):
+                    task.id = f"agreed-{index + 1}"
+                    task.title = f"합의한 작업 {index + 1}"
+                    task.dependencies = []
+                state.tasks = []
+                state.stage = Stage.NEEDS_CLARIFICATION
+                state.plan_approved_revision = 0
+                state.planning_agent_id = "worker"
+                pipeline._append_planning_user_message(state, "작업 여섯 개의 범위를 정하자.")
+                pipeline._append_planning_assistant_message(state, "합의한 작업은 여섯 개입니다.")
+                # Restored discussions may already be marked applied even though no Tasks survived.
+                state.planning_applied_conversation_revision = state.planning_conversation_revision
+                pipeline.store.save(state)
+                original_revision = state.plan_revision
+                with patch.object(pipeline, "_build_plan", return_value=Plan(summary="합의한 계획", server_work=False, tasks=proposals)) as build, \
+                        patch.object(pipeline, "_run_planning_chat_turn") as chat, patch.object(pipeline, "_execute") as execute:
+                    updated = pipeline.send_planning_message(state.id, message)
+                    receipt = updated.planning_apply_requests[-1]
+                    replayed = pipeline.request_planning_conversation_apply(
+                        state.id, request_id=receipt.request_id, expected_revision=receipt.plan_revision,
+                        conversation_revision=receipt.conversation_revision,
+                    )
+                self.assertEqual(build.call_count, 1)
+                chat.assert_not_called()
+                execute.assert_not_called()
+                self.assertIn("합의한 작업은 여섯 개", build.call_args.kwargs["clarification_context"])
+                if not pipeline._planning_message_is_apply_control(message):
+                    self.assertIn(message, build.call_args.kwargs["clarification_context"])
+                self.assertEqual(updated.id, state.id)
+                self.assertEqual(updated.stage, Stage.PLANNED)
+                self.assertFalse(updated.plan_is_approved)
+                self.assertGreater(updated.plan_revision, original_revision)
+                self.assertEqual(receipt.status, PlanningApplyStatus.SUCCEEDED)
+                self.assertEqual(receipt.added_tasks, 6)
+                restored = pipeline.store.load(state.id)
+                self.assertEqual([task.id for task in restored.tasks], [task.id for task in proposals])
+                self.assertEqual(len(replayed.tasks), 6)
+                self.assertEqual(sum(item.text == message for item in restored.planning_messages), 1)
+                self.assertEqual(len(pipeline.store.list_runs()), 1)
+
+    def test_initial_task_creation_rejects_questions_negation_and_execution_states(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline, state = self._scope_test_run(Path(directory))
+            state.tasks = []
+            state.stage = Stage.NEEDS_CLARIFICATION
+            for message in ("왜 Task가 비어 있어?", "합의한 6개 작업으로 진행해도 되나요?", "합의한 작업으로 진행하지 마",
+                            "합의한 작업으로 내일 진행해줘", "합의한 작업을 설명해줘", "‘합의한 작업으로 진행해줘’라고 말하면 돼?"):
+                with self.subTest(message=message):
+                    self.assertFalse(pipeline._planning_message_requests_initial_tasks(state, message))
+            message = "합의한 6개 작업으로 이어서 진행해줘"
+            self.assertTrue(pipeline._planning_message_requests_initial_tasks(state, message))
+            for stage in (Stage.EXECUTING, Stage.READY_TO_MERGE, Stage.PUSHED):
+                state.stage = stage
+                self.assertFalse(pipeline._planning_message_requests_initial_tasks(state, message))
+            state.stage = Stage.NEEDS_CLARIFICATION
+            state.repository_intent = "new_project"
+            self.assertFalse(pipeline._planning_message_requests_initial_tasks(state, message))
+
+    def test_initial_task_creation_failure_keeps_discussion_and_reports_planning_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline, state = self._scope_test_run(Path(directory))
+            state.tasks = []
+            state.stage = Stage.NEEDS_CLARIFICATION
+            state.planning_agent_id = "worker"
+            pipeline.store.save(state)
+            message = "논의한 내용으로 Task 만들어줘"
+            with patch.object(pipeline, "_build_plan", side_effect=PlanningError("자료 확인 실패")):
+                with self.assertRaisesRegex(PlanningError, "자료 확인 실패"):
+                    pipeline.send_planning_message(state.id, message)
+            restored = pipeline.store.load(state.id)
+            self.assertEqual(restored.tasks, [])
+            self.assertEqual(restored.stage, Stage.FAILED)
+            self.assertEqual(restored.failed_step, RunStep.PLANNING)
+            self.assertEqual(restored.planning_apply_requests[-1].status, PlanningApplyStatus.FAILED)
+            self.assertIn(message, [item.text for item in restored.planning_messages])
+
     def test_planning_apply_controls_are_distinct_from_inline_change_instructions(self) -> None:
         for message in (
             "반영", "반영해 주세요", "지금까지 내용을 Task에 적용해줘", "이 방향으로 계획을 갱신해 주세요.",
@@ -8198,6 +8281,53 @@ else:
             statuses = pipeline.workspace_statuses(completed.id)
             self.assertEqual(len(statuses), 1)
             self.assertEqual(statuses[0].state, WorkspaceState.CLEANED)
+
+    def test_reviewed_shared_main_apply_leaves_remote_push_for_separate_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            remote = root / "remote.git"
+            remote.mkdir()
+            git(remote, "init", "--bare")
+            repo = self._repository(root)
+            git(repo, "remote", "add", "origin", str(remote))
+            git(repo, "push", "-u", "origin", "main")
+            spec = root / "plan.md"
+            spec.write_text("## 작업\n\n- [general] 공유 결과 생성\n", encoding="utf-8")
+            pipeline = Pipeline(Config(path=root / "orchestrator.toml", project=ProjectConfig(repo=repo),
+                execution=ExecutionConfig(auto_commit=True, verify_commands=((sys.executable, "-c", "pass"),)),
+                agents=(AgentConfig("manual", ("general",), (), 1),)))
+            state = pipeline.execute(pipeline.confirm_plan(pipeline.start(spec).id).id, manual=True)
+            task = state.tasks[0]
+            (Path(task.worktree) / "result.txt").write_text("done\n", encoding="utf-8")
+            pipeline.complete_task(state.id, task.id)
+            verified = pipeline.verify(state.id)
+            self.assertEqual(pipeline.preview_main_apply(state.id)["reason_code"], "work_branch_push_required")
+            pipeline.push(state.id, approved=True)
+            review = pipeline.preview_main_apply(state.id)
+            self.assertTrue(review["can_apply"])
+            self.assertEqual(review["verification"]["status"], "succeeded")
+            self.assertEqual([item["path"] for item in review["files"]], ["result.txt"])
+            request = str(uuid.uuid4())
+            (repo / "result.txt").write_text("overlap\n", encoding="utf-8")
+            with self.assertRaisesRegex(PipelineError, "미리보기"):
+                pipeline.merge(state.id, approved=True, request_id=request, review_id=review["review_id"])
+            self.assertEqual(pipeline.git.head(repo), verified.verified_main_head)
+            (repo / "result.txt").unlink()
+            (repo / "unrelated.txt").write_text("preserve", encoding="utf-8")
+            merged = pipeline.merge(state.id, approved=True, request_id=request, review_id=review["review_id"])
+            self.assertEqual(merged.stage, Stage.MERGED)
+            self.assertEqual(pipeline.git.head(repo), verified.verified_integration_head)
+            self.assertEqual(pipeline.git.remote_branch_head("origin", "main"), verified.verified_main_head)
+            self.assertEqual((repo / "unrelated.txt").read_text(encoding="utf-8"), "preserve")
+            self.assertEqual(pipeline.status_with_controls(state.id)[2].status, IntegrationStatus.MAIN_PUSH_PENDING)
+            self.assertEqual(pipeline.merge(state.id, approved=True, request_id=request, review_id=review["review_id"]).stage, Stage.MERGED)
+            self.assertTrue(Path(task.worktree).is_dir())
+            with self.assertRaisesRegex(PipelineError, "--approve"):
+                pipeline.retry_main_push(state.id, approved=False)
+            pushed = pipeline.retry_main_push(state.id, approved=True)
+            self.assertEqual(pushed.stage, Stage.PUSHED)
+            self.assertEqual(pipeline.git.remote_branch_head("origin", "main"), verified.verified_integration_head)
+            self.assertFalse(Path(task.worktree).exists())
 
     def _failed_shared_main_push(self, root: Path) -> tuple[Pipeline, RunState, Path, Path, Path, str]:
         remote = root / "remote.git"

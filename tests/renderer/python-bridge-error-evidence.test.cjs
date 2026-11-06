@@ -46,7 +46,7 @@ function harness() {
   runInNewContext(readFileSync(modulePath, 'utf8'), { exports, __dirname: dirname(modulePath),
     require: (name) => name === 'node:child_process' ? { spawn } : localRequire(name),
     process: { platform: 'win32', env: {}, stderr: { write() {} } },
-    setTimeout: (callback) => { const id = ++timerId; timers.set(id, callback); return id; },
+    setTimeout: (callback) => { const id = { id: ++timerId, unref() { return this; } }; timers.set(id, callback); return id; },
     clearTimeout: (id) => timers.delete(id),
   });
   const bridge = new exports.PythonBridge('mock-backend');
@@ -69,6 +69,36 @@ test('application errors retain method and role without becoming transport error
     assert.ok(error.instanceId);
     return true;
   });
+});
+
+test('conversation Planning backends isolate same-project requests and target only the interrupted conversation', async () => {
+  const h=harness();h.bridge.start();
+  const first=h.bridge.requestPlanning('runs.sendPlanningMessage',{projectName:'A',runId:'one',message:'first'});
+  const second=h.bridge.requestPlanning('runs.sendPlanningMessage',{projectName:'A',runId:'two',message:'second'});
+  assert.equal(h.children.length,5);
+  const a=h.children[3],b=h.children[4];
+  assert.equal(a.requests[0].params.runId,'one');assert.equal(b.requests[0].params.runId,'two');
+  const stopped=assert.rejects(first,error=>error.kind==='stopped'&&error.backend==='planning');
+  await h.bridge.restartPlanning('A','one');await stopped;
+  b.respond({id:b.requests[0].id,result:{id:'two'}});
+  assert.equal((await second).id,'two');
+  const next=h.bridge.requestPlanning('runs.sendPlanningMessage',{projectName:'A',runId:'two',message:'continue'});
+  assert.equal(h.children.length,5,'the uninterrupted conversation reuses its SDK process');
+  b.respond({id:b.requests[1].id,result:{id:'two'}});await next;
+  await h.bridge.stop();assert.equal(h.bridge.planningSessions.size,0);
+});
+
+test('idle Planning sessions are released and app shutdown rejects its owned remaining requests', async () => {
+  const h=harness();h.bridge.start();
+  const first=h.bridge.requestPlanning('runs.sendPlanningMessage',{projectName:'A',runId:'one'});
+  const child=h.children[3];child.respond({id:child.requests[0].id,result:'done'});await first;
+  h.timeout();await new Promise(setImmediate);
+  assert.equal(h.bridge.planningSessions.size,0);
+  const next=h.bridge.requestPlanning('runs.sendPlanningMessage',{projectName:'A',runId:'one'});
+  assert.equal(h.children.length,5);
+  const stopped=assert.rejects(next,error=>error.kind==='stopped');
+  await h.bridge.stop();await stopped;
+  assert.equal(h.bridge.planningSessions.size,0);
 });
 
 test('timeout evidence is distinct and a late response cannot complete the expired request', async () => {
