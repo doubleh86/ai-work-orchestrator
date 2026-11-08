@@ -10,6 +10,12 @@ Codex·Claude 앱에서 만들 내용을 정하고, 여러 작업 AI로 제작�
 - Git worktree 기반 실행, 중지·재개와 실패 복구
 - 결과 실행·사용자 확인과 승인 후 반영·Push
 
+## Windows에서 바로 실행하기
+
+[v0.6.0 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.6.0)에서 앱 ZIP 전체를 받아
+새 폴더에 압축을 풀고 `AI Work Orchestrator.exe`를 실행합니다. MCP만 사용할 때는 MCP 전용 ZIP을 받습니다.
+앱 실행에 Python·Node.js 설치는 필요하지 않습니다. Git과 작업 AI·프로젝트별 개발 도구는 별도로 준비합니다.
+
 ## 소스로 실행하기
 
 Python 3.11 이상, Node.js 22.12 이상, Git이 필요합니다.
@@ -27,7 +33,7 @@ npm start
 ```
 
 macOS/Linux에서는 `python3 -m venv .venv`와 `.venv/bin/python -m pip install -e '.[mcp]'`를 사용합니다.
-이후 npm 명령은 같습니다. 기존 Windows 배포본인 [v0.5.0 ZIP](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.5.0)은 이전 UI입니다.
+이후 npm 명령은 같습니다.
 
 ## 사용하기
 

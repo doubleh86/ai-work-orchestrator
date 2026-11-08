@@ -1,6 +1,6 @@
 {
   "name": "ai-work-orchestrator-desktop",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "Electron and React desktop shell for AI Work Orchestrator",
   "main": "dist-electron/main/main.js",
