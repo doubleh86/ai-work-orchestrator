@@ -6,6 +6,7 @@ AI Work Orchestrator 작업자가 먼저 확인할 문서를 안내한다.
 
 - 작업 시작: `AGENTS.md`, 있으면 로컬 참고용 `AGENTS.local.md`
 - 코드 작업: `Docs/CodeStyle.md`
+- 검증 범위·선택 명령·종료 기준: [검증 기준](Testing.md)
 - 모듈 구조와 의존 방향: `Docs/Architecture.md`
 - Git·worktree 운영: `Docs/RepositoryWorkflow.md`; 커밋 요청 시 `Docs/GitCommitConvention.md`
 - 계획 문서 필요 여부와 구현·검증 기록: `DevDocument/Plan/README.md`
