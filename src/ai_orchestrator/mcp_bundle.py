@@ -17,6 +17,7 @@ from tempfile import TemporaryDirectory
 from . import __version__
 from .app_paths import application_config_root
 from .file_lock import exclusive_file_lock
+from .provider_executable import resolve_provider_executable
 
 
 _EXECUTABLE = "ai-orchestrator-backend.exe"
@@ -251,9 +252,9 @@ def register_external_connection(client: str, registry: Path) -> dict[str, objec
                 cli = _desktop_codex_executable() if sys.platform == "win32" else None
             prefix = ["mcp", "add", "ai_work_orchestrator", "--"]
         else:
-            cli = shutil.which("claude")
+            cli = resolve_provider_executable("claude")
             prefix = ["mcp", "add", "--transport", "stdio", "--scope", "user", "ai_work_orchestrator", "--"]
-        if cli is None:
+        if not cli:
             return {"status": "client_missing", "client": client}
         command = [cli, *prefix, str(guide["command"]), *guide["args"]]
         if getattr(sys, "frozen", False) and sys.platform == "win32":

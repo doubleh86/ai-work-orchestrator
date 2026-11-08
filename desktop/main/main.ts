@@ -178,7 +178,13 @@ app.whenReady().then(() => {
     },
   );
   ipcMain.handle("orchestrator:nvidia-credential-status", () => nvidiaCredentials.status());
-  ipcMain.handle("orchestrator:claude-login", () => openClaudeLogin(app.getPath("temp")));
+  ipcMain.handle("orchestrator:claude-login", async () => {
+    const status = await bridge.request<{ selected_executable?: unknown }>("auth.claude.status", {});
+    if (status.selected_executable !== undefined && typeof status.selected_executable !== "string") {
+      throw new Error("Claude 실행 파일 설정을 확인하지 못했습니다.");
+    }
+    return openClaudeLogin(app.getPath("temp"), status.selected_executable || "");
+  });
   ipcMain.handle("orchestrator:nvidia-credential-save", (_event, key: unknown, options: unknown) => {
     const status = nvidiaCredentials.save(key, options);
     syncNvidiaCredentials();
@@ -299,12 +305,14 @@ app.whenReady().then(() => {
       }
       const result = await dialog.showOpenDialog(parent, {
         title: pathSelectionTitle(kind),
-        properties: kind === "config" || kind === "dotnet" ? ["openFile"] : ["openDirectory"],
+        properties: kind === "config" || kind === "dotnet" || kind === "claude" ? ["openFile"] : ["openDirectory"],
         filters:
           kind === "config"
             ? [{ name: "Orchestrator TOML", extensions: ["toml"] }]
             : kind === "dotnet" && process.platform === "win32"
               ? [{ name: ".NET host (dotnet.exe)", extensions: ["exe"] }]
+              : kind === "claude" && process.platform === "win32"
+                ? [{ name: "Claude Code", extensions: ["exe", "cmd", "bat"] }]
               : undefined,
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
@@ -613,12 +621,13 @@ function stringParam(params: RpcParams, name: string): string {
 }
 
 function isPathSelectionKind(value: unknown): value is PathSelectionKind {
-  return ["repository", "config", "planningSource", "dotnet"].includes(String(value));
+  return ["repository", "config", "planningSource", "dotnet", "claude"].includes(String(value));
 }
 
 function pathSelectionTitle(kind: PathSelectionKind): string {
   if (kind === "repository") return "프로젝트 저장소 선택";
   if (kind === "config") return "orchestrator.toml 선택";
   if (kind === "dotnet") return "dotnet 실행 파일 선택";
+  if (kind === "claude") return "Claude Code 실행 파일 선택";
   return "기획문서 디렉터리 선택";
 }

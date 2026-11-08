@@ -25,6 +25,8 @@ export function MakerTaskDetails({ projectName, run, task, onUpdated, onClose }:
   const [note, setNote] = useState("");
   const [dirty, setDirty] = useState(false);
   const [closeReview, setCloseReview] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [showLog, setShowLog] = useState(false);
   const pending = useRef(false);
   const alive = useRef(true);
   const callbacks = useRef(onUpdated); callbacks.current = onUpdated;
@@ -39,7 +41,7 @@ export function MakerTaskDetails({ projectName, run, task, onUpdated, onClose }:
     return () => { current = false; };
   }, [projectName, task.id, capabilitiesKey]);
   const loadLog = useCallback(() => window.orchestrator.request<string>("tasks.log", { projectName, runId: run.id, taskId: task.id }), [projectName, run.id, task.id]);
-  const log = useTaskLog(`${projectName}/${run.id}/${task.id}`, true, loadLog);
+  const log = useTaskLog(`${projectName}/${run.id}/${task.id}`, showDetails && showLog, loadLog);
   async function refresh() {
     const next = await window.orchestrator.request<RunState>("runs.get", { projectName, runId: run.id, includeUserChecks: true });
     if (alive.current) callbacks.current(next);
@@ -64,15 +66,21 @@ export function MakerTaskDetails({ projectName, run, task, onUpdated, onClose }:
     } finally { pending.current = false; if (alive.current) setBusy(false); }
   }
   const result = currentTaskResult(task);
+  const statusLabel = task.status === "pending" && task.readiness === "blocked" ? "이전 작업 대기" : ({
+    pending: "대기 중", running: "작업 중", completed: "작업 완료", merged: "반영 완료", failed: "확인이 필요해요",
+    waiting: "직접 확인이 필요해요", deferred: "확인 보류", blocked: "이전 작업 대기", excluded: "이번 작업에서 제외",
+  } as Record<string, string>)[task.status] || "상태 확인 필요";
   const canRecord = run.stage === "executing" && !run.archive && !run.active_step
     && run.execution_control?.lock_state === "unlocked" && run.execution_control.situation === "resumable";
   const version = { expectedCommit: task.started_commit, expectedRevision: run.plan_revision };
   return <WorkDialog title={task.title} context={run.summary} className="maker-dialog maker-dialog--wide" onClose={() => {
     if (busy) return; if (dirty) setCloseReview(true); else onClose();
   }}>
-    <section><p>{task.description}</p><h3>완료 기준</h3><ul>{task.acceptance_criteria.map((item, index) => <li key={index}>{item}</li>)}</ul>
-      <p className="maker-muted">작업 AI · {task.provider_id || task.agent_id} / {task.model || "공급자 기본 모델"} · {task.reasoning_effort || "기본 추론 설정"}</p>
-      <p className="maker-muted">작업 상태 · {task.status} · {task.readiness}</p></section>
+    <section className="maker-task-overview" aria-label="작업 현황"><strong role="status">{statusLabel}</strong>
+      <span>{task.provider_id || task.agent_id} · {task.model || "기본 모델"}</span></section>
+    {result ? <p>{result.manual_verification_note ? "직접 확인한 결과가 저장되었습니다."
+      : result.verification_status === "passed" ? "작업 검증을 통과했습니다." : "검증 기록을 확인해 주세요."}</p>
+      : ["completed", "merged"].includes(task.status) ? <p role="status">완료 결과 기록을 확인하지 못했습니다.</p> : null}
     {error ? <p role="alert">{error}</p> : null}{notice ? <p role="status">{notice}</p> : null}
     {closeReview ? <div className="maker-notice" role="alert"><p>저장하지 않은 모델 변경이 있습니다.</p><div className="maker-actions">
       <button className="maker-button" onClick={() => setCloseReview(false)}>계속 편집</button><button className="maker-button" onClick={onClose}>변경 취소하고 닫기</button></div></div> : null}
@@ -84,8 +92,7 @@ export function MakerTaskDetails({ projectName, run, task, onUpdated, onClose }:
         : <TaskExecutionProfileEditor run={run} task={task} options={profiles} busy={busy} onSave={nextProfile}
           onDirtyChange={setDirty} onRefresh={() => void refresh().catch(cause => setError(String(cause)))} />}
     </div></details>
-    {task.error ? <section className="maker-notice maker-notice--error"><h3>문제 확인</h3><p>{task.error}</p>
-      <p>추가 기획이나 범위 수정은 연결한 외부 앱에서 요청할 수 있습니다.</p></section> : null}
+    {task.error ? <p role="alert">작업에서 확인할 문제가 있습니다. 연결한 외부 앱에서 이 작업을 확인해 달라고 요청하세요.</p> : null}
     {task.status === "failed" && !run.archive && run.execution_control?.lock_state === "unlocked" ? <button className="maker-button" disabled={busy || dirty}
       onClick={() => void request("tasks.retry")}>현재 설정으로 이 작업 다시 실행</button> : null}
     {task.status === "pending" && !run.archive && ["executing", "failed"].includes(run.stage) && run.execution_control?.lock_state === "unlocked" ?
@@ -97,17 +104,26 @@ export function MakerTaskDetails({ projectName, run, task, onUpdated, onClose }:
         {run.workspace_mode === "shared" ? <button className="maker-button" disabled={busy} onClick={() => void request("tasks.deferManual")}>미검증으로 보류</button> : null}
         <button className="maker-button" disabled={busy} onClick={() => void request("tasks.complete")}>직접 수정한 변경 제출</button></div></section> : null}
     {task.status === "deferred" && canRecord ? <button className="maker-button" disabled={busy} onClick={() => void request("tasks.resumeManual")}>직접 확인 다시 열기</button> : null}
-    <section><h3>기록된 결과</h3>{result ? <><p>{result.manual_verification_note || result.self_report || "결과 요약이 없습니다."}</p>
-      <p className="maker-muted">{result.manual_verification_note ? "사용자 확인 기록" : result.verification_status === "passed" ? "작업 검증 통과" : "검증 기록 확인 필요"}</p>
-      <ul>{result.files.map(file => <li key={file.path}>{file.change} · {file.path}</li>)}</ul><code>{result.result_commit}</code></> : <p>아직 완료 결과가 기록되지 않았습니다.</p>}</section>
-    <details><summary>작업 범위·의존성·검사 명령</summary><dl className="maker-key-values"><div><dt>허용 경로</dt><dd>{task.expected_paths.join(", ") || "명시된 경로 없음"}</dd></div>
-      <div><dt>제외 경로</dt><dd>{task.forbidden_paths.join(", ") || "없음"}</dd></div><div><dt>선행 작업</dt><dd>{task.dependencies.join(", ") || "없음"}</dd></div></dl>
-      <pre>{task.verify_commands.map(command => JSON.stringify(command)).join("\n") || "명시된 검사 명령 없음"}</pre></details>
-    <section><div className="maker-section-heading"><h3>실행 로그</h3><button className="maker-button" onClick={() => log.refresh()}>로그 갱신</button></div>
-      {log.error ? <p role="alert">{log.error}</p> : null}<pre className="maker-log">{log.value || (log.loading ? "로그 확인 중…" : "실행 로그가 없습니다.")}</pre>
-      <button className="maker-button" onClick={() => void window.orchestrator.openTaskRecord(projectName, run.id, task.id).then(opened => {
-        if (!opened) setError("작업 기록을 열지 못했습니다.");
-      }).catch(cause => setError(String(cause)))}>전체 기록 파일 열기</button></section>
+    <details open={showDetails} onToggle={event => setShowDetails(event.currentTarget.open)}><summary>자세히 보기</summary>
+      <div className="maker-form-stack">
+        <section><h3>작업 설명</h3><p>{task.description}</p></section>
+        <section><h3>완료 기준</h3><ul>{task.acceptance_criteria.map((item, index) => <li key={index}>{item}</li>)}</ul></section>
+        <p className="maker-muted">추론 설정 · {task.reasoning_effort || "기본값"} · 작업 상태 · {task.status} · {task.readiness}</p>
+        {task.error ? <section><h3>오류 내용</h3><pre>{task.error}</pre></section> : null}
+        {result ? <section><h3>기록된 결과</h3><p>{result.manual_verification_note || result.self_report || "결과 요약이 없습니다."}</p>
+          <ul>{result.files.map(file => <li key={file.path}>{file.change} · {file.path}</li>)}</ul><code>{result.result_commit}</code></section> : null}
+        <section><h3>작업 범위·의존성·검사 명령</h3><dl className="maker-key-values"><div><dt>허용 경로</dt><dd>{task.expected_paths.join(", ") || "명시된 경로 없음"}</dd></div>
+          <div><dt>제외 경로</dt><dd>{task.forbidden_paths.join(", ") || "없음"}</dd></div><div><dt>선행 작업</dt><dd>{task.dependencies.join(", ") || "없음"}</dd></div></dl>
+          <pre>{task.verify_commands.map(command => JSON.stringify(command)).join("\n") || "명시된 검사 명령 없음"}</pre></section>
+        <details open={showLog} onToggle={event => setShowLog(event.currentTarget.open)}><summary>실행 로그</summary>
+          <div className="maker-form-stack"><button className="maker-button" onClick={() => log.refresh()}>로그 갱신</button>
+            {log.error ? <p role="alert">{log.error}</p> : null}<pre className="maker-log">{log.value || (log.loading ? "로그 확인 중…" : "실행 로그가 없습니다.")}</pre>
+            <button className="maker-button" onClick={() => void window.orchestrator.openTaskRecord(projectName, run.id, task.id).then(opened => {
+              if (!opened) setError("작업 기록을 열지 못했습니다.");
+            }).catch(cause => setError(String(cause)))}>전체 기록 파일 열기</button></div>
+        </details>
+      </div>
+    </details>
   </WorkDialog>;
 }
 

@@ -134,6 +134,21 @@ def test_prompt_registration_helper_uses_the_exact_client_and_registry(tmp_path:
     assert main(["mcp-register", "--registry", str(registry), "--client", "codex"]) == 2
 
 
+def test_claude_code_registration_uses_resolved_user_install(tmp_path: Path, monkeypatch) -> None:
+    commands = []
+    monkeypatch.setattr(mcp_bundle, "external_connection_guide", lambda *_args, **_kwargs: {"command": "orchestrator", "args": ["mcp"]})
+    monkeypatch.setattr(mcp_bundle, "resolve_provider_executable", lambda _name: "/local/claude")
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(mcp_bundle.subprocess, "run", run)
+    result = mcp_bundle.register_external_connection("claude-code", tmp_path / "projects.json")
+    assert result["status"] == "registered"
+    assert commands[0][:3] == ["/local/claude", "mcp", "add"]
+
+
 def test_frozen_backend_forwards_registration_to_cli(monkeypatch) -> None:
     import runpy
     import ai_orchestrator.cli

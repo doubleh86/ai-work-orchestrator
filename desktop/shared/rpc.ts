@@ -15,6 +15,8 @@ export const RPC_METHODS = [
   "runs.finishPlanningRequest",
   "auth.codex.status",
   "auth.claude.status",
+  "auth.claude.setExecutable",
+  "auth.claude.clearExecutable",
   "auth.codex.start",
   "auth.codex.apiKey",
   "auth.codex.get",
@@ -148,7 +150,7 @@ export const APPROVED_RPC_METHODS = [
 ] as const satisfies readonly RpcMethod[];
 
 export type ApprovedRpcMethod = (typeof APPROVED_RPC_METHODS)[number];
-export type PathSelectionKind = "repository" | "config" | "planningSource" | "dotnet";
+export type PathSelectionKind = "repository" | "config" | "planningSource" | "dotnet" | "claude";
 
 export type CodexMcpRegistration = "registered" | "codex_missing" | "registration_failed";
 

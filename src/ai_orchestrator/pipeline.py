@@ -62,6 +62,7 @@ from .task_scope_review import (
 )
 from .scope_consent import parse_scope_consent, scope_consent_prompt, scope_proposal_id
 from .project_chat import MAX_DECISIONS, MAX_REPAIRS, TaskProfileCommand, decision_prompt, parse_decision, task_profile_command
+from .provider_executable import resolve_provider_executable, selected_claude_executable
 from .execution_control import DispatchPaused, ExecutionStopped
 from .usage import UsageContext, UsageObservation, UsageRecord, usage_now
 from .git import LOCAL_GIT_TIMEOUT_SECONDS, GitError, GitWorkspace, GitWorktree, run_command, diagnose_dotnet, DotnetDiagnostic, inspect_git_readiness
@@ -5937,11 +5938,13 @@ single-line AI_PLAN_RESULT payload and no Markdown fences.{stack_guidance}{lates
 
     @staticmethod
     def claude_connection_status() -> dict[str, object]:
+        selected = selected_claude_executable()
         executable = Pipeline._resolve_executable("claude")
         if not executable:
-            return {"installed": False, "authenticated": False, "auth_method": "none", "message": "Claude CLI 설치 필요",
-                    "account_email": "", "plan_type": ""}
-        return Pipeline._claude_connection_details(executable)
+            return {"installed": False, "authenticated": False, "auth_method": "none",
+                    "message": "선택한 Claude 실행 파일을 사용할 수 없습니다" if selected else "Claude CLI 설치 필요",
+                    "account_email": "", "plan_type": "", "selected_executable": selected}
+        return {**Pipeline._claude_connection_details(executable), "selected_executable": selected}
 
     @staticmethod
     def _claude_auth_status(executable: str) -> tuple[bool | None, str, str]:
@@ -14222,10 +14225,7 @@ Leave the worktree ready for another review.
 
     @staticmethod
     def _resolve_executable(executable: str) -> str:
-        path = Path(executable).expanduser()
-        if path.parent != Path(".") and path.exists():
-            return str(path.resolve())
-        return shutil.which(executable) or ""
+        return resolve_provider_executable(executable)
 
     def _reviewer_provider_is_compatible(self, task: WorkTask, reviewer: AgentConfig, *, policy_added: bool) -> bool:
         worker = self.agents.get(task.agent_id)

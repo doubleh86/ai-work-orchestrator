@@ -1,3 +1,6 @@
+import json
+import subprocess
+
 from ai_orchestrator.account_usage import AccountUsage, QuotaWindow, claude_quota_summary, codex_quota_summary, read_claude_quota
 from ai_orchestrator.desktop_rpc import RpcService, handle_request
 
@@ -51,6 +54,21 @@ def test_claude_does_not_start_usage_command_for_ineligible_connections(monkeypa
     assert read_claude_quota({"installed": False}).status == "not_installed"
     assert read_claude_quota({"installed": True, "authenticated": False}).status == "signed_out"
     assert read_claude_quota({"installed": True, "authenticated": True, "auth_method": "api_key"}).status == "api_key"
+
+
+def test_claude_usage_uses_same_resolved_cli_as_connection(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr("ai_orchestrator.account_usage.resolve_provider_executable", lambda _name: "/local/claude")
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        payload = {"type": "result", "subtype": "success", "total_cost_usd": 0, "usage": {}, "result": "Current session: 10% used"}
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr("ai_orchestrator.account_usage.subprocess.run", run)
+    result = read_claude_quota({"installed": True, "authenticated": True, "auth_method": "claude_subscription"})
+    assert result.five_hour == QuotaWindow(10)
+    assert calls[0][0] == "/local/claude"
 
 
 def test_account_usage_rpc_uses_an_allowlisted_provider_without_project_context() -> None:

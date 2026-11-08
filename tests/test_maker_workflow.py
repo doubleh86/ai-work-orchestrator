@@ -132,11 +132,18 @@ def test_control_server_exposes_external_planning_and_result_registration_only(t
     async def scenario() -> None:
         for options in ({}, {"allow_planning": True}, {"allow_control": True, "projects_root": tmp_path / "projects"}):
             async with create_connected_server_and_client_session(build_server(McpOperations(application, **options))) as client:
-                names = {tool.name for tool in (await client.list_tools()).tools}
+                tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+                names = set(tools)
                 assert "draft_tasks" not in names
                 assert ("submit_plan" in names) == bool(options)
                 assert ("control_run" in names) == bool(options.get("allow_control"))
                 assert ("register_result_artifact" in names) == bool(options.get("allow_control"))
+                for name in ("orchestrator_help", "report_progress", "get_run"):
+                    assert "Do not autonomously poll or wait for completion" in tools[name].description
+                if options.get("allow_control"):
+                    assert "Report the receipt and end the response" in tools["control_run"].description
+                    assert "queued/started receipt alone does not prove an active worker" in tools["control_run"].description
+                    assert "Do not autonomously poll or wait for completion" in tools["get_control_request"].description
     try:
         run(scenario)
     finally:

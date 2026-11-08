@@ -75,4 +75,21 @@ test('Claude login exposes only a fixed official command, propagates spawn error
   listeners.get('spawn')(); assert.equal(await pending, true);
   const failure = exports.openClaudeLogin('isolated-temp'); listeners.get('error')(new Error('private detail'));
   await assert.rejects(failure, /Claude 로그인 터미널/);
+  const selected = String.raw`C:\Program Files\O'Neil\claude.cmd`;
+  const selectedLogin = exports.openClaudeLogin('isolated-temp', selected);
+  assert.equal(command[1].at(-1), String.raw`& 'C:\Program Files\O''Neil\claude.cmd' auth login`);
+  assert.equal(options.shell, false);
+  listeners.get('spawn')(); assert.equal(await selectedLogin, true);
+});
+
+test('macOS Claude login passes a selected executable as an AppleScript argument', () => {
+  const modulePath = join(output, 'main/claudeLogin.js'), local = createRequire(modulePath), exports = {};
+  runInNewContext(readFileSync(modulePath, 'utf8'), { exports, process: { platform: 'darwin' }, require: local });
+  const selected = "/Users/example/Claude's Tools/claude";
+  const command = exports.claudeLoginCommand('darwin', selected);
+  assert.equal(command.executable, 'osascript');
+  assert.equal(command.args.at(-1), selected);
+  assert.match(command.args.join(' '), /quoted form of item 1 of argv/);
+  assert.equal(command.args.filter(value => value.includes(selected)).length, 1);
+  assert.deepEqual(Array.from(exports.claudeLoginCommand('linux', selected).args), ['-e', selected, 'auth', 'login']);
 });

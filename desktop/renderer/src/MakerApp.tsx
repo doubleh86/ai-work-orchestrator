@@ -5,6 +5,7 @@ import { MakerProjects } from "./MakerProjects";
 import { MakerNotifications } from "./MakerNotifications";
 import { MakerRunControls } from "./MakerRunControls";
 import { MakerTaskDetails } from "./MakerTaskDetails";
+import { MakerProgress } from "./MakerProgress";
 import type { StoredWorkNotification } from "../../shared/workNotifications";
 import { WorkDialog } from "./WorkDialog";
 import { UserChecks, type UserCheckInput } from "./UserChecks";
@@ -31,6 +32,7 @@ export function MakerApp() {
   selectionRef.current = selectedKey;
   const run = runContext === selectedKey ? loadedRun : undefined;
   const [runError, setRunError] = useState("");
+  const [runReadAt, setRunReadAt] = useState(0);
   const [dialog, setDialog] = useState<"connection" | "plan">();
   const [page, setPage] = useState<"projects" | "workers" | "manage" | "notifications">("projects");
   const [taskId, setTaskId] = useState("");
@@ -59,7 +61,7 @@ export function MakerApp() {
     return () => { active = false; clearTimeout(timer); };
   }, [loadProjects, page]);
   useEffect(() => {
-    setRun(undefined); setRunError("");
+    setRun(undefined); setRunError(""); setRunReadAt(0);
     if (!selection || page !== "projects") return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -69,7 +71,7 @@ export function MakerApp() {
         const next = await window.orchestrator.request<RunState>("runs.get", {
           projectName: selection!.project, runId: selection!.runId, includeUserChecks: true,
         });
-        if (active && version === runReadVersion.current) { setRun(next); setRunContext(`${selection!.project}/${selection!.runId}`); setRunError(""); }
+        if (active && version === runReadVersion.current) { setRun(next); setRunContext(`${selection!.project}/${selection!.runId}`); setRunError(""); setRunReadAt(Date.now()); }
       } catch (cause) { if (active && version === runReadVersion.current) setRunError(message(cause)); }
       finally { if (active) timer = setTimeout(() => void poll(), 3000); }
     }
@@ -98,8 +100,9 @@ export function MakerApp() {
     if (selectionRef.current !== context || next.id !== selection?.runId || !context) return;
     const version = ++runReadVersion.current;
     setRun(current => ({ ...next, planned_user_checks: next.planned_user_checks ?? current?.planned_user_checks }));
+    setRunReadAt(Date.now());
     void window.orchestrator.request<RunState>("runs.get", { projectName: selection.project, runId: next.id, includeUserChecks: true })
-      .then(value => { if (selectionRef.current === context && version === runReadVersion.current) { setRun(value); setRunError(""); } })
+      .then(value => { if (selectionRef.current === context && version === runReadVersion.current) { setRun(value); setRunError(""); setRunReadAt(Date.now()); } })
       .catch(cause => { if (selectionRef.current === context && version === runReadVersion.current) setRunError(message(cause)); });
   }
 
@@ -133,8 +136,7 @@ export function MakerApp() {
           }}><FolderOpen size={16} /><span>{card.project.name}</span></button>)}</div>
         <div className="maker-sidebar-bottom"><div className="maker-connection"><span className="maker-client-icon"><Sparkles size={18} /></span>
           <div><strong>외부 앱에서 기획·제어</strong><small>MCP 연결 프롬프트로 시작</small></div></div>
-          <button onClick={() => setDialog("connection")}><Settings2 size={17} />MCP 연결</button>
-          <button onClick={() => setPage("workers")}><Bot size={17} />작업 AI·설정</button></div>
+          <button onClick={() => setDialog("connection")}><Settings2 size={17} />MCP 연결</button></div>
       </aside>
       <main ref={main} id="maker-main" className="maker-main">
         <header className="maker-topbar"><span>내가 만드는 소프트웨어</span><button className="maker-button" onClick={() => setDialog("connection")}>MCP 연결 프롬프트<ChevronRight size={16} /></button></header>
@@ -157,13 +159,13 @@ export function MakerApp() {
           {selectedCard && selectedCard.runs.length > 1 ? <label className="maker-run-picker">작업 선택<select value={selection.runId} onChange={event => setSelection({ project: selection.project, runId: event.target.value })}>{selectedCard.runs.map(item => <option key={item.id} value={item.id}>{item.summary || item.id}{item.archived ? " · 보관됨" : ""}</option>)}</select></label> : null}
           {runError ? <p className="maker-notice maker-notice--error" role="alert">현재 상태를 확인하지 못했습니다. {runError}</p> : null}
           {!run ? <p className="maker-empty" role="status">제작 상태를 불러오고 있어요.</p> : <>
-            <section className="maker-status"><span className={`maker-status-dot${run.stage === "failed" ? " is-error" : ""}`} /><div><strong>{makerStage(run)}</strong><p>{run.execution_control?.active_task_title || (run.stage === "planned" ? "AI와 계획을 확인한 뒤 제작을 시작하세요." : "아래에서 진행 과정과 결과를 확인하세요.")}</p></div>{run.stage === "planned" ? <button className="maker-button" disabled={Boolean(runError)} onClick={() => setDialog("plan")}>{run.plan_revision === run.plan_approved_revision ? "확정한 계획 보기" : "제작 계획 확인"}</button> : null}<span>{finishedTasks.size} / {run.tasks.length} 작업 완료</span></section>
-            {run.failure_message ? <p className="maker-notice maker-notice--error">{run.failure_message}<span>연결한 외부 앱에서 이 프로젝트의 문제를 해결해 달라고 요청하세요.</span></p> : null}
+            <MakerProgress run={run} checkedAt={runReadAt} readError={Boolean(runError)} completedCount={finishedTasks.size} onReviewPlan={() => setDialog("plan")} />
+            {run.failure_message ? <details className="maker-failure-detail"><summary>문제 내용 보기</summary><p>{run.failure_message}</p></details> : null}
             <MakerRunControls key={`${selection.project}/${run.id}`} projectName={selection.project} run={run} onUpdated={acceptRun}
               onDeleted={() => { setSelection(undefined); setTaskId(""); void refreshProjects().catch(() => {}); }} />
             <div className="maker-workspace"><div className="maker-result-column"><ResultPanel key={`${selection.project}/${run.id}/${run.stage}/${run.verified_integration_head}/${run.tasks.map(task => task.completed_commit).join(",")}`} selection={selection} />
               <div className="maker-panel"><UserChecks run={run} busy={saving || Boolean(runError)} onRecord={record} />{!run.planned_user_checks?.length ? <div className="maker-check-empty"><Check size={20} /><div><h3>직접 확인</h3><p>결과를 실행해 보고 원하는 대로 동작하는지 확인하세요. 고칠 점은 AI에게 이야기할 수 있어요.</p></div></div> : null}</div></div>
-              <section className="maker-panel maker-progress"><div className="maker-section-heading"><h2>만들어지는 과정</h2><small>자동 갱신</small></div><ol>{run.tasks.map(task => <li key={task.id} data-status={task.status}><button className="maker-task-open" onClick={() => setTaskId(task.id)} aria-haspopup="dialog"><span className="maker-task-marker">{finishedTasks.has(task.id) ? <Check size={15} /> : task.status === "running" ? <LoaderCircle size={15} /> : ""}</span><div><strong>{task.title}</strong><p>{({ completed: "완료", merged: "완료", running: "진행 중", failed: "확인 필요", pending: "대기 중", excluded: "이번 작업에서 제외", blocked: "이전 작업 대기" } as Record<string, string>)[task.status] || "진행 준비 중"}</p><small>{task.provider_id || task.agent_id} · {task.model || "기본 모델"}</small></div><ChevronRight size={16} /></button></li>)}</ol>{!run.tasks.length ? <p>AI와 계획을 정리하면 여기에 제작 과정이 표시됩니다.</p> : null}<p className="maker-muted">작업을 선택하면 모델 설정과 상세 기록을 확인할 수 있습니다.</p></section></div>
+              <section className="maker-panel maker-progress"><div className="maker-section-heading"><h2>만들어지는 과정</h2><small>자동 갱신</small></div><ol>{run.tasks.map(task => <li key={task.id} data-status={task.status}><button className="maker-task-open" onClick={() => setTaskId(task.id)} aria-haspopup="dialog"><span className="maker-task-marker">{finishedTasks.has(task.id) ? <Check size={15} /> : task.status === "running" ? <LoaderCircle size={15} /> : ""}</span><div><strong>{task.title}</strong><p>{({ completed: "완료", merged: "완료", running: "진행 중", failed: "확인 필요", pending: "대기 중", excluded: "이번 작업에서 제외", blocked: "이전 작업 대기" } as Record<string, string>)[task.status] || "진행 준비 중"}</p><small>{task.provider_id || task.agent_id} · {task.model || "기본 모델"}</small></div><ChevronRight size={16} /></button></li>)}</ol>{!run.tasks.length ? <p>AI와 계획을 정리하면 여기에 제작 과정이 표시됩니다.</p> : null}</section></div>
           </>}
         </div>}
         </> : null}
@@ -235,7 +237,7 @@ function ConnectionDialog({ onClose }: { onClose(): void }) {
       <Copy size={17} />MCP 설치·연결 프롬프트 복사</button>
     {!guide && !error ? <p role="status">연결 정보를 준비하고 있어요.</p> : null}
     <p role="status">{feedback}</p>{error ? <p role="alert">{error}</p> : null}
-    <p className="maker-muted">오케스트레이터는 여러 작업 AI와 모델을 함께 사용합니다. 작업 AI 설정은 ‘작업 AI·설정’에서 관리하세요.</p>
+    <p className="maker-muted">오케스트레이터는 여러 작업 AI와 모델을 함께 사용합니다. 작업 AI 설정은 ‘작업 AI’에서 관리하세요.</p>
     {guide ? <details open={showPrompt} onToggle={event => setShowPrompt(event.currentTarget.open)}>
       <summary>연결 프롬프트 보기</summary><textarea className="maker-prompt-text" aria-label="MCP 설치·연결 프롬프트"
         readOnly rows={9} value={prompt} /></details> : null}

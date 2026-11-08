@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
 from typing import Literal
+
+from .provider_executable import resolve_provider_executable
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +78,7 @@ def read_claude_quota(connection: dict[str, object]) -> AccountUsage:
         return AccountUsage("api_key")
     if connection.get("auth_method") != "claude_subscription":
         return AccountUsage("unavailable")
-    executable = shutil.which("claude")
+    executable = resolve_provider_executable("claude")
     if not executable:
         return AccountUsage("not_installed")
     try:

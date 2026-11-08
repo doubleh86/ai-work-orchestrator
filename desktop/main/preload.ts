@@ -23,6 +23,8 @@ const allowedMethods = new Set<RpcMethod>([
   "runs.launchResult",
   "runs.recordUserCheck",
   "auth.claude.status",
+  "auth.claude.setExecutable",
+  "auth.claude.clearExecutable",
   "projects.list",
   "projects.inspectGitReadiness",
   "projects.previewGitInitialization",

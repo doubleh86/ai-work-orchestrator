@@ -10,12 +10,11 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : "
 
 export function MakerWorkers({ active }: { active: boolean }) {
   const [notice, setNotice] = useState("");
-  const changed = useCallback(async () => { setNotice("작업 AI 연결 상태를 확인했습니다. 작업별 AI·모델은 태스크 상세에서 선택할 수 있어요."); }, []);
+  const changed = useCallback(async () => { setNotice("작업 AI 연결 확인 완료"); }, []);
   return <div className="maker-content maker-settings" hidden={!active}>
     <div className="maker-page-heading"><div><p className="maker-eyebrow">제작을 맡길 AI</p><h1>작업 AI</h1>
       <p>여러 AI를 함께 연결하고 태스크마다 다른 모델을 사용할 수 있습니다.</p></div><AccountUsageControl /></div>
-    <p className="maker-notice">여기는 코딩 작업을 수행할 AI의 연결 설정입니다. 기획·제어용 외부 앱 연결은 ‘새 채팅’에서 준비하세요.</p>
-    {notice ? <p role="status" className="maker-notice">{notice}</p> : null}
+    <p role="status" className="maker-worker-hint">{notice || "작업 AI를 연결하세요"} · 모델은 태스크 상세에서, 기획·제어는 ‘새 채팅’에서 진행하세요.</p>
     <div className="maker-provider-grid">
       <section className="maker-panel"><h2>Codex</h2><CodexWorker active={active} onChanged={changed} /></section>
       <section className="maker-panel"><h2>Claude</h2><ClaudeConnectionPanel visible={active} onChanged={changed} /></section>

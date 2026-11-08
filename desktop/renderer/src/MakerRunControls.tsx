@@ -4,7 +4,6 @@ import { readConsistentOperations, type OperationsSnapshot } from "./integration
 import { readRunExecutionAction, runExecutionActionAllowed } from "./runExecutionControl";
 import { WorkDialog } from "./WorkDialog";
 import { UsagePanel } from "./UsagePanel";
-import { EffortModePanel } from "./EffortModePanel";
 import { ConflictResolutionPanel } from "./ConflictResolutionPanel";
 import { RecoveryDialog } from "./RecoveryDialog";
 import { RunLockNotice } from "./RunLockNotice";
@@ -25,19 +24,26 @@ export function MakerRunControls({ projectName, run, onUpdated, onDeleted }: {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
   const [records, setRecords] = useState(false);
+  const [startRun, setStartRun] = useState<RunState>();
+  const [stopping, setStopping] = useState(false);
   const [recovery, setRecovery] = useState(false);
   const [lockBlocking, setLockBlocking] = useState(false);
   const callbacks = useRef({ onUpdated, onDeleted }); callbacks.current = { onUpdated, onDeleted };
   const alive = useRef(true);
   const pending = useRef(false);
+  const stopPending = useRef(false);
+  const refreshPending = useRef(false);
   const session = useRef<ApplySummarySession | undefined>(undefined);
   const params = { projectName, runId: run.id };
   const read = useCallback(() => readConsistentOperations(projectName, run.id, (method, values) => window.orchestrator.request(method, values)), [projectName, run.id]);
   const refresh = useCallback(async () => {
+    if (refreshPending.current) return;
+    refreshPending.current = true;
     try {
       const result = await read();
       if (alive.current) { setSnapshot(result.snapshot); callbacks.current.onUpdated(result.run); setLoadError(""); }
     } catch (cause) { if (alive.current) { setSnapshot(undefined); setLoadError(errorText(cause)); } }
+    finally { refreshPending.current = false; }
   }, [read]);
   useEffect(() => {
     alive.current = true;
@@ -60,13 +66,23 @@ export function MakerRunControls({ projectName, run, onUpdated, onDeleted }: {
     catch (cause) { if (alive.current) setError(errorText(cause)); }
     finally { pending.current = false; if (alive.current) { setBusy(""); void refresh(); } }
   }
-  async function execute(method: "runs.execute" | "runs.resume") {
+  async function execute(method: "runs.execute" | "runs.resume", observed = run) {
     await action(method, async () => {
-      const checked = await readRunExecutionAction(() => window.orchestrator.request<RunState>("runs.get", params), run, method);
+      const checked = await readRunExecutionAction(() => window.orchestrator.request<RunState>("runs.get", params), observed, method);
       if (!checked.allowed) throw Error("제작 상태나 계획이 바뀌었습니다. 최신 내용을 확인하고 다시 진행해 주세요.");
       const next = await window.orchestrator.request<RunState>(method, params);
       if (alive.current) callbacks.current.onUpdated(next);
     });
+  }
+  async function stop() {
+    if (stopPending.current || !run.execution_control?.can_stop || !run.execution_control.execution_id) return;
+    stopPending.current = true; setStopping(true); setError("");
+    try {
+      await window.orchestrator.request("runs.requestStop", { ...params, executionId: run.execution_control.execution_id,
+        requestId: crypto.randomUUID(), scope: run.active_step === "verify" ? "verification" : "group" });
+      if (alive.current) setNotice("중지를 요청했습니다. 종료를 확인하고 있어요.");
+    } catch (cause) { if (alive.current) setError(errorText(cause)); }
+    finally { stopPending.current = false; if (alive.current) { setStopping(false); void refresh(); } }
   }
   async function approved(method: ApprovedRpcMethod, extra: RpcParams = {}) {
     await action(method, async () => {
@@ -95,25 +111,21 @@ export function MakerRunControls({ projectName, run, onUpdated, onDeleted }: {
   return <section className="maker-panel maker-run-controls">
     <RunLockNotice projectName={projectName} runId={run.id} refreshKey={run.updated_at} busy={Boolean(busy)} activeOnCards
       onUpdated={value => { callbacks.current.onUpdated(value); void refresh(); }} onInspect={() => setRecords(true)} onBlocking={setLockBlocking} />
-    <div className="maker-section-heading"><h2>제작과 마무리</h2><button className="maker-button" disabled={Boolean(busy)} onClick={() => void refresh()}>상태 확인</button></div>
-    <p className="maker-muted">{applySummaryStatus(run, snapshot, projectName, busy)}</p>
+    <div className="maker-section-heading"><h2>작업 제어</h2><button className="maker-button" onClick={() => void refresh()}>상태 확인</button></div>
+    {run.execution_control?.lock_state !== "active" ? <p className="maker-muted">{applySummaryStatus(run, snapshot, projectName, busy)}</p> : null}
     <div className="maker-actions">
-      {runExecutionActionAllowed(run, "runs.execute") ? <button className="maker-button maker-button--primary" disabled={Boolean(busy) || lockBlocking} onClick={() => void execute("runs.execute")}>제작 시작</button> : null}
+      {runExecutionActionAllowed(run, "runs.execute") ? <button className="maker-button maker-button--primary" disabled={Boolean(busy) || lockBlocking} onClick={() => setStartRun(run)}>제작 시작</button> : null}
       {runExecutionActionAllowed(run, "runs.resume") ? <button className="maker-button maker-button--primary" disabled={Boolean(busy) || lockBlocking} onClick={() => void execute("runs.resume")}>이어서 제작</button> : null}
-      {run.execution_control?.can_stop ? <button className="maker-button maker-button--danger" disabled={Boolean(busy) || run.execution_control.stop_phase === "stopping"}
-        onClick={() => void action("stop", async () => {
-          await window.orchestrator.request("runs.requestStop", { ...params, executionId: run.execution_control?.execution_id,
-            requestId: crypto.randomUUID(), scope: run.active_step === "verify" ? "verification" : "group" });
-          if (alive.current) setNotice("중지를 요청했습니다. 실제 중지 상태를 확인하고 있습니다.");
-        })}>제작 중지</button> : null}
+      {run.execution_control?.can_stop ? <button className="maker-button maker-button--danger" disabled={stopping || run.execution_control.stop_phase === "stopping"}
+        onClick={() => void stop()}>제작 중지</button> : null}
       {nextApply ? <button className="maker-button maker-button--primary" disabled={Boolean(busy) || lockBlocking} onClick={() => void apply(nextApply)}>{labels[nextApply]}</button> : null}
-      <button className="maker-button" onClick={() => setRecords(true)}>상세 기록·작업 설정</button>
     </div>
-    {busy ? <p role="status">요청을 처리하고 있습니다. 실행 상태는 계속 확인할 수 있습니다.</p> : null}
+    {busy && run.execution_control?.lock_state !== "active" ? <p role="status">요청 확인 중…</p> : null}
     {loadError ? <p role="alert">상태 확인 실패 · {loadError}</p> : null}
     {error ? <p role="alert">{error}</p> : null}{notice ? <p role="status">{notice}</p> : null}
-    <details><summary>반영·배포·보관 관리</summary><div className="maker-form-stack">
-      <p>포함된 작업 {completed.length}개 · 완료 결과와 검사 기록을 확인하고 진행하세요.</p>
+    <details><summary>관리</summary><div className="maker-form-stack">
+      <p>완료 작업 {completed.length}개</p>
+      <button className="maker-button" onClick={() => setRecords(true)}>작업 기록</button>
       {capabilitiesError ? <p role="alert">배포 설정 확인 실패 · {capabilitiesError}</p> : null}
       {run.main_operations?.merge?.error || run.main_operations?.retry_main_push?.error ? <p role="alert">{run.main_operations.merge?.error || run.main_operations.retry_main_push?.error}</p> : null}
       <div className="maker-actions">
@@ -137,12 +149,19 @@ export function MakerRunControls({ projectName, run, onUpdated, onDeleted }: {
       {run.integration_conflict ? <ConflictResolutionPanel projectName={projectName} run={run} operationsSnapshot={snapshot}
         operationsCheckedAt={snapshot?.checkedAt} onUpdated={() => void refresh()} onVerify={() => void apply("verify")} verifyDisabled={Boolean(busy)} /> : null}
     </div></details>
-    {records ? <WorkDialog title="상세 기록·작업 설정" className="maker-dialog maker-dialog--wide" onClose={() => setRecords(false)}>
-      <EffortModePanel projectName={projectName} run={run} planDirty={false} onUpdated={value => callbacks.current.onUpdated(value)} />
-      <UsagePanel projectName={projectName} runId={run.id} running={Boolean(run.active_step)} refreshKey={run.updated_at} />
-      <section><h3>검사 기록</h3>{run.verification_attempts?.length ? <ol className="maker-record-list">{run.verification_attempts.map(item => <li key={item.id}>
+    {startRun ? <WorkDialog title="제작을 시작할까요?" className="maker-dialog" onClose={() => setStartRun(undefined)}>
+      <p>관제에서 정한 설정으로 {startRun.tasks.length}개 작업을 진행합니다.</p>
+      <details><summary>배정된 작업 AI 보기</summary><ul>{[...new Set(startRun.tasks.map(task => `${task.provider_id || task.agent_id} · ${task.model || "기본 모델"}`))]
+        .map(profile => <li key={profile}>{profile}</li>)}</ul></details>
+      <button className="maker-button maker-button--primary" disabled={Boolean(busy) || lockBlocking} onClick={() => {
+        setStartRun(undefined); void execute("runs.execute", startRun);
+      }}>현재 설정으로 시작</button>
+    </WorkDialog> : null}
+    {records ? <WorkDialog title="작업 기록" className="maker-dialog maker-dialog--wide" onClose={() => setRecords(false)}>
+      <details><summary>사용량</summary><UsagePanel projectName={projectName} runId={run.id} running={Boolean(run.active_step)} refreshKey={run.updated_at} /></details>
+      <details><summary>검사 기록</summary>{run.verification_attempts?.length ? <ol className="maker-record-list">{run.verification_attempts.map(item => <li key={item.id}>
         <strong>{item.status} · {item.phase}</strong><p>{item.error}</p><small>{item.finished_at || item.started_at}</small>
-        <pre>{item.passed_commands.map(command => command.join(" ")).join("\n")}</pre></li>)}</ol> : <p>검사 기록이 없습니다.</p>}</section>
+        <pre>{item.passed_commands.map(command => command.join(" ")).join("\n")}</pre></li>)}</ol> : <p>검사 기록이 없습니다.</p>}</details>
       <details><summary>작업 이벤트와 작업공간</summary><p>{run.execution_worktree || "작업공간 준비 전"}</p>
         <ol className="maker-record-list">{run.events.map((event, index) => <li key={`${event.at}/${index}`}><time>{event.at}</time><strong>{event.kind}</strong><p>{event.message}</p></li>)}</ol></details>
     </WorkDialog> : null}

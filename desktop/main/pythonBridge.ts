@@ -63,6 +63,8 @@ const QUICK_REQUEST_METHODS = new Set<RpcMethod>([
   "connections.externalGuide",
   "runs.resultArtifact",
   "auth.claude.status",
+  "auth.claude.setExecutable",
+  "auth.claude.clearExecutable",
   "projects.list",
   "notifications.list",
   "projects.add",

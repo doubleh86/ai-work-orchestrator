@@ -59,6 +59,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .work-dialog__body { padding: 24px; overflow-y: auto; min-height: 0; display: grid; gap: 22px; }
 .work-dialog__footer { display: flex; justify-content: flex-end; flex-shrink: 0; gap: 10px; padding: 18px 24px; border-top: 1px solid #e5e7f0; }
 .maker-settings h2 { margin-bottom: 16px; }
+.maker-settings .maker-worker-hint { margin-bottom: 16px; color: var(--mk-muted); font-size: 13px; }
 .maker-provider-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
 .maker-provider-wide { grid-column: 1 / -1; }
 .maker-form-stack, .maker-worker-connection, .ai-auth-content, .nvidia-connection, .ai-connection-options__body, .project-settings-body { display: grid; gap: 16px; min-width: 0; }
@@ -83,11 +84,20 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .maker-notification-list > li > button:first-child { border: 0; text-align: left; background: transparent; color: #25273d; display: grid; gap: 6px; flex: 1; min-width: 0; }
 .maker-notification-list span, .maker-notification-list small { color: #697087; }
 .maker-run-controls { margin-bottom: 24px; }
+.maker-live-status { flex-wrap: wrap; }
+.maker-live-status > div { flex: 1; min-width: 180px; }
+.maker-live-status[data-tone="warning"] { border-color: var(--color-warning); }
+.maker-live-status[data-tone="warning"] .maker-status-dot { background: var(--color-warning); box-shadow: none; }
+.maker-live-status[data-tone="error"] .maker-status-dot { background: var(--color-danger); box-shadow: none; }
+.maker-live-status[data-tone="neutral"] .maker-status-dot { background: var(--mk-muted); box-shadow: none; }
+.maker-failure-detail { margin-bottom: 20px; color: var(--color-danger); }
 .run-lock-notice { display: grid; gap: 12px; padding: 16px; margin-bottom: 18px; border: 1px solid #dfd6b5; border-radius: 10px; background: #fffaf0; }
 .maker-run-controls > details { margin-top: 20px; border-top: 1px solid #e5e7f0; padding-top: 10px; }
 .maker-record-list > li { padding: 14px; border: 1px solid #e5e7f0; border-radius: 8px; }
 .maker-record-list time { display: block; color: #697087; font-size: 11px; }
 .maker-log { max-height: 420px; min-height: 90px; }
+.maker-task-overview { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.maker-task-overview span { color: var(--mk-muted); font-size: 13px; }
 .maker-task-open { display: flex; width: 100%; min-width: 0; align-items: start; gap: 12px; padding: 10px; margin: -10px; border: 0; border-radius: 8px; background: transparent; color: #25273d; text-align: left; }
 .maker-task-open:hover { background: #f5f3ff; }
 .maker-task-open > div { flex: 1; min-width: 0; }
@@ -99,6 +109,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .work-task-model, .effort-mode-panel { display: grid; gap: 14px; }
 .ai-account-details { display: grid; gap: 8px; }
 .ai-connection-options__body { margin-top: 10px; }
+.claude-executable-path { overflow-wrap: anywhere; }
 .nvidia-connection__key-form { display: grid; gap: 12px; }
 .nvidia-connection__keys li { padding: 14px; background: #f7f8fc; border: 1px solid #e5e7f0; border-radius: 8px; }
 .nvidia-connection__binding { display: flex; gap: 10px; align-items: end; }

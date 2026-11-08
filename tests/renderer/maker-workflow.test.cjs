@@ -63,7 +63,8 @@ function harness(component, initial = {}, options = {}) {
 test('default maker shell loads real projects and reports failure without fabricated progress', async () => {
   const view = harness('MakerApp'); let tree = view.render();
   assert.deepEqual(view.calls.map(call => call.method), ['projects.list']);
-  assert.ok(button(tree, '새 채팅')); assert.ok(button(tree, '작업 AI·설정'));
+  assert.ok(button(tree, '새 채팅')); assert.ok(button(tree, '작업 AI'));
+  assert.equal(nodes(tree).filter(node => node.type === 'button' && /작업 AI/.test(text(node))).length, 1);
   assert.doesNotMatch(renderToStaticMarkup(tree), /Planning AI|요청 복사/);
   assert.equal(button(tree, '앱에서 기획'), undefined);
   view.calls[0].reject(Error('engine unavailable')); await tick(); tree = view.render();
@@ -120,6 +121,12 @@ test('project selection prefers active work and prompt contains helper, paths an
   assert.ok(prompt.includes(JSON.stringify({ command: guide.command, args: guide.args }, null, 2)));
   assert.match(prompt, /mcp-register/); assert.match(prompt, /여러 작업 AI·모델·계정 설정은 그대로 유지/);
   assert.match(prompt, /submit_plan/); assert.match(prompt, /제작 준비 알림/); assert.match(prompt, /로컬 설정을 수정할 도구가 없으면/);
+  assert.match(prompt, /접수 결과만 짧게 알려주고 바로 답변을 끝내/);
+  assert.match(prompt, /오케스트레이터 UI와 알림/); assert.match(prompt, /반복 조회하지 마/);
+  assert.match(prompt, /접수를 실제 작업 시작이나 완료로 표현하지 마/);
+  assert.match(prompt, /상태를 묻거나 요청한 후속 행동에 필요한 경우에만 상태를 조회/);
+  assert.match(prompt, /처음 제작을 시작하기 전에 작업 AI·모델과 속도·품질·비용 기준을 짧게 확인/);
+  assert.match(prompt, /이미 합의한 설정은 다시 묻거나 임의로 바꾸지 마/);
 });
 
 test('new chat opens prompt copy without client selection or another idea form', () => {
@@ -183,6 +190,58 @@ const taskFixture = (id, extra = {}) => ({ id, title: id, description: '설명',
 const runFixture = (extra = {}) => ({ id: 'run', summary: 'fixture app', stage: 'planned', plan_revision: 3, plan_approved_revision: 3,
   updated_at: 'now', tasks: [taskFixture('one'), taskFixture('two')], events: [], execution_control: { action: 'execute', situation: 'ready', lock_state: 'unlocked' }, ...extra });
 const replacement = { agent_id: 'claude', provider_id: 'claude', model: 'other', reasoning_efforts: ['high'] };
+function visibleText(tree) {
+  if (!tree || typeof tree !== 'object') return text(tree);
+  if (Array.isArray(tree)) return tree.map(visibleText).join('');
+  if (tree.type === 'details' && !tree.props.open) return text(nodes(tree.props.children).find(node => node.type === 'summary'));
+  return visibleText(tree.props?.children);
+}
+const disclosure = (tree, label) => nodes(tree).find(node => node.type === 'details'
+  && text(nodes(node.props.children).find(item => item.type === 'summary')) === label);
+
+test('task details keep technical content collapsed and poll logs only while both disclosures are open', () => {
+  const observed = [], task = taskFixture('one', { status: 'running', readiness: 'active', description: 'HTTP implementation details' });
+  const view = harness('MakerTaskDetails', { projectName: 'fixture', run: runFixture(), task, onUpdated() {}, onClose() {} }, {
+    source: 'MakerTaskDetails', modules: { './useTaskLog': { useTaskLog(key, enabled) {
+      observed.push({ key, enabled }); return { value: enabled ? 'SDK diagnostic output' : '', error: '', loading: false, refresh() {} };
+    } } },
+  });
+  let tree = view.render();
+  assert.match(visibleText(tree), /작업 중/);
+  assert.doesNotMatch(visibleText(tree), /HTTP implementation|완료 기준|SDK diagnostic|running|active|아직 완료 결과/);
+  assert.equal(observed.at(-1).enabled, false);
+  disclosure(tree, '자세히 보기').props.onToggle({ currentTarget: { open: true } }); tree = view.render();
+  assert.match(visibleText(tree), /HTTP implementation/); assert.doesNotMatch(visibleText(tree), /SDK diagnostic/);
+  assert.equal(observed.at(-1).enabled, false);
+  disclosure(tree, '실행 로그').props.onToggle({ currentTarget: { open: true } }); tree = view.render();
+  assert.equal(observed.at(-1).enabled, true); assert.equal(observed.at(-1).key, 'fixture/run/one');
+  assert.match(visibleText(tree), /SDK diagnostic/);
+  disclosure(tree, '실행 로그').props.onToggle({ currentTarget: { open: false } }); tree = view.render();
+  assert.equal(observed.at(-1).enabled, false);
+  disclosure(tree, '실행 로그').props.onToggle({ currentTarget: { open: true } }); tree = view.render();
+  disclosure(tree, '자세히 보기').props.onToggle({ currentTarget: { open: false } }); tree = view.render();
+  assert.equal(observed.at(-1).enabled, false); assert.doesNotMatch(visibleText(tree), /SDK diagnostic/); view.unmount();
+});
+
+test('compact task view exposes problems and distinguishes saved results from verified completion', () => {
+  const result = { result_commit: 'final', self_report: 'Detailed implementation report', files: [{ path: 'src/final.cs', change: 'M' }], verification_status: 'passed' };
+  const task = taskFixture('one', { status: 'failed', error: 'Fixture transport failure', completed_commit: 'final', result_history: [result] });
+  const view = harness('MakerTaskDetails', { projectName: 'fixture', run: runFixture(), task, onUpdated() {}, onClose() {} }, { source: 'MakerTaskDetails' });
+  let tree = view.render();
+  assert.match(visibleText(tree), /확인이 필요해요/); assert.match(visibleText(tree), /확인할 문제/);
+  assert.doesNotMatch(visibleText(tree), /Fixture transport|Detailed implementation|작업 검증을 통과/);
+  disclosure(tree, '자세히 보기').props.onToggle({ currentTarget: { open: true } });
+  tree = view.render(); assert.match(visibleText(tree), /Fixture transport failure/);
+  const completed = { ...task, status: 'completed', error: '', completed_commit: 'newer' };
+  tree = view.render({ task: completed }); assert.match(visibleText(tree), /완료 결과 기록을 확인하지 못했습니다/);
+  assert.doesNotMatch(text(tree), /Detailed implementation|작업 검증을 통과/);
+  tree = view.render({ task: { ...completed, completed_commit: 'final', result_history: [{ ...result, verification_status: 'unverified' }] } });
+  assert.match(visibleText(tree), /검증 기록을 확인/); assert.doesNotMatch(visibleText(tree), /작업 검증을 통과/);
+  tree = view.render({ task: { ...completed, completed_commit: 'final' } });
+  assert.match(visibleText(tree), /작업 검증을 통과/); assert.match(visibleText(tree), /Detailed implementation report/);
+  assert.match(visibleText(tree), /src\/final.cs/); view.unmount();
+});
+
 test('planned task model changes carry revision and preserve other task contracts', async () => {
   const run = runFixture(); const view = harness('MakerTaskDetails', { projectName: 'fixture', run, task: run.tasks[0], onUpdated() {}, onClose() {} }, { source: 'MakerTaskDetails' });
   let tree = view.render(); view.calls[0].resolve([replacement]); await tick(); tree = view.render();
@@ -277,9 +336,54 @@ function controlView(run, extra = {}) {
 }
 test('run start checks the latest revision and keeps a failure visible after refreshing', async () => {
   const run = runFixture(); const view = controlView(run); let tree = view.render(); await tick();
-  button(tree, '제작 시작').props.onClick(); const call = view.calls.at(-1); assert.equal(call.method, 'runs.get');
+  button(tree, '제작 시작').props.onClick(); tree = view.render();
+  button(tree, '현재 설정으로 시작').props.onClick(); const call = view.calls.at(-1); assert.equal(call.method, 'runs.get');
   call.resolve({ ...run, plan_revision: 4 }); await tick(); tree = view.render();
   assert.match(renderToStaticMarkup(tree), /계획이 바뀌었습니다/); assert.equal(view.calls.some(item => item.method === 'runs.execute'), false); view.unmount();
+});
+
+test('start confirmation preserves assigned models and can be cancelled without starting work', () => {
+  const run = runFixture(); const view = controlView(run); let tree = view.render();
+  assert.equal(button(tree, '상세 기록·작업 설정'), undefined);
+  assert.equal(nodes(tree).some(node => node.type?.name === 'EffortModePanel'), false);
+  assert.doesNotMatch(visibleText(tree), /작업 기록|추론 강도|강도 변경/);
+  button(tree, '제작 시작').props.onClick(); tree = view.render();
+  const dialog = nodes(tree).find(node => node.type?.name === 'WorkDialog');
+  assert.equal(dialog.props.title, '제작을 시작할까요?');
+  assert.match(text(dialog), /codex · current/); assert.equal(view.calls.some(call => call.method === 'runs.execute'), false);
+  dialog.props.onClose(); tree = view.render();
+  assert.equal(button(tree, '현재 설정으로 시작'), undefined);
+  assert.equal(view.calls.some(call => call.method.startsWith('runs.effort') || call.method === 'runs.execute'), false); view.unmount();
+});
+
+test('an open start confirmation cannot silently adopt a different plan received in the background', async () => {
+  const run = runFixture(); const view = controlView(run); let tree = view.render();
+  button(tree, '제작 시작').props.onClick(); tree = view.render();
+  const changed = { ...run, plan_revision: 4, plan_approved_revision: 4 };
+  tree = view.render({ run: changed }); button(tree, '현재 설정으로 시작').props.onClick();
+  view.calls.at(-1).resolve(changed); await tick(); tree = view.render();
+  assert.equal(view.calls.some(call => call.method === 'runs.execute'), false);
+  assert.match(text(tree), /계획이 바뀌었습니다/); view.unmount();
+});
+
+test('a long-running execution does not block status checks or a stop with the current execution id', async () => {
+  const run = runFixture(); const view = controlView(run); let tree = view.render(); await tick();
+  button(tree, '제작 시작').props.onClick(); tree = view.render();
+  button(tree, '현재 설정으로 시작').props.onClick();
+  view.calls.at(-1).resolve(run); await tick();
+  const execution = view.calls.at(-1); assert.equal(execution.method, 'runs.execute');
+  const active = { ...run, stage: 'executing', active_step: 'agent_execution', execution_control: {
+    ...run.execution_control, situation: 'running', action: 'none', lock_state: 'active', execution_id: 'current-execution', can_stop: true, stop_phase: 'running',
+  } };
+  tree = view.render({ run: active });
+  assert.equal(nodes(tree).some(node => node.type?.name === 'WorkDialog'), false);
+  assert.notEqual(button(tree, '상태 확인').props.disabled, true);
+  assert.equal(button(tree, '제작 중지').props.disabled, false);
+  button(tree, '제작 중지').props.onClick(); const stop = view.calls.at(-1);
+  assert.equal(stop.method, 'runs.requestStop'); assert.equal(stop.params.executionId, 'current-execution'); assert.equal(stop.params.scope, 'group');
+  tree = view.render(); assert.equal(button(tree, '제작 중지').props.disabled, true);
+  stop.resolve({}); await tick(); tree = view.render(); assert.match(text(tree), /종료를 확인/);
+  execution.resolve(active); await tick(); view.unmount();
 });
 
 test('archive uses the reviewed fingerprint and cancellation does not update the run', async () => {

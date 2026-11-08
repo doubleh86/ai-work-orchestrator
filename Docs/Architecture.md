@@ -67,6 +67,7 @@ IPC와 원자적인 상태 흐름을 우선한다.
 | `codex_sdk` | 공식 Python Codex SDK client pool, 비밀값 없는 인증 상태 조회, 실제 실행 model profile 해석·보고, thread·turn 결과·timeout·interrupt | Pipeline 상태 전이, SDK 내부 JSON-RPC 구현, 프로젝트 registry 접근 |
 | `app_paths` | OS별 앱 사용자 설정 root의 경로 계산 | 디렉터리 생성, 인증·registry 내용 조회, 전역 환경 변경 |
 | `nvidia_agent` | 수동 NVIDIA 코딩 프로필, OpenCode argv·도구 권한, 완료 응답·사용량 해석과 키 마스킹 | Pipeline 상태 전이, Git 실행, 프로젝트 설정·키 저장 |
+| `provider_executable` | 외부 provider 실행 파일의 명시 경로·`PATH`·Claude 사용자 설치 경로 탐색 | 인증 정보 조회, provider 실행, 상태 전이 |
 | `planner` | 문서 형식 확인, 구조화 계획 검증, 작업 분해, 공급자 라우팅과 에이전트·리뷰어 배정 | 외부 AI 프로세스 실행, worktree 생성, 상태 파일 쓰기 |
 | `git` | Git·외부 명령 실행과 오류 변환 | 실행 단계 결정, 사용자 승인 판단 |
 | `store` | `RunState`와 Planning 결과 캐시의 원자적 저장·조회, run lock | 상태 전이 정책, Git 접근 |
@@ -535,6 +536,15 @@ renderer ──typed preload API──> Electron main
 계획 모델 수정은 기존 `runs.updatePlan`의 선택적 `expectedRevision`을 코어로 전달한다.
 
 `mcp --allow-control`은 외부 계획 제출과 검토·수정·확정, 실행·재개·중지·검증을 제공한다.
+관제 AI는 제어 요청의 접수 결과를 알린 뒤 답변을 끝낸다. 지속적인 진행 확인·완료·실패·
+사용자 확인은 데스크톱 UI와 알림이 담당하며, 관제 AI는 사용자의 질문이나 요청한 후속 행동에
+필요한 경우에만 상태를 조회한다. 접수를 실행·완료로 표현하거나 완료까지 자동 반복 조회하지 않는다.
+관제 답변 종료는 MCP 프로세스 종료나 연결 해제를 뜻하지 않는다.
+제작 화면은 현재 실행 제어와 현재 Task 시도·호출에 맞는 관측으로 최근 활동·경과·대기를 표시한다.
+상태 조회 성공이나 새 신호만으로 작업 진행을 주장하지 않으며 오래된 관측·조회 지연과 실제 중지를
+구분한다. 앱의 시작 확인은 당시 계획에 고정하고 최신 상태를 재검사한다. 모델·강도는 관제에서
+시작 전에 확인하고 상시 설정 메뉴를 표시하지 않는다. 긴 실행 RPC 중에도 상태 조회·중지는
+독립적으로 처리하며 접수 뒤 확인 전에는 중지 완료로 표시하지 않는다.
 기존 `draft_tasks` 기획 AI 도구는 이 역할에서 등록하지 않는다. 계획 확인은 review digest와
 revision으로 고정하고, 실행 요청은 UUID receipt로 중복 실행을 방지한다. MCP 프로세스 안의 로컬
 작업자가 접수한 제어를 수행하며 `get_control_request`가 접수·시작·완료·실패 기록과 실제 Run을

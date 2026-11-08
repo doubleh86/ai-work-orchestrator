@@ -209,6 +209,18 @@ class DesktopApplication:
     def claude_auth_status(self) -> object:
         return Pipeline.claude_connection_status()
 
+    def set_claude_executable(self, path: str) -> object:
+        from .provider_executable import set_claude_executable
+
+        set_claude_executable(path)
+        return Pipeline.claude_connection_status()
+
+    def clear_claude_executable(self) -> object:
+        from .provider_executable import clear_claude_executable
+
+        clear_claude_executable()
+        return Pipeline.claude_connection_status()
+
     def account_usage(self, provider: str) -> AccountUsage:
         if provider == "codex":
             return read_codex_quota()
@@ -1055,6 +1067,10 @@ class RpcService:
             return self.application.codex_auth_status()
         if method == "auth.claude.status":
             return self.application.claude_auth_status()
+        if method == "auth.claude.setExecutable":
+            return self.application.set_claude_executable(_required_string(values, "path"))
+        if method == "auth.claude.clearExecutable":
+            return self.application.clear_claude_executable()
         if method == "providers.accountUsage":
             provider = _required_string(values, "provider")
             if provider not in {"codex", "claude"}:

@@ -97,7 +97,11 @@ def build_server(operations: McpOperations) -> Server:
 
     @tool(read_only)
     def orchestrator_help() -> dict[str, Any]:
-        """Show what the orchestrator on this host can do, with natural-language examples."""
+        """Show this host's tools and natural-language examples.
+
+        The desktop UI handles ongoing progress and alerts. After a control receipt, report acceptance and end the response.
+        Do not autonomously poll or wait for completion. Read status only on user request or to prepare a requested action.
+        """
         examples = [
             "등록된 프로젝트 보여줘", "작업 진행 상황 리포트 해줘", "내가 직접 확인할 일만 알려줘",
             "멈춘 이유와 다음 조치 알려줘", "Main에 반영할 변경과 검증 결과 보여줘",
@@ -127,9 +131,10 @@ def build_server(operations: McpOperations) -> Server:
 
     @tool(read_only)
     async def report_progress(project_name: str = "") -> dict[str, Any]:
-        """Report active work and saved manual checks.
+        """Report one snapshot of active work and saved manual checks when the user asks.
 
         Omit project_name for the host overview with manual checks under attention.user_checks.
+        The desktop UI monitors ongoing work. Do not autonomously poll or wait for completion.
         """
         return await to_thread.run_sync(operations.progress, project_name)
 
@@ -145,6 +150,7 @@ def build_server(operations: McpOperations) -> Server:
     async def get_run(project_name: str, run_id: str) -> dict[str, Any]:
         """Read a group's stage, Tasks, execution, verification, and diagnoses.
 
+        Read once to answer a user question or prepare a requested action. Do not autonomously poll or wait for completion.
         Report planned_check outcomes and the legacy verification_recorded result for their reference commits.
         """
         return await to_thread.run_sync(operations.run, project_name, run_id)
@@ -233,14 +239,20 @@ def build_server(operations: McpOperations) -> Server:
         ) -> dict[str, Any]:
             """On an explicit user request, queue execution, resume or verification and return promptly.
 
-            Read get_run first. Use its plan revision and a UUID. Poll get_control_request for completion or errors.
+            Read get_run first. Use its plan revision and a UUID. Report the receipt and end the response.
+            The desktop UI handles progress, completion and alerts. Do not autonomously poll or wait for completion.
+            Read status only on user request or to prepare a requested action; do not disconnect the MCP server to end a response.
             An identical retry only observes the saved request. A queued/started receipt alone does not prove an active worker.
             """
             return await to_thread.run_sync(operations.start_control_run, project_name, run_id, request_id, action, expected_revision)
 
         @tool(read_only)
         async def get_control_request(project_name: str, run_id: str, request_id: str) -> dict[str, Any]:
-            """Read a control request's outcome and actual run. 'finished' means the call ended; assess result.stage and run.stage separately."""
+            """Read one request snapshot on user request or to prepare a requested action.
+
+            Do not autonomously poll or wait for completion; ongoing progress and alerts belong to the desktop UI.
+            'finished' means the call ended; assess result.stage and run.stage separately.
+            """
             return await to_thread.run_sync(operations.control_request, project_name, run_id, request_id)
 
         @tool(local_write)

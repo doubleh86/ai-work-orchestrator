@@ -7680,7 +7680,8 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(status.auth_method, "claude_subscription")
             self.assertEqual(status.auth_label, "Claude Max 구독 로그인")
             self.assertNotIn("private", status.auth_label)
-            self.assertEqual(run.call_args.args[0], [sys.executable, "auth", "status", "--json"])
+            self.assertEqual(Path(run.call_args.args[0][0]).resolve(), Path(sys.executable).resolve())
+            self.assertEqual(run.call_args.args[0][1:], ["auth", "status", "--json"])
 
     def test_claude_auth_status_maps_api_logout_and_failures(self) -> None:
         cases = (

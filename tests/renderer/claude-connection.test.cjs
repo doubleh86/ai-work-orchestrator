@@ -23,12 +23,13 @@ const button=(tree,label)=>nodes(tree).find(node=>node.type==='button'&&text(nod
 function harness(extra={}){
   let cursor=0,props={visible:true,...extra};const slots=[],effects=[],scheduled=[],calls=[],statuses=[],continued=[];
   const api={request(method){return new Promise((resolve,reject)=>calls.push({method,resolve,reject}))},
-    openClaudeLogin(){return new Promise((resolve,reject)=>calls.push({method:'login',resolve,reject}))}};
+    openClaudeLogin(){return new Promise((resolve,reject)=>calls.push({method:'login',resolve,reject}))},
+    selectPath(kind){return new Promise((resolve,reject)=>calls.push({method:'selectPath',kind,resolve,reject}))}};
   const hooks={useState(initial){const index=cursor++;if(!(index in slots))slots[index]=initial;return [slots[index],value=>{slots[index]=typeof value==='function'?value(slots[index]):value}]},
     useRef(initial){const index=cursor++;return slots[index]||=( {current:initial})},
     useEffect(callback,deps){const index=cursor++,previous=effects[index];if(!previous||deps.some((value,i)=>value!==previous.deps[i])){
       effects[index]={deps,cleanup:previous?.cleanup};scheduled.push(()=>{effects[index].cleanup?.();effects[index].cleanup=callback()})}}};
-  const exports={};runInNewContext(readFileSync(modulePath,'utf8'),{exports,window:{orchestrator:api},require:name=>name==='react'?hooks:local(name)});
+  const exports={};runInNewContext(readFileSync(modulePath,'utf8'),{exports,Error,window:{orchestrator:api},require:name=>name==='react'?hooks:local(name)});
   return {calls,statuses,continued,details:exports.claudeAccountDetails,
     render(patch={}){props={...props,...patch};cursor=0;const tree=exports.ClaudeConnectionPanel({onStatusChange:value=>statuses.push(value),onContinue:()=>continued.push(true),...props});for(const effect of scheduled.splice(0))effect();return tree},
     unmount(){for(const effect of effects)effect?.cleanup?.()}};
@@ -96,4 +97,41 @@ test('malformed account replies cannot crash rendering or leave a previous conne
   view.calls.at(-1).resolve(connected({account_email:{unexpected:'object'}}));await tick();tree=view.render();
   assert.equal(view.statuses.at(-1),null);assert.equal(nodes(tree).some(node=>node.type==='dl'),false);
   assert.match(renderToStaticMarkup(tree),/응답을 확인하지 못했습니다/);view.unmount();
+});
+
+test('a missing Claude CLI can be selected, checked, and reset to automatic discovery',async()=>{
+  const view=harness();let tree=await load(view,{installed:false,authenticated:false,auth_method:'none',message:'Claude CLI 설치 필요',selected_executable:''});
+  assert.ok(button(tree,'실행 파일 선택'));
+  button(tree,'실행 파일 선택').props.onClick();
+  assert.equal(view.calls.at(-1).kind,'claude');
+  view.calls.at(-1).resolve('/Users/example/.local/bin/claude');await tick();
+  assert.equal(view.calls.at(-1).method,'auth.claude.setExecutable');
+  view.calls.at(-1).resolve(connected({selected_executable:'/Users/example/.local/bin/claude'}));await tick();
+  tree=view.render();assert.match(renderToStaticMarkup(tree),/선택한 실행 파일/);
+  assert.ok(button(tree,'실행 파일 변경'));
+  button(tree,'자동 탐색으로 돌아가기').props.onClick();
+  assert.equal(view.calls.at(-1).method,'auth.claude.clearExecutable');
+  view.calls.at(-1).resolve(connected({selected_executable:''}));await tick();
+  tree=view.render();assert.equal(button(tree,'자동 탐색으로 돌아가기'),undefined);
+  assert.equal(view.statuses.at(-1).selected_executable,'');view.unmount();
+});
+
+test('cancelling the picker preserves the connection and a failed selection remains recoverable',async()=>{
+  const view=harness();let tree=await load(view,connected());
+  button(tree,'실행 파일 변경').props.onClick();view.calls.at(-1).resolve(null);await tick();
+  tree=view.render();assert.deepEqual(view.calls.map(call=>call.method),['auth.claude.status','selectPath']);
+  assert.equal(view.statuses.at(-1).authenticated,true);
+  button(tree,'실행 파일 변경').props.onClick();view.calls.at(-1).resolve('/missing/claude');await tick();
+  view.calls.at(-1).reject(new Error('선택한 Claude 실행 파일을 사용할 수 없습니다.'));await tick();
+  tree=view.render();assert.match(renderToStaticMarkup(tree),/선택한 Claude 실행 파일을 사용할 수 없습니다/);
+  assert.equal(view.statuses.at(-1).authenticated,true);
+  assert.ok(button(tree,'실행 파일 변경'));view.unmount();
+});
+
+test('a corrupt saved selection leaves the recovery controls available',async()=>{
+  const view=harness();view.render();view.calls.at(-1).reject(new Error('Claude 실행 파일 설정 형식이 올바르지 않습니다.'));await tick();
+  let tree=view.render();assert.ok(button(tree,'실행 파일 선택'));assert.ok(button(tree,'자동 탐색으로 돌아가기'));
+  button(tree,'자동 탐색으로 돌아가기').props.onClick();
+  view.calls.at(-1).resolve(connected({selected_executable:''}));await tick();
+  tree=view.render();assert.equal(view.statuses.at(-1).authenticated,true);view.unmount();
 });

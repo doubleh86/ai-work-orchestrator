@@ -1582,6 +1582,15 @@ def test_claude_status_is_global_read_only_rpc() -> None:
     assert application.calls == [("claude_auth_status", {})]
 
 
+def test_claude_executable_selection_and_reset_are_explicit_rpc_actions() -> None:
+    rpc, application = service()
+    rpc.dispatch("auth.claude.setExecutable", {"path": "/local/claude"})
+    rpc.dispatch("auth.claude.clearExecutable", {})
+    assert application.calls == [("set_claude_executable", "/local/claude", {}), ("clear_claude_executable", {})]
+    with pytest.raises(RpcError, match="path must be a non-empty string"):
+        rpc.dispatch("auth.claude.setExecutable", {"path": ""})
+
+
 def test_application_rejects_registry_when_config_repository_changes(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     other = tmp_path / "other"
