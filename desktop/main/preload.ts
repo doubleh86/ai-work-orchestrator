@@ -16,6 +16,12 @@ import type {
 
 const allowedMethods = new Set<RpcMethod>([
   "system.hello",
+  "connections.externalGuide",
+  "connections.registerExternal",
+  "runs.resultArtifact",
+  "runs.registerResult",
+  "runs.launchResult",
+  "runs.recordUserCheck",
   "auth.claude.status",
   "projects.list",
   "projects.inspectGitReadiness",
@@ -38,6 +44,7 @@ const allowedMethods = new Set<RpcMethod>([
   "providers.planning",
   "providers.execution",
   "providers.status",
+  "providers.accountUsage",
   "planning.refreshIndex",
   "runs.list",
   "runs.activeGroups",
@@ -82,6 +89,10 @@ const allowedMethods = new Set<RpcMethod>([
   "tasks.repairFromChat",
   "tasks.updateExecutionProfile",
   "tasks.complete",
+  "tasks.completeManualVerification",
+  "tasks.handoffToAi",
+  "tasks.deferManual",
+  "tasks.resumeManual",
   "runs.verify",
   "runs.verifyAndRepair",
   "runs.updatePlan",
@@ -96,6 +107,9 @@ const api: DesktopApi = {
   },
   registerCodexMcp() {
     return ipcRenderer.invoke("orchestrator:mcp-register-codex");
+  },
+  registerCodexPlanning() {
+    return ipcRenderer.invoke("orchestrator:mcp-register-planning");
   },
   openCodexInstallGuide() {
     return ipcRenderer.invoke("orchestrator:codex-install-guide");

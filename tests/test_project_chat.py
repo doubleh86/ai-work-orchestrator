@@ -50,6 +50,7 @@ def perform(pipeline, state, decision):
 
 
 @pytest.mark.parametrize("output", ["작업 완료", "{}", '{"action":"push","message":"push","authorized":true}',
+    '{"action":"set_execution_profile","message":"go","authorized":true,"task_id":"task"}',
     '{"action":"continue","message":"go","authorized":false}',
     '{"action":"continue","message":"go","authorized":true,"command":"rm -rf"}',
     '{"action":"repair","message":"fix","authorized":true}'])
@@ -72,6 +73,110 @@ def test_question_and_scope_change_finish_without_execution(project_chat):
     assert args.args[1].review_approval_mode == "deny-all"
     assert "available_actions" in args.args[2] and "live owner" in args.args[2]
     assert pipeline._configure_planning_profile.call_args.kwargs["planning_model"] == "chosen"
+
+
+@pytest.fixture
+def failed_profile_task(project_chat):
+    pipeline, state, invoke, control, integration = project_chat
+    codex = AgentConfig(id="codex-general", capabilities=("general",), command=(), provider_id="codex", model="gpt-6.1-sol")
+    pipeline.config = replace(pipeline.config, agents=(*pipeline.config.agents, codex))
+    pipeline.agents[codex.id] = codex
+    pipeline._codex_sdk = object()
+    state.stage, state.failed_step = Stage.FAILED, RunStep.AGENT_EXECUTION
+    task = state.tasks[0]
+    task.title = "[선택] 실제 앱 훅 설치·관측·해제 인수"
+    task.status, task.failed_action = TaskStatus.FAILED, TaskAction.EXECUTE
+    task.agent_id, task.provider_id, task.model = "claude-general", "claude", "sonnet"
+    task.last_attempt_id = "previous-claude-attempt"
+    task.expected_paths, task.verify_commands = ["docs/result.md"], [["git", "diff", "--check"]]
+    state.tasks.append(WorkTask(id="done", title="완료 작업", capabilities=["general"],
+                                status=TaskStatus.COMPLETED, last_attempt_id="completed-attempt"))
+    state.refresh_task_readiness()
+    pipeline.store.save(state)
+    with patch.object(pipeline, "_connected_provider_ids", side_effect=lambda providers: providers):
+        yield pipeline, state, invoke
+
+
+def test_chat_saves_named_failed_task_profile_without_plan_approval_or_execution(failed_profile_task):
+    pipeline, state, invoke = failed_profile_task
+    parent = accept(pipeline, state, "실패한 훅 인수 작업만 Codex(gpt-6.1-sol/high)로 바꿔줘")
+    decision = pipeline.decide_project_chat(state.id, parent["request_id"])
+    with patch.object(pipeline, "_execute") as execute:
+        assert perform(pipeline, state, decision)["status"] == "succeeded"
+        assert perform(pipeline, state, decision)["status"] == "succeeded"
+        execute.assert_not_called()
+    invoke.assert_not_called()
+    saved = pipeline.store.load(state.id)
+    task = saved.tasks[0]
+    assert (task.provider_id, task.model, task.reasoning_effort) == ("codex", "gpt-6.1-sol", "high")
+    assert (task.status, task.last_attempt_id) == (TaskStatus.FAILED, "previous-claude-attempt")
+    assert task.expected_paths == ["docs/result.md"] and task.verify_commands == [["git", "diff", "--check"]]
+    assert saved.tasks[1] == state.tasks[1]
+    assert saved.plan_revision == saved.plan_approved_revision == 1
+    assert "Codex · gpt-6.1-sol · high" in saved.planning_messages[-1].text
+
+
+def test_chat_changes_profile_before_explicit_combined_retry(failed_profile_task):
+    pipeline, state, invoke = failed_profile_task
+    message = "‘[선택] 실제 앱 훅 설치·관측·해제 인수’ 실행 AI를 Codex(gpt-6.1-sol/high)로 바꾸고 계속해줘"
+    parent = accept(pipeline, state, message)
+    decision = pipeline.decide_project_chat(state.id, parent["request_id"])
+
+    def execute_saved(current, **kwargs):
+        assert kwargs["recover_saved_profiles"] is True
+        assert (current.tasks[0].provider_id, current.tasks[0].model, current.tasks[0].reasoning_effort) == ("codex", "gpt-6.1-sol", "high")
+        assert pipeline.store.load(state.id).tasks[0].provider_id == "codex"
+        assert current.tasks[1] == state.tasks[1]
+        current.tasks[0].status = TaskStatus.COMPLETED
+        current.stage = Stage.READY_TO_MERGE
+        pipeline.store.save(current)
+        return current
+
+    with patch.object(pipeline, "_execute", side_effect=execute_saved) as execute:
+        assert perform(pipeline, state, decision)["status"] == "succeeded"
+        perform(pipeline, state, decision)
+        execute.assert_called_once()
+    invoke.assert_not_called()
+
+
+@pytest.mark.parametrize("condition", ["unavailable", "new_attempt"])
+def test_chat_does_not_recover_with_old_profile_when_change_cannot_be_saved(failed_profile_task, condition):
+    pipeline, state, invoke = failed_profile_task
+    parent = accept(pipeline, state, "실패 작업을 Codex(gpt-6.1-sol/high)로 바꾸고 계속해줘")
+    decision = pipeline.decide_project_chat(state.id, parent["request_id"])
+    if condition == "new_attempt":
+        current = pipeline.store.load(state.id)
+        current.tasks[0].last_attempt_id = "newer-attempt"
+        pipeline.store.save(current)
+    with patch.object(pipeline, "_connected_provider_ids", return_value=set()), patch.object(pipeline, "_execute") as execute:
+        with pytest.raises(PipelineError, match="연결이 없습니다" if condition == "unavailable" else "변경됐습니다"):
+            perform(pipeline, state, decision)
+        execute.assert_not_called()
+    invoke.assert_not_called()
+    assert pipeline.store.load(state.id).tasks[0].provider_id == "claude"
+    assert pipeline.store.load_operation(state.id, parent["request_id"]).status == "failed"
+
+
+@pytest.mark.parametrize("message", ["승인한다!", "“실패 작업을 Codex로 바꿔줘”", "실패 작업을 Codex로 바꿀 수 있어?"])
+def test_chat_cannot_authorize_a_profile_change_from_quotes_or_unspecific_approval(failed_profile_task, message):
+    pipeline, state, invoke = failed_profile_task
+    parent = accept(pipeline, state, message)
+    result = decide(pipeline, state, invoke, parent, "ask")
+    assert result["phase"] == "needs_input"
+    assert pipeline.store.load(state.id).tasks[0].provider_id == "claude"
+    invoke.assert_called_once()
+
+
+def test_chat_does_not_guess_between_matching_failed_tasks(failed_profile_task):
+    pipeline, state, invoke = failed_profile_task
+    current = pipeline.store.load(state.id)
+    current.tasks.append(WorkTask(id="other", title="또 다른 훅 인수", capabilities=["general"], status=TaskStatus.FAILED))
+    pipeline.store.save(current)
+    parent = accept(pipeline, state, "실패한 훅 인수 작업을 Codex로 바꿔줘")
+    with pytest.raises(PipelineError, match="하나로 특정하지 못했습니다"):
+        pipeline.decide_project_chat(state.id, parent["request_id"])
+    invoke.assert_not_called()
+    assert pipeline.store.load(state.id).tasks[0].provider_id == "claude"
 
 
 def test_continue_executes_once_then_ai_reports_actual_result(project_chat):

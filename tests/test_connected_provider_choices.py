@@ -1,7 +1,6 @@
 import json
 import sys
 from dataclasses import replace
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -9,7 +8,7 @@ import pytest
 from ai_orchestrator.codex_sdk import CodexSdkAccountStatus, CodexSdkError
 from ai_orchestrator.config import AgentConfig, Config, ExecutionConfig, PlanningConfig, ProjectConfig, RoutingConfig
 from ai_orchestrator.desktop_rpc import DesktopApplication, RpcError, _expanded_provider_choices
-from ai_orchestrator.models import PlanningMode, RunState, Stage, TaskAction, TaskStatus, WorkTask
+from ai_orchestrator.models import PlanningMode, RunState, Stage, TaskAction, TaskStatus, UserCheck, WorkTask
 from ai_orchestrator.pipeline import Pipeline
 from ai_orchestrator.planner import PLAN_MARKER, Plan, PlanningError, assign_plan_agents
 
@@ -103,15 +102,19 @@ def test_custom_provider_keeps_eligible_agents_when_another_custom_agent_is_miss
 def test_stale_desktop_selections_are_rechecked_without_reassigning_saved_tasks(connection_pipeline):
     pipeline, _sdk = connection_pipeline
     task = WorkTask("task", "Saved task", ["general"], agent_id="claude-general", provider_id="claude", model="sonnet")
+    state = RunState("run", "", "", str(pipeline.repo), "main", stage=Stage.PLANNED, tasks=[task])
     with pytest.raises(RpcError):
         DesktopApplication._desktop_planning_agent_id(pipeline, "claude-general")
-    with patch.object(pipeline, "status", return_value=SimpleNamespace(tasks=[task])):
+    with patch.object(pipeline, "status", return_value=state):
         with pytest.raises(RpcError):
             DesktopApplication._ensure_desktop_execution_profiles(pipeline, "run", {})
+    gated = replace(state, user_check_plan=[UserCheck("approval", "검토", "사용자 확인", ("결과 확인",), blocks_task_ids=(task.id,))])
+    with patch.object(pipeline, "status", return_value=gated):
+        DesktopApplication._ensure_desktop_execution_profiles(pipeline, "run", {})
     assert (task.agent_id, task.model) == ("claude-general", "sonnet")
     pipeline._claude_auth_status.return_value = (True, "claude_subscription", "로그인됨")
     assert DesktopApplication._desktop_planning_agent_id(pipeline, "claude-general") == "claude-general"
-    with patch.object(pipeline, "status", return_value=SimpleNamespace(tasks=[task])):
+    with patch.object(pipeline, "status", return_value=state):
         DesktopApplication._ensure_desktop_execution_profiles(pipeline, "run", {})
         pipeline._claude_auth_status.return_value = (False, "none", "로그인 필요")
         task.status = TaskStatus.COMPLETED

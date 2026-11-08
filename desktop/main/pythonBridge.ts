@@ -41,6 +41,7 @@ export class PythonBridgeRequestError extends Error {
 const REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
 const QUICK_REQUEST_TIMEOUT_MS = 15 * 1000;
 const BOUNDED_REQUEST_TIMEOUT_MS: Partial<Record<RpcMethod, number>> = {
+  "providers.accountUsage": 22 * 1000,
   "runs.recoveryPlan": 60 * 1000,
   "projects.checkDotnet": 75 * 1000,
   "planning.refreshIndex": 90 * 1000,
@@ -59,6 +60,8 @@ const BOUNDED_REQUEST_TIMEOUT_MS: Partial<Record<RpcMethod, number>> = {
 };
 const QUICK_REQUEST_METHODS = new Set<RpcMethod>([
   "system.hello",
+  "connections.externalGuide",
+  "runs.resultArtifact",
   "auth.claude.status",
   "projects.list",
   "notifications.list",
@@ -75,6 +78,7 @@ const QUICK_REQUEST_METHODS = new Set<RpcMethod>([
   "providers.planning",
   "providers.execution",
   "providers.status",
+  "providers.accountUsage",
   "runs.list",
   "runs.activeGroups",
   "runs.attentionItems",
@@ -103,6 +107,9 @@ const QUICK_REQUEST_METHODS = new Set<RpcMethod>([
   "locks.clear",
 ]);
 const WORK_REQUEST_METHODS = new Set<RpcMethod>([
+  "connections.registerExternal",
+  "runs.registerResult",
+  "runs.launchResult",
   "runs.performProjectChat",
   "runs.recoveryPlan",
   "runs.applyRecovery",
@@ -122,6 +129,11 @@ const WORK_REQUEST_METHODS = new Set<RpcMethod>([
   "tasks.repairFromChat",
   "tasks.updateExecutionProfile",
   "tasks.complete",
+  "tasks.completeManualVerification",
+  "runs.recordUserCheck",
+  "tasks.handoffToAi",
+  "tasks.deferManual",
+  "tasks.resumeManual",
   "runs.verify",
   "runs.verifyAndRepair",
   "runs.excludeTasks",
@@ -152,6 +164,9 @@ const PLANNING_REQUEST_METHODS = new Set<RpcMethod>([
   "runs.configureBootstrapInstructions",
 ]);
 const BACKEND_MANAGED_LONG_REQUEST_METHODS = new Set<RpcMethod>([
+  "connections.registerExternal",
+  "runs.registerResult",
+  "runs.launchResult",
   "runs.decideProjectChat", "runs.performProjectChat",
   "runs.proposeResultRevision",
   "runs.createResultRevision",
@@ -173,6 +188,9 @@ const BACKEND_MANAGED_LONG_REQUEST_METHODS = new Set<RpcMethod>([
   "tasks.retry",
   "tasks.repairFromChat",
   "tasks.complete",
+  "tasks.completeManualVerification",
+  "runs.recordUserCheck",
+  "tasks.handoffToAi",
   "runs.verify",
   "runs.verifyAndRepair",
   "runs.merge",

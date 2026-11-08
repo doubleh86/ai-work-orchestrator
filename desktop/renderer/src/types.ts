@@ -388,6 +388,7 @@ export interface TaskResultRecord {
   self_report: string;
   verification_status: "passed" | "unverified";
   passed_commands: string[][];
+  manual_verification_note?: string;
 }
 
 export interface GroupResultRecord {
@@ -551,7 +552,25 @@ export interface EffortModePreview {
   can_apply: boolean;
 }
 
+export type UserCheckOutcome = "passed" | "failed" | "deferred";
+
+export interface PlannedUserCheck {
+  check_id: string;
+  title: string;
+  instructions: string;
+  acceptance_criteria: string[];
+  after_task_id: string;
+  blocks_task_ids: string[];
+  required_for_integration: boolean;
+  status: "pending" | "waiting" | UserCheckOutcome;
+  reference_commit: string | null;
+  recorded_at: string | null;
+  note: string;
+}
+
 export interface RunState {
+  planned_user_checks?: PlannedUserCheck[];
+  user_check_blocked_task_ids?: string[];
   project_chat_available?: boolean;
   tech_stack_confirmation_allowed?: boolean;
   id: string;
@@ -575,6 +594,7 @@ export interface RunState {
   planning_reasoning_effort: string;
   planning_mode: PlanningMode;
   planning_request: string;
+  external_plan_digest?: string;
   revision_source_run_id?: string;
   revision_request_id?: string;
   revision_request_text?: string;
@@ -872,6 +892,7 @@ export type RunExecutionSituation =
   | "running"
   | "preparing"
   | "resumable"
+  | "waiting_user_check"
   | "attention_required"
   | "tasks_complete"
   | "status_unknown"
@@ -1112,4 +1133,10 @@ export interface PlanningSourceIndex {
   added_count: number;
   modified_count: number;
   deleted_count: number;
+}
+
+export interface TaskProfileSelection {
+  agentId: string;
+  model: string;
+  reasoningEffort: string;
 }

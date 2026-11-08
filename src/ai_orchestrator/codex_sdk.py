@@ -17,12 +17,13 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from .account_usage import AccountUsage, codex_quota_summary
 from .app_paths import application_config_root
 from .execution_control import CancellationSignal, ExecutionStopped
 from .usage import CodexUsageTracker, TokenCounts, UsageObservation
 
 if TYPE_CHECKING:
-    from openai_codex import ApprovalMode, Codex, Sandbox, Thread as CodexThread, TurnHandle, TurnResult
+    from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox, Thread as CodexThread, TurnHandle, TurnResult
     from openai_codex.types import Notification, ThreadItem, ThreadTokenUsage, Turn
 
 from . import __version__
@@ -1127,8 +1128,8 @@ def installed_codex_executable() -> str:
     raise FileNotFoundError("작업 PC에 Codex CLI를 설치해 주세요.")
 
 
-def _new_client() -> Codex:
-    from openai_codex import Codex, CodexConfig
+def _client_config() -> CodexConfig:
+    from openai_codex import CodexConfig
 
     codex_bin = installed_codex_executable() if _uses_external_codex() else None
     codex_home = application_config_root() / "codex"
@@ -1140,13 +1141,49 @@ def _new_client() -> Codex:
         # The isolated home has no desktop sandbox defaults. Prefer native
         # isolation so read-only commands do not require escalation.
         overrides += ('features.prefer_mxc=true',)
-    return Codex(CodexConfig(
+    return CodexConfig(
         codex_bin=codex_bin,
         client_name="ai_work_orchestrator", client_title="AI Work Orchestrator", client_version=__version__,
         config_overrides=overrides,
         env={"CODEX_HOME": str(codex_home), "CODEX_SQLITE_HOME": str(codex_home),
              "OPENAI_API_KEY": "", "CODEX_API_KEY": "", "CODEX_ACCESS_TOKEN": ""},
-    ))
+    )
+
+
+def _new_client() -> Codex:
+    from openai_codex import Codex
+
+    return Codex(_client_config())
+
+
+def read_codex_quota() -> AccountUsage:
+    try:
+        from openai_codex.client import CodexClient
+        from openai_codex.generated.v2_all import GetAccountRateLimitsResponse, GetAccountParams
+
+        # The high-level SDK does not expose this method in the pinned version.
+        with CodexClient(_client_config()) as client:
+            deadline = threading.Timer(12, client.close)
+            deadline.start()
+            try:
+                client.initialize()
+                account = _account_status(client.account_read(GetAccountParams(refresh_token=False)))
+                if not account.authenticated:
+                    return AccountUsage("signed_out")
+                if account.auth_method == "api_key":
+                    return AccountUsage("api_key")
+                if account.auth_method != "chatgpt":
+                    return AccountUsage("unavailable")
+                result = client.request("account/rateLimits/read", None, response_model=GetAccountRateLimitsResponse)
+                return codex_quota_summary(result.model_dump(by_alias=True))
+            finally:
+                deadline.cancel()
+                deadline.join()
+    except (FileNotFoundError, ImportError):
+        return AccountUsage("not_installed")
+    except Exception:
+        # SDK errors can contain provider response details. Only the status crosses the UI boundary.
+        return AccountUsage("error")
 
 
 def _account_status(response: object) -> CodexSdkAccountStatus:

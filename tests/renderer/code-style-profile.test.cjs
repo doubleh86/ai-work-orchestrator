@@ -81,9 +81,3 @@ test('task code style evidence separates rule changes from executed check result
   assert.equal(taskCodeStyleEvidenceSummary(null), '기록 없음');
   assert.equal(taskCodeStyleCheckSummary(null), '연결된 검사 없음');
 });
-
-test('task detail exposes each applied source and configured check rather than only counts', () => {
-  const app = readFileSync(join(root, 'desktop/renderer/src/App.tsx'), 'utf8');
-  assert.match(app, /applicable_rules\.map\(\(rule, ruleIndex\) => <Detail[^>]+codeStyleRuleSummary\(rule\)/);
-  assert.match(app, /checks\.map\(\(check, checkIndex\) => <Detail[^>]+taskCodeStyleCheckDetail\(check\)/);
-});

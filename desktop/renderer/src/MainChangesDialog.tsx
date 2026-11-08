@@ -27,7 +27,7 @@ function shortCommit(commit: string): string {
   return commit ? commit.slice(0, 8) : "미확인";
 }
 
-export function MainChangesDialog({ projectName, onClose, onChanged, onError }: MainChangesDialogProps) {
+export function MainChangesDialog({ projectName, onClose, onChanged, onError: notifyError }: MainChangesDialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const [snapshot, setSnapshot] = useState<MainChangeSnapshot>();
   const [selection, setSelection] = useState<SelectionMap>({});
@@ -36,11 +36,14 @@ export function MainChangesDialog({ projectName, onClose, onChanged, onError }: 
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
   const [resultMessage, setResultMessage] = useState("");
+  const [localError, setLocalError] = useState("");
+  const onError = useCallback((value: string) => { setLocalError(value); notifyError(value); }, [notifyError]);
   const initialLoadStarted = useRef(false);
 
   const load = useCallback(async (refreshRemote: boolean) => {
     setBusy(refreshRemote ? "원격 상태 확인 중" : "변경 확인 중");
     setDifference(undefined);
+    setLocalError("");
     try {
       const next = await window.orchestrator.request<MainChangeSnapshot>(
         refreshRemote ? "projects.refreshMainRemote" : "projects.mainChanges",
@@ -189,6 +192,7 @@ export function MainChangesDialog({ projectName, onClose, onChanged, onError }: 
           {busy ? <><RefreshCw className="spin" aria-hidden="true" size={16} /><strong>{busy}</strong></> : snapshot ? <><CheckCircle2 aria-hidden="true" size={16} /><strong>{mainSnapshotSummary(snapshot)}</strong></> : <span>변경 상태를 확인하고 있습니다.</span>}
           {snapshot ? <small>원격 {snapshot.sync.remote}/{snapshot.sync.target_branch} · local {shortCommit(snapshot.sync.local_head)} · remote {shortCommit(snapshot.sync.remote_head)}</small> : null}
         </div>
+        {localError ? <p className="main-changes-warning" role="alert">{localError}</p> : null}
         {snapshot?.blocked_reason ? <p className="main-changes-warning"><AlertCircle aria-hidden="true" size={16} />{snapshot.blocked_reason}</p> : null}
         {snapshot?.sync.error ? <p className="main-changes-warning"><AlertCircle aria-hidden="true" size={16} />원격 상태를 확인하지 못했습니다. {snapshot.sync.error}</p> : null}
         {resultMessage ? <p className={resultMessage.includes("실패") ? "main-changes-warning" : "main-changes-result"}>{resultMessage}</p> : null}

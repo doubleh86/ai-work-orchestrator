@@ -9,13 +9,14 @@ import tempfile
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path, PureWindowsPath
 from typing import Any, cast
 
 from .desktop_rpc import DesktopApplication
 from .file_lock import exclusive_file_lock
-from .models import RunState, RunSummary, Stage, utc_now
+from .models import RunState, RunSummary, Stage, UserCheck, utc_now
 from .registry import RegisteredProject, RegistryError
 
 
@@ -63,19 +64,28 @@ def _atomic_write(path: Path, data: bytes, *, replace: bool) -> None:
 class McpOperations:
     """Host-scoped orchestration tools over the same registry and Pipeline as the app."""
 
-    def __init__(self, application: DesktopApplication, *, allow_write: bool = False, projects_root: Path | None = None):
+    def __init__(
+        self, application: DesktopApplication, *, allow_write: bool = False, allow_planning: bool = False,
+        allow_control: bool = False, projects_root: Path | None = None,
+    ):
         self.application = application
         self.registry = application.registry
         self.host = socket.gethostname()
-        self.allow_write = allow_write
+        self.allow_control = allow_control
+        self.allow_write = allow_write or allow_control
+        self.allow_planning = allow_planning or allow_control
         self.projects_root = projects_root.resolve(strict=True) if projects_root else None
-        if self.projects_root and (not self.projects_root.is_dir() or not allow_write):
+        if self.projects_root and (not self.projects_root.is_dir() or not self.allow_write):
             raise ValueError("새 프로젝트 루트는 기존 폴더여야 하며 변경 권한을 함께 설정해야 합니다.")
         self.state_dir = self.registry.path.with_name(f"{self.registry.path.name}.mcp")
+        self._control_workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mcp-control")
+
+    def close(self) -> None:
+        self._control_workers.shutdown(wait=True)
 
     def _require_write(self) -> None:
         if not self.allow_write:
-            raise PermissionError("이 MCP 연결에는 조회 권한만 있습니다.")
+            raise PermissionError("이 MCP 연결에는 작업 변경 권한이 없습니다.")
 
     def projects(self) -> dict[str, Any]:
         return {"host": self.host, "projects": [self._project_summary(project) for project in self.registry.list()]}
@@ -91,23 +101,28 @@ class McpOperations:
             return {"host": self.host, "active": self.application.active_groups(), "attention": self.attention()}
         project = self.registry.get(project_name)
         runs = cast(list[RunSummary], self.application.runs(project.name, scope="active"))
+        checks = self.application.user_check_items(project.name)
         return {"host": self.host, "project": project.name, "checked_at": utc_now(),
-                "runs": [asdict(run) for run in runs[:30]]}
+                "runs": [asdict(run) for run in runs[:30]],
+                "user_checks": checks["items"], "user_check_errors": checks["errors"]}
 
     def attention(self) -> dict[str, Any]:
         snapshot = self.application.attention_items()
         for item in cast(list[dict[str, Any]], snapshot["items"]):
             if item.get("attempt_id"):
                 item["review_id"] = _digest(self.host, item["project_name"], item["run_id"], item["task_id"], item["attempt_id"])
-        return {"host": self.host, **snapshot}
+        checks = self.application.user_check_items()
+        return {"host": self.host, **snapshot, "user_checks": checks["items"], "user_check_errors": checks["errors"]}
 
     def run(self, project_name: str, run_id: str) -> dict[str, Any]:
-        state = cast(dict[str, Any], self.application.status(project_name, _run_id(run_id)))
+        state = cast(dict[str, Any], self.application.status(project_name, _run_id(run_id), include_user_checks=True))
         tasks = [{key: task.get(key) for key in ("id", "title", "status", "readiness", "failed_action", "last_attempt_id")}
                  for task in state["tasks"]]
         attempts = state.get("verification_attempts", [])
         return {"host": self.host, "project": project_name, "run_id": state["id"], "stage": state["stage"],
-                "summary": state.get("summary", ""), "checked_at": utc_now(), "tasks": tasks,
+                "plan_revision": state.get("plan_revision", 0),
+                "verified_integration_head": state.get("verified_integration_head", ""),
+                "summary": state.get("summary", ""), "checked_at": utc_now(), "tasks": tasks, "user_checks": state["user_checks"],
                 "failure": state.get("failure_message", "")[:6000], "updated_at": state.get("updated_at"),
                 "execution": asdict(state["execution_control"]), "waiting": state.get("waiting_prompt"),
                 "latest_verification": ({key: attempts[-1].get(key) for key in ("status", "phase", "finished_at", "failed_task_id")}
@@ -281,10 +296,15 @@ class McpOperations:
                     readiness = self.application.initialize_git(repo, "not_initialized", approved=True)
                 if readiness.kind == "unborn":
                     preview = self.application.preview_initial_commit(repo)
-                    if not preview.readiness.author_configured:
+                    tool_author = self.allow_control and not preview.readiness.author_configured
+                    if not preview.readiness.author_configured and not tool_author:
                         raise RegistryError("작업 PC에서 Git 작성자 이름과 이메일을 설정한 뒤 같은 요청을 이어가세요.")
-                    self.application.create_initial_commit(repo, preview.snapshot_id, [], "Initial commit", author_name="", author_email="",
-                                                           save_author=False, allow_empty=True, approved=True)
+                    self.application.create_initial_commit(
+                        repo, preview.snapshot_id, [], "Initial commit",
+                        author_name="AI Work Orchestrator" if tool_author else "",
+                        author_email="orchestrator@localhost" if tool_author else "", save_author=tool_author,
+                        allow_empty=True, approved=True,
+                    )
                 self.application.register_project(project_name, repo)
                 return self._connect_document(self.registry.get(project_name), document_name, content)
             except (OSError, ValueError, RuntimeError) as exc:
@@ -327,6 +347,163 @@ class McpOperations:
         except (OSError, ValueError, RuntimeError) as exc:
             raise RuntimeError(f"기획서는 {target}에 저장됐습니다. 연결 또는 색인 단계가 실패했습니다. {exc}") from exc
         return {"host": self.host, "project": self._project_summary(project), "document": str(target), "index": index}
+
+    def planning_context(self, project_name: str) -> dict[str, Any]:
+        project = self.registry.get(project_name)
+        context = self.application.external_planning_context(project)
+        return {"host": self.host, "project": self._project_summary(project), **context}
+
+    def submit_plan(
+        self, project_name: str, request_id: str, expected_base_commit: str, summary: str, requirements: str,
+        task_drafts: list[dict[str, object]], server_work: bool, user_checks: tuple[UserCheck, ...] = (),
+    ) -> dict[str, Any]:
+        if not self.allow_planning:
+            raise PermissionError("이 MCP 연결에는 계획 제출 권한이 없습니다.")
+        project = self.registry.get(project_name)
+        run_id = f"mcp-plan-{uuid.UUID(request_id).hex}"
+        plan_input: list[object] = [expected_base_commit, summary, requirements, task_drafts, server_work]
+        if user_checks:
+            plan_input.append([asdict(check) for check in user_checks])
+        payload = json.dumps(plan_input, ensure_ascii=False, sort_keys=True)
+        signature = _digest("submit-plan", project.name, str(project.repo), str(project.config_path), project.created_at, payload)
+        with self._request(request_id, signature):
+            state = self.application.submit_external_plan(
+                project, run_id, expected_base_commit=expected_base_commit, summary=summary, requirements=requirements,
+                task_drafts=task_drafts, server_work=server_work, user_checks=user_checks,
+            )
+            result = {**self._run_result(project.name, state), "summary": state.summary, "base_commit": state.base_commit,
+                      "plan_revision": state.plan_revision, "approval_required": not state.plan_is_approved}
+            if state.user_check_plan:
+                result["user_check_count"] = len(state.user_check_plan)
+            return result
+
+    def review_plan(self, project_name: str, run_id: str) -> dict[str, Any]:
+        state = cast(dict[str, Any], self.application.status(project_name, _run_id(run_id), include_user_checks=True))
+        fields = ("id", "title", "description", "capabilities", "dependencies", "acceptance_criteria", "expected_paths",
+                  "forbidden_paths", "verify_commands", "provider_id", "model", "reasoning_effort")
+        review = {"host": self.host, "project": project_name, "run_id": state["id"], "summary": state["summary"],
+                  "plan_revision": state["plan_revision"], "stage": state["stage"],
+                  "tasks": [{key: task.get(key) for key in fields} for task in state["tasks"]],
+                  "user_checks": [{key: value for key, value in check.items() if key != "note"}
+                                  for check in state.get("planned_user_checks", [])]}
+        review["review_id"] = _digest(json.dumps(review, ensure_ascii=False, sort_keys=True))
+        return review
+
+    def _require_control(self) -> None:
+        if not self.allow_control:
+            raise PermissionError("이 MCP 연결에는 제작 제어 권한이 없습니다.")
+
+    def confirm_plan(self, project_name: str, run_id: str, request_id: str, review_id: str, *, approved: bool = False) -> dict[str, Any]:
+        self._require_control()
+        with self._request(request_id, _digest("confirm-plan", project_name, _run_id(run_id), review_id)) as (path, record):
+            if "result" in record:
+                return record["result"]
+            current = self.review_plan(project_name, run_id)
+            if current["review_id"] != review_id or current["stage"] != Stage.PLANNED:
+                raise ValueError("계획이 변경됐습니다. 계획 검토를 다시 조회해 주세요.")
+            if not approved:
+                return {"status": "confirmation_required", "review": current}
+            state = cast(RunState, self.application.confirm_plan(project_name, run_id, expected_revision=current["plan_revision"]))
+            record["result"] = self._run_result(project_name, state)
+            self._save_request(path, record)
+            return record["result"]
+
+    def update_plan(
+        self, project_name: str, run_id: str, request_id: str, expected_revision: int, tasks: list[dict[str, object]],
+    ) -> dict[str, Any]:
+        self._require_control()
+        signature = _digest("update-plan", project_name, _run_id(run_id), str(expected_revision), json.dumps(tasks, sort_keys=True))
+        with self._request(request_id, signature) as (path, record):
+            if "result" not in record:
+                state = cast(RunState, self.application.update_plan(project_name, run_id, tasks, expected_revision=expected_revision))
+                record["result"] = self._run_result(project_name, state)
+                self._save_request(path, record)
+            return record["result"]
+
+    def control_run(self, project_name: str, run_id: str, request_id: str, action: str, expected_revision: int) -> dict[str, Any]:
+        self._require_control()
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ValueError("현재 계획의 버전을 지정해 주세요.")
+        if action not in {"execute", "resume", "verify"}:
+            raise ValueError("지원하지 않는 제작 제어입니다.")
+        with self._request(request_id, _digest(action, project_name, _run_id(run_id), str(expected_revision))) as (path, record):
+            if "result" in record:
+                return record["result"]
+            if record.get("started"):
+                return {**self.run(project_name, run_id), "request_status": "observed_after_interruption"}
+            current = cast(dict[str, Any], self.application.status(project_name, run_id))
+            if current["plan_revision"] != expected_revision:
+                raise ValueError("계획이 변경됐습니다. 현재 계획을 다시 확인해 주세요.")
+            record["started"] = True
+            self._save_request(path, record)
+            if action == "execute":
+                state = self.application.execute(project_name, run_id, expected_revision=expected_revision)
+            elif action == "resume":
+                state = self.application.resume(project_name, run_id, expected_revision=expected_revision)
+            else:
+                state = self.application.verify(project_name, run_id)
+            record["result"] = self._run_result(project_name, cast(RunState, state))
+            self._save_request(path, record)
+            return record["result"]
+
+    def start_control_run(self, project_name: str, run_id: str, request_id: str, action: str, expected_revision: int) -> dict[str, Any]:
+        self._require_control()
+        if action not in {"execute", "resume", "verify"} or type(expected_revision) is not int or expected_revision < 1:
+            raise ValueError("제작할 작업과 현재 계획 버전을 지정해 주세요.")
+        signature = _digest(action, project_name, _run_id(run_id), str(expected_revision))
+        path = self.state_dir / f"request-{uuid.UUID(request_id).hex}.json"
+        if self._read_request(path, signature):
+            return self.control_request(project_name, run_id, request_id)
+        with self._request(request_id, signature) as (path, record):
+            if not record.get("queued"):
+                current = cast(dict[str, Any], self.application.status(project_name, run_id))
+                if current["plan_revision"] != expected_revision:
+                    raise ValueError("계획이 변경됐습니다. 현재 계획을 다시 확인해 주세요.")
+                record.update(queued=True, project=project_name, run_id=run_id, action=action)
+                self._save_request(path, record)
+                self._control_workers.submit(self._perform_control_request, project_name, run_id, request_id, action, expected_revision)
+        return {"host": self.host, "project": project_name, "run_id": run_id, "request_id": request_id, "status": "queued"}
+
+    def _perform_control_request(self, project_name: str, run_id: str, request_id: str, action: str, expected_revision: int) -> None:
+        try:
+            self.control_run(project_name, run_id, request_id, action, expected_revision)
+        except Exception as exc:
+            # Background failures must remain visible to the requesting AI.
+            signature = _digest(action, project_name, run_id, str(expected_revision))
+            with self._request(request_id, signature) as (path, record):
+                record["error"] = str(exc)[:6000]
+                self._save_request(path, record)
+
+    def control_request(self, project_name: str, run_id: str, request_id: str) -> dict[str, Any]:
+        path = self.state_dir / f"request-{uuid.UUID(request_id).hex}.json"
+        if not path.exists():
+            raise ValueError("제작 요청을 찾지 못했습니다.")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("project") != project_name or record.get("run_id") != _run_id(run_id):
+            raise ValueError("이 프로젝트의 제작 요청이 아닙니다.")
+        result = record.get("result")
+        error = record.get("error", "")
+        if isinstance(result, dict) and result.get("stage") == Stage.FAILED:
+            error = result.get("failure") or "제작 과정에서 문제가 발생했습니다. 현재 상태를 확인해 주세요."
+        status = "failed" if error else "finished" if result is not None else "started" if record.get("started") else "queued"
+        return {"host": self.host, "project": project_name, "run_id": run_id, "request_id": request_id, "status": status,
+                "error": error, "result": result, "run": self.run(project_name, run_id)}
+
+    def stop_run(self, project_name: str, run_id: str, request_id: str, execution_id: str) -> dict[str, Any]:
+        self._require_control()
+        self.application.request_stop(project_name, _run_id(run_id), request_id=request_id, execution_id=execution_id, scope="group")
+        return self.run(project_name, run_id)
+
+    def result_artifact(self, project_name: str, run_id: str) -> dict[str, Any]:
+        return cast(dict[str, Any], self.application.result_artifact(project_name, _run_id(run_id)))
+
+    def register_result_artifact(
+        self, project_name: str, run_id: str, kind: str, relative_path: str, expected_commit: str,
+    ) -> dict[str, Any]:
+        self._require_control()
+        return cast(dict[str, Any], self.application.register_result(
+            project_name, _run_id(run_id), kind=kind, relative_path=relative_path, expected_commit=expected_commit,
+        ))
 
     def draft_tasks(self, project_name: str, request_id: str, repository_intent: str) -> dict[str, Any]:
         self._require_write()

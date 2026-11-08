@@ -3,10 +3,52 @@
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass
 
 MAX_DECISIONS = 12
 MAX_REPAIRS = 3
 ACTIONS = frozenset({"reply", "ask", "continue", "stop", "repair", "verify", "clear_lock", "refine", "approve_scope"})
+
+_PROFILE_CHANGE = re.compile(
+    r"(?P<target>.*?)\s*(?:의?\s*(?:작업\s*AI|실행\s*(?:AI|모델))(?:\s*를)?\s*)?"
+    r"(?P<provider>codex|코덱스|claude|클로드)\s*(?:\(\s*(?P<model>[a-z0-9][a-z0-9._-]*)"
+    r"(?:\s*/\s*(?P<effort>[a-z]+))?\s*\))?\s*(?:으로|로)\s*"
+    r"(?:(?:바꿔|변경해|전환해|설정해)\s*(?:줘|주세요)|"
+    r"(?:바꾸고|변경하고|전환하고|설정하고)\s*(?P<retry>(?:고쳐서\s*)?계속(?:\s*진행)?해\s*(?:줘|주세요)"
+    r"|(?:재시도|재실행)해\s*(?:줘|주세요)))",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskProfileCommand:
+    target: str
+    provider: str
+    model: str
+    reasoning_effort: str
+    retry: bool
+
+
+def task_profile_command(message: str) -> TaskProfileCommand | None:
+    text = message.strip().rstrip(".!。！").strip()
+    if len(text) > 600 or re.search(
+        r"[\r\n?？]|라고|가능|어떻게|말고|하지\s*(?:마|않)|나중에|(?:되|하|끝나)면|배포|병합|푸시", text
+    ):
+        return None
+    match = _PROFILE_CHANGE.fullmatch(text)
+    if match is None:
+        return None
+    target = re.sub(r"(?:\s+(?:이거|이 작업|이 Task)|\s*만)$", "", match["target"].strip()).strip()
+    # Quoted titles are valid targets. A quoted command is not permission.
+    for opening, closing in (("‘", "’"), ("“", "”"), ('"', '"'), ("'", "'"), ("`", "`")):
+        if target.startswith(opening) and target.endswith(closing):
+            target = target[1:-1].strip()
+            break
+    if re.search(r"[‘’“”\"'`]", target):
+        return None
+    provider = "codex" if match["provider"].casefold() in {"codex", "코덱스"} else "claude"
+    return TaskProfileCommand(target, provider, match["model"] or "", (match["effort"] or "").lower(), bool(match["retry"]))
 
 
 def parse_decision(output: str) -> dict[str, object]:
@@ -66,6 +108,10 @@ Tools (only choose actions listed in available_actions):
 - refine: add implementation advice to a pending/failed task_id without changing its goal,
   completion criteria, paths, dependencies, models or checks. Use for small implementation
   adjustments only. Changes to those contracts require ask and the existing plan-review flow.
+  An execution-AI-only change is a task setting, not a plan amendment. The app can save a
+  direct command such as '실패 작업을 Codex(gpt-6.1-sol/high)로 바꿔줘'. If the request did
+  not match, ask for a concrete task and execution profile. Do not claim you queued a
+  change or run repair with the old profile when the current request asks to change it.
 When a task error starts with task_scope_review_required, distinguish explanation from action.
 For an explanation or status question, answer the confirmed cause, proposed fix and remaining
 validation. Do not request scope approval merely to answer, and do not describe internal

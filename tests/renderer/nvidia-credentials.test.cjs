@@ -15,7 +15,6 @@ const pkg = require.resolve('typescript/package.json', { paths: [root] });
 execFileSync(process.execPath, [resolve(dirname(pkg), require(pkg).bin.tsc), '--ignoreConfig', '--strict', '--target', 'ES2022',
   '--module', 'commonjs', '--jsx', 'react-jsx', '--skipLibCheck', '--outDir', output,
   'desktop/main/nvidiaCredentials.ts', 'desktop/main/preload.ts', 'desktop/renderer/src/NvidiaConnectionPanel.tsx',
-  'desktop/renderer/src/AiConnectionDialog.tsx',
   'desktop/renderer/src/global.d.ts'], { cwd: root, stdio: 'inherit' });
 const storePath = join(output, 'main/nvidiaCredentials.js');
 const { NvidiaCredentialStore } = require(storePath);
@@ -191,13 +190,13 @@ test('preload exposes fixed credential operations without generic secret or envi
 function panelHarness(initial) {
   const path = join(output, 'renderer/src/NvidiaConnectionPanel.js'), local = createRequire(path), exports = {};
   let index = 0, effectDeps, pendingEffect, cleanup;
-  const state = [], calls = [], status = { configured: false, source: 'none', hasStoredKey: false, storageAvailable: true,
+  const state = [], calls = [], continued = [], status = { configured: false, source: 'none', hasStoredKey: false, storageAvailable: true,
     keys: [], defaultKeyId: '', modelBindings: {}, error: '', ...initial };
   const api = {
     async nvidiaCredentialStatus() { return { ...status }; },
     async saveNvidiaCredential(key, options) { calls.push(['save', key, { ...options }]);
       const id = options.id || `key-${status.keys.length + 1}`;
-      Object.assign(status, { source: 'app', hasStoredKey: true, defaultKeyId: status.defaultKeyId || id,
+      Object.assign(status, { configured: true, source: 'app', hasStoredKey: true, defaultKeyId: status.defaultKeyId || id,
         keys: [...status.keys.filter(item => item.id !== id), { id, label: options.label }] }); return { ...status }; },
     async deleteNvidiaCredential(id) { calls.push(['delete', id]);
       Object.assign(status, { source: 'environment', hasStoredKey: false, keys: [], defaultKeyId: '' }); return { ...status }; },
@@ -209,8 +208,8 @@ function panelHarness(initial) {
       return [state[slot], value => { state[slot] = value; }]; },
     useEffect(callback, deps) { if (!effectDeps || deps.some((v, i) => v !== effectDeps[i])) { effectDeps = deps; pendingEffect = callback; } },
   } : local(name) });
-  const props = { visible: true, async onChanged() { calls.push(['refresh']); } };
-  return { calls, status, api, props, render() { index = 0; const tree = exports.NvidiaConnectionPanel(props);
+  const props = { visible: true, onContinue() { continued.push(true); }, async onChanged() { calls.push(['refresh']); } };
+  return { calls, continued, status, api, props, render() { index = 0; const tree = exports.NvidiaConnectionPanel(props);
     if (pendingEffect) { cleanup?.(); cleanup = pendingEffect(); pendingEffect = undefined; } return tree; } };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -229,7 +228,7 @@ test('masked form saves once, clears plaintext, refreshes choices and explains e
   input.props.onChange({ target: { value: 'fixture-secret-input' } }); tree = h.render();
   submit(tree); await tick(); tree = h.render();
   assert.deepEqual(h.calls, [['save', 'fixture-secret-input', { label: '기본 키' }], ['refresh']]);
-  assert.equal(password(tree).props.value, '');
+  assert.equal(password(tree), undefined);
   assert.match(text(tree), /다음 요청부터/);
   nodes(tree).find(node => node.type === 'button' && text(node) === '삭제').props.onClick();
   await tick(); tree = h.render(); assert.match(text(tree), /환경 변수의 키를 사용/);
@@ -253,7 +252,7 @@ test('a refresh failure does not misreport a successfully saved credential', asy
   h.render(); await tick();
   let tree = h.render(); password(tree).props.onChange({ target: { value: 'fixture-secret' } });
   tree = h.render(); submit(tree); await tick(); tree = h.render();
-  assert.equal(password(tree).props.value, '');
+  assert.equal(password(tree), undefined);
   assert.match(text(tree), /키를 저장했습니다/); assert.match(text(tree), /키 설정은 반영했지만 연결 상태/);
   assert.ok(!text(tree).includes('fixture-secret'));
 });
@@ -263,7 +262,15 @@ test('model routing is changed by key ID while password replacement preserves it
     keys: [{ id: 'first', label: '코딩용' }, { id: 'second', label: '리뷰용' }], modelBindings: { 'vendor/review': 'second' } });
   h.render(); await tick();
   let tree = h.render();
-  nodes(tree).find(node => node.type === 'select' && node.props['aria-label'] === 'NVIDIA 기본 키').props.onChange({ target: { value: 'second' } });
+  assert.equal(password(tree), undefined, 'a configured provider does not show a key editor');
+  assert.match(text(tree), /NVIDIA 키 등록됨.*기본 키: 코딩용/);
+  const disclosures = nodes(tree).filter(node => node.type === 'details');
+  assert.deepEqual(disclosures.map(node => text(nodes(node).find(child => child.type === 'summary'))), ['키 관리', '모델별 키 설정']);
+  assert.ok(disclosures.every(node => !node.props.open));
+  nodes(tree).find(node => node.type === 'button' && text(node) === '계속하기').props.onClick();
+  assert.deepEqual(h.continued, [true]);
+  assert.deepEqual(h.calls, []);
+  nodes(disclosures[0]).find(node => node.type === 'select' && node.props['aria-label'] === 'NVIDIA 기본 키').props.onChange({ target: { value: 'second' } });
   await tick(); assert.deepEqual(h.calls[0], ['route', 'second', { 'vendor/review': 'second' }]);
   tree = h.render(); nodes(tree).find(node => node.type === 'button' && node.props['aria-label'] === 'vendor/review 모델 삭제').props.onClick();
   await tick(); assert.deepEqual(h.calls.at(-2), ['route', 'second', {}]);
@@ -271,28 +278,12 @@ test('model routing is changed by key ID while password replacement preserves it
   tree = h.render(); password(tree).props.onChange({ target: { value: 'replacement-fixture' } });
   submit(h.render(), 'NVIDIA 키 교체'); await tick();
   assert.deepEqual(h.calls.at(-2), ['save', 'replacement-fixture', { id: 'second', label: '리뷰용' }]);
+  tree = h.render();
+  assert.equal(password(tree), undefined);
+  nodes(tree).find(node => node.type === 'button' && text(node) === '키 추가').props.onClick();
+  tree = h.render(); password(tree).props.onChange({ target: { value: 'discarded-fixture' } });
+  nodes(tree).find(node => node.type === 'details' && node.props.onToggle).props.onToggle({ currentTarget: { open: false } });
+  tree = h.render(); assert.equal(password(tree), undefined);
+  nodes(tree).find(node => node.type === 'button' && text(node) === '키 추가').props.onClick();
   assert.equal(password(h.render()).props.value, '');
-});
-
-test('the common AI connection dialog exposes NVIDIA even when Codex is connected and preserves both connections on selection', () => {
-  const path = join(output, 'renderer/src/AiConnectionDialog.js'), local = createRequire(path), exports = {}, states = [];
-  let index = 0, closed = 0, refreshed = 0;
-  const props = { codexState: { status: 'connected' }, children: { type: 'p', props: { children: '현재 Codex 계정' } },
-    onClose() { closed++; }, async onNvidiaChanged() { refreshed++; } };
-  runInNewContext(fs.readFileSync(path, 'utf8'), { exports, require: name => name === 'react' ? {
-    useState(initial) { const slot = index++; if (!(slot in states)) states[slot] = initial;
-      return [states[slot], value => { states[slot] = value; }]; }, useRef: () => ({ current: null }), useEffect() {},
-  } : local(name) });
-  const render = () => { index = 0; return exports.AiConnectionDialog(props); };
-  let tree = render(); assert.match(text(tree), /AI 연결/);
-  const codexPanel = nodes(tree).find(node => node.props?.id === 'codex-connection-panel');
-  assert.equal(codexPanel.props.hidden, false); assert.equal(codexPanel.props.children, props.children);
-  const nvidia = nodes(tree).find(node => node.type === 'button' && text(node).startsWith('NVIDIA'));
-  nvidia.props.onClick(); tree = render();
-  assert.equal(nodes(tree).find(node => node.props?.id === 'codex-connection-panel').props.hidden, true);
-  assert.equal(nodes(tree).find(node => node.props?.id === 'nvidia-connection-panel').props.hidden, false);
-  assert.ok(text(tree).includes('연결됨'));
-  nodes(tree).find(node => node.type === 'button' && text(node).startsWith('Codex')).props.onClick(); tree = render();
-  assert.equal(nodes(tree).find(node => node.props?.id === 'codex-connection-panel').props.children, props.children);
-  assert.equal(closed, 0); assert.equal(refreshed, 0);
 });

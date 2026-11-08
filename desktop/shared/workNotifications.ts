@@ -86,7 +86,7 @@ const copies: Record<string, { title: string; body: string }> = {
   integration_conflict: { title: "Main 통합 충돌", body: "충돌 해결이 필요합니다." },
   conflict_candidate_ready: { title: "충돌 해결안 준비됨", body: "변경 내용을 검토해 주세요." },
   planning_clarification_required: { title: "Planning 확인 필요", body: "작업을 이어갈 답변을 확인하세요." },
-  plan_confirmation_required: { title: "계획 확인 필요", body: "실행할 Task와 완료 조건을 확인하세요." },
+  plan_confirmation_required: { title: "제작 준비 완료", body: "태스크와 작업 AI가 배정됐습니다. 계획을 확인하세요." },
   manual_task_required: { title: "수동 작업 대기", body: "Task를 확인하고 완료 여부를 입력하세요." },
   stopped_task_requires_action: { title: "Task 중지됨", body: "보존된 변경을 확인하고 재개 여부를 선택하세요." },
   notification_query_failed: { title: "작업 알림을 갱신하지 못했습니다", body: "최근 알림이 늦게 표시될 수 있습니다. 작업 진행 여부는 아직 확인하지 못했습니다." },

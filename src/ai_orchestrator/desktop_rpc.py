@@ -10,7 +10,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from .codex_sdk import CodexSdkManager
+from .account_usage import AccountUsage, read_claude_quota
+from .codex_sdk import CodexSdkManager, read_codex_quota
 from .code_style import ProjectCodeStylePreference, inspect_project_code_style
 from .config import create_default_config, load_config, resolve_workspace_location, supported_models, supported_reasoning_efforts
 from .document_index import PlanningSourceIndex
@@ -21,11 +22,11 @@ from .git import (
     preview_git_initialization,
     preview_initial_commit,
 )
-from .models import RunState, Stage, utc_now
+from .models import RunState, Stage, UserCheck, utc_now
 from .pipeline import Pipeline, PipelineError
 from .nvidia_agent import current_nvidia_model_keys, nvidia_credential_scope, redact_nvidia_output
 from .repository_maturity import inspect_repository_maturity
-from .registry import ProjectRegistry, RegistryError
+from .registry import ProjectRegistry, RegisteredProject, RegistryError
 
 RPC_VERSION = 1
 
@@ -64,6 +65,14 @@ _LONG_RUNNING_RPC_METHODS = frozenset(
         "tasks.retry",
         "tasks.repairFromChat",
         "tasks.complete",
+        "tasks.completeManualVerification",
+        "runs.recordUserCheck",
+        "connections.registerExternal",
+        "runs.launchResult",
+        "runs.registerResult",
+        "tasks.handoffToAi",
+        "tasks.deferManual",
+        "tasks.resumeManual",
         "runs.verify",
         "runs.verifyAndRepair",
         "runs.updatePlan",
@@ -82,8 +91,11 @@ _LONG_RUNNING_RPC_METHODS = frozenset(
 _STATUS_RPC_METHODS = frozenset(
     {
         "system.hello",
+        "connections.externalGuide",
+        "runs.resultArtifact",
         "auth.codex.status",
         "auth.claude.status",
+        "providers.accountUsage",
         "auth.codex.get",
         "projects.list",
         "runs.activeGroups",
@@ -131,6 +143,7 @@ class DesktopApplication:
         self._active_group_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="active-group-query")
         self._active_group_futures: dict[str, Future[list[dict[str, object]]]] = {}
         self._attention_item_futures: dict[str, Future[list[dict[str, object]]]] = {}
+        self._user_check_futures: dict[str, Future[list[dict[str, object]]]] = {}
         self._active_group_lock = threading.Lock()
 
     def close(self) -> None:
@@ -146,13 +159,18 @@ class DesktopApplication:
     def attention_items(self) -> dict[str, object]:
         return self._project_summary_snapshot(self._attention_items_for_project, self._attention_item_futures, "updated_at")
 
+    def user_check_items(self, project_name: str = "") -> dict[str, object]:
+        return self._project_summary_snapshot(self._user_checks_for_project, self._user_check_futures, "updated_at", project_name)
+
     def _project_summary_snapshot(
         self, query: Callable[[str], list[dict[str, object]]], cached: dict[str, Future[list[dict[str, object]]]], sort_field: str,
+        project_name: str = "",
     ) -> dict[str, object]:
         checked_at = utc_now()
         futures: dict[str, Future[list[dict[str, object]]]] = {}
+        projects = [self.registry.get(project_name)] if project_name else self.registry.list()
         with self._active_group_lock:
-            for project in self.registry.list():
+            for project in projects:
                 future = cached.get(project.name)
                 if future is None or future.done():
                     future = self._active_group_executor.submit(query, project.name)
@@ -182,11 +200,19 @@ class DesktopApplication:
     def _attention_items_for_project(self, project_name: str) -> list[dict[str, object]]:
         return self._pipeline(project_name).attention_item_summaries()
 
+    def _user_checks_for_project(self, project_name: str) -> list[dict[str, object]]:
+        return self._pipeline(project_name).user_check_summaries()
+
     def codex_auth_status(self) -> object:
         return self.codex_sdk.login_status()
 
     def claude_auth_status(self) -> object:
         return Pipeline.claude_connection_status()
+
+    def account_usage(self, provider: str) -> AccountUsage:
+        if provider == "codex":
+            return read_codex_quota()
+        return read_claude_quota(Pipeline.claude_connection_status())
 
     def start_codex_auth(self, method: str, request_id: str) -> object:
         return self.codex_sdk.start_login(method, request_id)
@@ -367,10 +393,10 @@ class DesktopApplication:
     def check_dotnet(self, project_name: str, run_id: str, task_id: str) -> object:
         return self._pipeline(project_name).check_dotnet(run_id=run_id, task_id=task_id)
 
-    def status(self, project_name: str, run_id: str) -> object:
+    def status(self, project_name: str, run_id: str, *, include_user_checks: bool = False) -> object:
         pipeline = self._pipeline(project_name)
         state, execution_control, integration_control = pipeline.status_with_controls(run_id)
-        result = pipeline.execution_profile_view(state).to_dict()
+        result = _run_state_view(pipeline.execution_profile_view(state))
         messages = {task.id: pipeline.task_failure_message(task) for task in state.tasks}
         for task in result["tasks"]:
             task["error"] = messages[task["id"]]
@@ -383,6 +409,8 @@ class DesktopApplication:
         result["main_operations"] = pipeline.latest_main_operations(run_id)
         result["effort_control"] = pipeline.effort_control(run_id, expected_state=state)
         result["waiting_prompt"] = pipeline.waiting_prompt(state, execution_control, integration_control)
+        if include_user_checks:
+            result["user_checks"] = pipeline.user_checks(state, include_recorded=True)
         return result
 
     def preview_effort_mode(self, project_name: str, run_id: str, mode: str, expected_revision: int) -> object:
@@ -572,8 +600,9 @@ class DesktopApplication:
         pipeline: Pipeline, run_id: str, agent_overrides: dict[str, str], *, task_ids: set[str] | None = None
     ) -> None:
         state = pipeline.status(run_id)
+        check_blocked = state.user_check_blocked_task_ids()
         for task in state.tasks:
-            if task_ids is not None and task.id not in task_ids:
+            if task.id in check_blocked or (task_ids is not None and task.id not in task_ids):
                 continue
             if task.status.value not in {"pending", "waiting", "failed", "stopped"}:
                 continue
@@ -585,6 +614,25 @@ class DesktopApplication:
                     "provider_unavailable",
                     f"Task {task.id}의 실행 AI를 사용할 수 없습니다. AI 연결과 실행 모델을 확인해 주세요.",
                 )
+
+    def external_planning_context(self, project: RegisteredProject) -> dict[str, object]:
+        return self._pipeline(project.name, expected_project=project).external_planning_context()
+
+    def submit_external_plan(
+        self, project: RegisteredProject, run_id: str, *, expected_base_commit: str, summary: str, requirements: str,
+        task_drafts: list[dict[str, object]], server_work: bool, user_checks: tuple[UserCheck, ...] = (),
+    ) -> RunState:
+        return self._pipeline(project.name, expected_project=project).submit_external_plan(
+            run_id, expected_base_commit=expected_base_commit, summary=summary, requirements=requirements,
+            task_drafts=task_drafts, server_work=server_work, user_checks=user_checks,
+        )
+
+    def record_user_check(
+        self, project_name: str, run_id: str, check_id: str, *, expected_revision: int, expected_commit: str, outcome: str, note: str,
+    ) -> RunState:
+        return self._pipeline(project_name).record_user_check(
+            run_id, check_id, expected_revision=expected_revision, expected_commit=expected_commit, outcome=outcome, note=note,
+        )
 
     def run_planning(self, project_name: str, run_id: str) -> object:
         return self._pipeline(project_name).run_planning(run_id)
@@ -703,17 +751,19 @@ class DesktopApplication:
         agent_overrides: dict[str, str] | None = None,
         model_overrides: dict[str, str] | None = None,
         reasoning_effort_overrides: dict[str, str] | None = None,
+        expected_revision: int | None = None,
     ) -> object:
         pipeline = self._pipeline(project_name)
         self._ensure_desktop_execution_profiles(pipeline, run_id, agent_overrides or {})
         return pipeline.execute(
-            run_id, agent_overrides=agent_overrides, model_overrides=model_overrides, reasoning_effort_overrides=reasoning_effort_overrides
+            run_id, agent_overrides=agent_overrides, model_overrides=model_overrides, reasoning_effort_overrides=reasoning_effort_overrides,
+            **({"expected_revision": expected_revision} if expected_revision is not None else {}),
         )
 
-    def resume(self, project_name: str, run_id: str) -> object:
+    def resume(self, project_name: str, run_id: str, *, expected_revision: int | None = None) -> object:
         pipeline = self._pipeline(project_name)
         self._ensure_desktop_execution_profiles(pipeline, run_id, {})
-        return pipeline.resume(run_id)
+        return pipeline.resume(run_id, **({"expected_revision": expected_revision} if expected_revision is not None else {}))
 
     def request_stop(
         self,
@@ -801,6 +851,17 @@ class DesktopApplication:
             **({"recovery_fingerprint": recovery_fingerprint} if recovery_fingerprint else {}),
         )
 
+    def result_artifact(self, project_name: str, run_id: str) -> object:
+        return self._pipeline(project_name).result_artifact_info(run_id)
+
+    def register_result(self, project_name: str, run_id: str, *, kind: str, relative_path: str, expected_commit: str) -> object:
+        return self._pipeline(project_name).register_result_artifact(
+            run_id, kind=kind, relative_path=relative_path, expected_commit=expected_commit,
+        )
+
+    def launch_result(self, project_name: str, run_id: str, *, expected_digest: str, device_id: str = "") -> object:
+        return self._pipeline(project_name).launch_result_artifact(run_id, expected_digest=expected_digest, device_id=device_id)
+
     def verify(self, project_name: str, run_id: str) -> object:
         return self._pipeline(project_name).verify(run_id)
 
@@ -813,13 +874,31 @@ class DesktopApplication:
     def complete_task(self, project_name: str, run_id: str, task_id: str) -> object:
         return self._pipeline(project_name).complete_task(run_id, task_id)
 
+    def complete_manual_verification(
+        self, project_name: str, run_id: str, task_id: str, *, note: str, expected_commit: str, expected_revision: int,
+    ) -> object:
+        return self._pipeline(project_name).complete_manual_verification(
+            run_id, task_id, note=note, expected_commit=expected_commit, expected_revision=expected_revision,
+        )
+
+    def handoff_manual_task_to_ai(self, project_name: str, run_id: str, task_id: str, *, expected_commit: str, expected_revision: int) -> object:
+        pipeline = self._pipeline(project_name)
+        self._ensure_desktop_execution_profiles(pipeline, run_id, {}, task_ids={task_id})
+        return pipeline.handoff_manual_task_to_ai(run_id, task_id, expected_commit=expected_commit, expected_revision=expected_revision)
+
+    def set_manual_task_deferred(self, project_name: str, run_id: str, task_id: str, *, deferred: bool) -> object:
+        return self._pipeline(project_name).set_manual_task_deferred(run_id, task_id, deferred=deferred)
+
     def exclude_tasks(self, project_name: str, run_id: str, task_ids: list[str], *, approved: bool) -> object:
         if not approved:
             raise RpcError("approval_required", "task exclusion requires explicit approval")
         return self._pipeline(project_name).exclude_tasks(run_id, task_ids)
 
-    def update_plan(self, project_name: str, run_id: str, task_drafts: list[dict[str, object]]) -> object:
-        return self._pipeline(project_name).update_plan(run_id, task_drafts)
+    def update_plan(
+        self, project_name: str, run_id: str, task_drafts: list[dict[str, object]], *, expected_revision: int | None = None,
+    ) -> object:
+        options = {"expected_revision": expected_revision} if expected_revision is not None else {}
+        return self._pipeline(project_name).update_plan(run_id, task_drafts, **options)
 
     def update_task_execution_profile(
         self, project_name: str, run_id: str, task_id: str, *, agent_id: str, model: str, reasoning_effort: str,
@@ -940,8 +1019,10 @@ class DesktopApplication:
     def clear_run_lock(self, project_name: str, run_id: str, *, approved: bool) -> object:
         return self._pipeline(project_name).clear_run_lock(run_id, approved=approved)
 
-    def _pipeline(self, project_name: str) -> Pipeline:
+    def _pipeline(self, project_name: str, *, expected_project: RegisteredProject | None = None) -> Pipeline:
         project = self.registry.get(project_name)
+        if expected_project is not None and project != expected_project:
+            raise RegistryError("프로젝트 등록 정보가 변경됐습니다. 계획 컨텍스트를 다시 조회해 주세요.")
         config = load_config(project.config_path)
         if config.project.repo != project.repo:
             raise RegistryError(f"registered project config changed repository: {project.name}")
@@ -962,10 +1043,23 @@ class RpcService:
         values = _object_params(params)
         if method == "system.hello":
             return {"rpcVersion": RPC_VERSION, "application": "ai-work-orchestrator"}
+        if method == "connections.externalGuide":
+            from .mcp_bundle import external_connection_guide
+
+            return external_connection_guide(self.application.registry.path)
+        if method == "connections.registerExternal":
+            from .mcp_bundle import register_external_connection
+
+            return register_external_connection(_required_string(values, "client"), self.application.registry.path)
         if method == "auth.codex.status":
             return self.application.codex_auth_status()
         if method == "auth.claude.status":
             return self.application.claude_auth_status()
+        if method == "providers.accountUsage":
+            provider = _required_string(values, "provider")
+            if provider not in {"codex", "claude"}:
+                raise RpcError("invalid_params", "provider must be codex or claude")
+            return self.application.account_usage(provider)
         if method == "auth.codex.start":
             login_method = _required_string(values, "method")
             if login_method not in {"browser", "device_code"}:
@@ -1091,6 +1185,14 @@ class RpcService:
             "tasks.repairFromChat",
             "tasks.updateExecutionProfile",
             "tasks.complete",
+            "tasks.completeManualVerification",
+            "runs.recordUserCheck",
+            "runs.resultArtifact",
+            "runs.registerResult",
+            "runs.launchResult",
+            "tasks.handoffToAi",
+            "tasks.deferManual",
+            "tasks.resumeManual",
             "runs.verify",
             "runs.verifyAndRepair",
             "runs.excludeTasks",
@@ -1206,6 +1308,15 @@ class RpcService:
                 planning_profile_source=_nullable_string(values, "planningProfileSource"),
             )
         run_id = _required_string(values, "runId")
+        if method == "runs.resultArtifact":
+            return self.application.result_artifact(project_name, run_id)
+        if method == "runs.registerResult":
+            return self.application.register_result(project_name, run_id, kind=_required_string(values, "kind"),
+                                                    relative_path=_required_string(values, "relativePath"),
+                                                    expected_commit=_required_string(values, "expectedCommit"))
+        if method == "runs.launchResult":
+            return self.application.launch_result(project_name, run_id, expected_digest=_required_string(values, "expectedDigest"),
+                                                  device_id=_optional_string(values, "deviceId"))
         if method == "runs.requestChatControl":
             expected = values.get("expected")
             if not isinstance(expected, dict):
@@ -1259,7 +1370,7 @@ class RpcService:
         if method == "runs.runPlanning":
             return self.application.run_planning(project_name, run_id)
         if method == "runs.get":
-            return self.application.status(project_name, run_id)
+            return self.application.status(project_name, run_id, **({"include_user_checks": True} if values.get("includeUserChecks") is True else {}))
         if method == "runs.usage":
             return self.application.usage(
                 project_name, run_id, execution_request_id=_optional_string(values, "executionRequestId"),
@@ -1491,12 +1602,35 @@ class RpcService:
             )
         if method == "tasks.complete":
             return self.application.complete_task(project_name, run_id, _required_string(values, "taskId"))
+        if method == "tasks.completeManualVerification":
+            return self.application.complete_manual_verification(
+                project_name, run_id, _required_string(values, "taskId"), note=_required_string(values, "note"),
+                expected_commit=_required_string(values, "expectedCommit"), expected_revision=_required_integer(values, "expectedRevision"),
+            )
+        if method == "runs.recordUserCheck":
+            return self.application.record_user_check(
+                project_name, run_id, _required_string(values, "checkId"), outcome=_required_string(values, "outcome"),
+                note=_required_string(values, "note"), expected_commit=_required_string(values, "expectedCommit"),
+                expected_revision=_required_integer(values, "expectedRevision"),
+            )
+        if method == "tasks.handoffToAi":
+            return self.application.handoff_manual_task_to_ai(
+                project_name, run_id, _required_string(values, "taskId"),
+                expected_commit=_required_string(values, "expectedCommit"), expected_revision=_required_integer(values, "expectedRevision"),
+            )
+        if method in {"tasks.deferManual", "tasks.resumeManual"}:
+            return self.application.set_manual_task_deferred(
+                project_name, run_id, _required_string(values, "taskId"), deferred=method == "tasks.deferManual"
+            )
         if method == "runs.excludeTasks":
             return self.application.exclude_tasks(
                 project_name, run_id, _string_list(values, "taskIds", required=True), approved=_required_approval(values)
             )
         if method == "runs.updatePlan":
-            return self.application.update_plan(project_name, run_id, _object_list(values, "tasks", required=True))
+            return self.application.update_plan(
+                project_name, run_id, _object_list(values, "tasks", required=True),
+                **({"expected_revision": _required_integer(values, "expectedRevision")} if "expectedRevision" in values else {}),
+            )
         if method == "runs.confirmPlan":
             if "expectedRevision" in values or "bootstrapDigest" in values:
                 return self.application.confirm_plan(
@@ -1667,6 +1801,14 @@ def _expanded_provider_choices(choices: list[object]) -> list[object]:
     return expanded
 
 
+def _run_state_view(state: RunState) -> dict[str, Any]:
+    result = state.to_dict()
+    if state.user_check_plan:
+        result["planned_user_checks"] = Pipeline.planned_user_checks(state, include_notes=True)
+        result["user_check_blocked_task_ids"] = sorted(state.user_check_blocked_task_ids())
+    return result
+
+
 def _json_value(value: object) -> object:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -1674,6 +1816,8 @@ def _json_value(value: object) -> object:
         return str(value)
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, RunState):
+        return _json_value(_run_state_view(value))
     if hasattr(value, "to_dict"):
         return _json_value(value.to_dict())  # type: ignore[attr-defined]
     if is_dataclass(value):

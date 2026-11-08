@@ -16,8 +16,7 @@ try {
   const packagePath = require.resolve('typescript/package.json', { paths: [root] });
   const compiler = resolve(dirname(packagePath), require(packagePath).bin.tsc);
   execFileSync(process.execPath, [compiler, '--ignoreConfig', '--strict', '--target', 'ES2022',
-    '--module', 'commonjs', '--skipLibCheck', '--outDir', output, 'desktop/main/preload.ts', 'desktop/renderer/src/recoveryLock.ts',
-    'desktop/renderer/src/runDeletion.ts', 'desktop/renderer/src/chatTaskRecovery.ts'],
+    '--module', 'commonjs', '--skipLibCheck', '--outDir', output, 'desktop/main/preload.ts', 'desktop/renderer/src/recoveryLock.ts'],
     { cwd: root, stdio: 'inherit' });
 } catch (error) { cleanup(); throw error; }
 process.on('exit', cleanup);
@@ -54,6 +53,24 @@ test('MCP setup reads the bundled path without forwarding renderer arguments', a
   const { api, calls } = bridge(async () => executable);
   assert.equal(await api.mcpConnectionCommand('untrusted path'), executable);
   assert.deepEqual(calls, [['orchestrator:mcp-command']]);
+});
+
+test('Codex registration uses the fixed read-only setup channel', async () => {
+  const { api, calls } = bridge(async () => 'registered');
+  assert.equal(await api.registerCodexMcp('untrusted command', '--allow-write'), 'registered');
+  assert.deepEqual(calls, [['orchestrator:mcp-register-codex']]);
+});
+
+test('Codex planning registration forwards only its fixed setup channel', async () => {
+  const { api, calls } = bridge(async () => 'registered');
+  assert.equal(await api.registerCodexPlanning('untrusted command', '--allow-write'), 'registered');
+  assert.deepEqual(calls, [['orchestrator:mcp-register-planning']]);
+});
+
+test('Codex installation guide uses a fixed channel without a renderer-supplied URL', async () => {
+  const { api, calls } = bridge();
+  await api.openCodexInstallGuide('https://example.invalid');
+  assert.deepEqual(calls, [['orchestrator:codex-install-guide']]);
 });
 
 test('message reservation uses fixed channels and forwards only explicit API arguments', async () => {
@@ -149,14 +166,8 @@ test('unknown requests remain blocked before IPC', async () => {
 
 
 const { describeRecoveryError } = require(join(output, 'renderer/src/recoveryLock.js'));
-const { runDeletionBlockMessage, runDeletionMissingMessage, runDeletionNeedsBackendRestart, runMissingMessage } = require(join(output, 'renderer/src/runDeletion.js'));
 
-test('run deletion blocks active work before approval', () => {
-  assert.match(runDeletionBlockMessage({ state: 'active' }), /작업이 실행 중/);
-  for (const state of ['unlocked', 'stale', 'unverifiable', 'malformed']) {
-    assert.equal(runDeletionBlockMessage({ state }), '');
-  }
-});
+
 
 test('AI revision proposal uses request IPC without approval', async () => {
   const { api, calls } = bridge();
@@ -179,10 +190,7 @@ test('direction change request reaches request IPC with a stable request ID', as
   assert.deepEqual(calls, [['orchestrator:request', 'runs.requestDirectionChange', params]]);
 });
 
-test('Windows worktree sharing failure offers backend restart without masking other errors', () => {
-  assert.equal(runDeletionNeedsBackendRestart(new Error('작업공간이 다른 프로그램에서 사용 중입니다: C:\\work [WinError 32]')), true);
-  assert.equal(runDeletionNeedsBackendRestart(new Error('worktree has uncommitted changes')), false);
-});
+
 
 test('run archive preview is read-only and archive cleanup requires approval', async () => {
   const { api, calls } = bridge();
@@ -375,12 +383,7 @@ test('Git project preparation separates inspection from approved mutations', asy
   ]);
 });
 
-test('run deletion turns a missing backend run into refresh guidance', () => {
-  assert.match(runDeletionMissingMessage(new Error('unknown run: run-1')), /목록을 새로고침/);
-  assert.equal(runDeletionMissingMessage(new Error('run is locked')), '');
-  assert.match(runMissingMessage(new Error("Error invoking remote method 'orchestrator:request': unknown run: run-1")), /목록을 새로고침/);
-  assert.equal(runMissingMessage(new Error('network unavailable')), '');
-});
+
 
 test('recovery offers approved lock cleanup only for a confirmed stale lock', async () => {
   const cause = new Error('run failed is already locked (operation=recovery-preview)');
@@ -421,8 +424,33 @@ test('retry instructions and preview status are typed ordinary RPC requests', as
   assert.ok(calls.every(([channel]) => channel === 'orchestrator:request'));
 });
 
+test('manual verification sends evidence and the reviewed version through the preload', async () => {
+  const { api, calls } = bridge();
+  const params = { projectName: 'project', runId: 'group', taskId: 'https', note: '브라우저 확인',
+    expectedCommit: 'observed-head', expectedRevision: 2 };
+  await api.request('tasks.completeManualVerification', params);
+  assert.deepEqual(calls, [['orchestrator:request', 'tasks.completeManualVerification', params]]);
+});
+
+test('manual handoff sends only the selected task and observed version through the preload', async () => {
+  const { api, calls } = bridge();
+  const params = { projectName: 'project', runId: 'group', taskId: 'one', expectedCommit: 'observed-head', expectedRevision: 2 };
+  await api.request('tasks.handoffToAi', params);
+  assert.deepEqual(calls, [['orchestrator:request', 'tasks.handoffToAi', params]]);
+});
+
+test('manual defer and reopen cross the real preload without calling completion', async () => {
+  const { api, calls } = bridge();
+  const params = { projectName: 'project', runId: 'group', taskId: 'https' };
+  await api.request('tasks.deferManual', params);
+  await api.request('tasks.resumeManual', params);
+  assert.deepEqual(calls, [
+    ['orchestrator:request', 'tasks.deferManual', params],
+    ['orchestrator:request', 'tasks.resumeManual', params],
+  ]);
+});
+
 test('chat repair crosses the real preload allowlist with current failure and explicit request intact', async () => {
-  const { recoverTaskFromChat } = require(join(output, 'renderer/src/chatTaskRecovery.js'));
   const task = { id: 'broken', status: 'failed', last_attempt_id: 'attempt-1' };
   const run = { id: 'group', stage: 'failed', plan_revision: 3, planning_conversation_revision: 7, tasks: [task] };
   const completed = { ...run, stage: 'ready_to_merge' };
@@ -433,9 +461,10 @@ test('chat repair crosses the real preload allowlist with current failure and ex
     };
     assert.equal(method, 'tasks.repairFromChat'); return completed;
   });
-  const result = await recoverTaskFromChat({
-    projectName: 'project', run, task, message: '고쳐서 계속해줘', requestId: 'explicit-repair',
-    request: (method, params) => api.request(method, params), isCurrent: () => true,
+  const context = await api.request('tasks.retryContext', { projectName: 'project', runId: run.id, taskId: task.id });
+  const result = await api.request('tasks.repairFromChat', {
+    projectName: 'project', runId: run.id, taskId: task.id, message: '고쳐서 계속해줘', requestId: 'explicit-repair',
+    fingerprint: context.fingerprint, conversationRevision: run.planning_conversation_revision,
   });
   assert.equal(result, completed);
   assert.deepEqual(calls, [

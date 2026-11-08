@@ -1,0 +1,145 @@
+.maker-shell {
+  --mk-bg: #f7f8fc; --mk-surface: #fff; --mk-ink: #25273d; --mk-muted: #697087;
+  --mk-line: #e5e7f0; --mk-accent: #6655d9; --mk-tint: #efedff; --mk-error: #a13345;
+  --text: var(--mk-ink); --text-muted: var(--mk-muted); --surface: var(--mk-surface);
+  height: 100dvh; min-height: 0; overflow: hidden; display: grid;
+  grid-template-columns: 238px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  background: var(--mk-bg); color: var(--mk-ink); font-family: "Geist Variable", "Malgun Gothic", sans-serif;
+  line-height: 1.6; font-size: 14px; overflow-wrap: anywhere; color-scheme: light;
+}
+.maker-shell[hidden] { display: none; }
+.maker-shell *, .maker-dialog * { box-sizing: border-box; }
+.maker-shell h1, .maker-shell h2, .maker-shell h3, .maker-shell h4, .maker-shell p { margin: 0; }
+.maker-shell h1 { font-size: clamp(24px, 2.2vw, 32px); font-weight: 700; letter-spacing: -.045em; line-height: 1.35; }
+.maker-shell h1:focus { outline: none; }
+.maker-shell h2 { font-size: 18px; font-weight: 650; letter-spacing: -.025em; }
+.maker-shell h3 { font-size: 16px; font-weight: 650; }
+.maker-shell button, .maker-dialog button { font: inherit; cursor: pointer; }
+.maker-shell button:disabled, .maker-dialog button:disabled { cursor: default; opacity: .55; }
+.maker-shell button:focus-visible, .maker-shell a:focus-visible, .maker-dialog button:focus-visible { outline: 3px solid var(--mk-accent, #6655d9); outline-offset: 3px; }
+.maker-shell :is(textarea, select), .maker-dialog :is(textarea, select) { color: #25273d; background: #fff; border: 1px solid #d4d7e4; border-radius: 8px; padding: 10px 12px; font: inherit; }
+.maker-shell :is(textarea, select):focus-visible, .maker-dialog :is(textarea, select):focus-visible { outline: 2px solid #6655d9; outline-offset: 2px; }
+.maker-sidebar { background: var(--mk-surface); border-right: 1px solid var(--mk-line); padding: 28px 18px 18px; display: flex; flex-direction: column; gap: 24px; height: 100%; min-height: 0; min-width: 0; overflow-y: auto; }
+.maker-brand { display: flex; align-items: center; gap: 10px; padding: 0 7px; color: var(--mk-ink); font-size: 18px; font-weight: 700; text-decoration: none; letter-spacing: -.035em; }
+.maker-brand > span { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 10px; background: var(--mk-accent); color: #fff; }
+.maker-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; border: 1px solid var(--mk-line, #e5e7f0); background: var(--mk-surface, #fff); color: var(--mk-ink, #25273d); padding: 10px 16px; min-height: 42px; border-radius: 9px; font-weight: 550; text-decoration: none; }
+.maker-button:not(:disabled):hover { background: var(--mk-tint, #efedff); border-color: #c8c0f8; }
+.maker-button--primary { background: var(--mk-accent, #6655d9); color: #fff; border-color: transparent; }
+.maker-button--primary:not(:disabled):hover { background: #5645c2; border-color: transparent; }
+.maker-sidebar :is(nav, .maker-project-nav, .maker-sidebar-bottom) button { display: flex; align-items: center; gap: 10px; border: 0; padding: 11px 13px; text-align: left; background: transparent; width: 100%; border-radius: 8px; color: var(--mk-muted); min-width: 0; }
+.maker-sidebar :is(nav, .maker-project-nav, .maker-sidebar-bottom) button:hover { background: var(--mk-bg); color: var(--mk-ink); }
+.maker-sidebar button.is-current { background: var(--mk-tint); color: var(--mk-accent); font-weight: 650; }
+.maker-sidebar svg { flex-shrink: 0; }
+.maker-project-nav { flex: 1; min-height: 40px; overflow-y: auto; }
+.maker-project-nav > p { padding: 0 13px 10px; font-size: 11px; color: var(--mk-muted); }
+.maker-project-nav button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.maker-sidebar-bottom { margin-top: auto; border-top: 1px solid var(--mk-line); padding-top: 18px; }
+.maker-connection { display: flex; align-items: center; gap: 10px; padding: 8px; margin-bottom: 12px; }
+.maker-client-icon { width: 34px; height: 34px; border-radius: 9px; background: var(--mk-tint); color: var(--mk-accent); display: grid; place-items: center; }
+.maker-connection strong { font-size: 12px; display: block; }
+.maker-connection small { font-size: 10px; color: var(--mk-muted); }
+.maker-main { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.maker-topbar { height: 76px; display: flex; align-items: center; justify-content: space-between; padding: 0 36px; border-bottom: 1px solid var(--mk-line); background: var(--mk-surface); gap: 12px; }
+.maker-topbar > span { color: var(--mk-muted); font-size: 12px; }
+.maker-topbar .maker-button { min-height: 35px; padding: 5px 11px; font-size: 12px; }
+.maker-content { max-width: 1310px; margin: 0 auto; padding: 40px 40px 64px; }
+.maker-page-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 30px; }
+.maker-page-heading p:not(.maker-eyebrow) { color: var(--mk-muted); margin-top: 10px; }
+.maker-eyebrow { color: var(--mk-accent); font-size: 12px; font-weight: 650; margin-bottom: 8px !important; }
+.maker-hero { border: 1px solid #ded9fa; background: linear-gradient(110deg, #f2f0ff, #fafaff); border-radius: 18px; display: flex; align-items: flex-start; gap: 22px; padding: 32px; margin-bottom: 38px; }
+.maker-hero-icon { background: #e3dfff; color: var(--mk-accent); border-radius: 15px; padding: 15px; line-height: 0; }
+.maker-hero h2 { font-size: 21px; }
+.maker-hero p { margin: 12px 0 22px; color: #626581; }
+.maker-steps { margin: 4px 0 0 auto; padding: 0; list-style: none; display: grid; gap: 19px; min-width: 170px; color: #656181; font-size: 12px; }
+.maker-steps li { display: flex; align-items: center; gap: 11px; }
+.maker-steps span { background: #fff; width: 28px; height: 28px; border: 1px solid #ded9fa; border-radius: 50%; display: grid; place-items: center; color: var(--mk-accent); }
+.maker-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.maker-section-heading > :is(span, small) { color: var(--mk-muted); font-size: 12px; }
+.maker-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
+.maker-project-card { border: 1px solid var(--mk-line); border-radius: 14px; background: var(--mk-surface); overflow: hidden; }
+.maker-project-visual { min-height: 130px; display: grid; place-items: center; color: #8b80d5; background: linear-gradient(140deg, #f0effb, #e9edf9); position: relative; }
+.maker-project-visual > span { position: absolute; bottom: 12px; left: 15px; background: #fff; border-radius: 6px; padding: 3px 9px; color: #5b547a; font-size: 11px; }
+.maker-project-body { padding: 20px; }
+.maker-project-body > p { font-size: 12px; color: var(--mk-muted); margin: 8px 0 18px; min-height: 38px; }
+.maker-project-body .maker-button { width: 100%; margin-top: 18px; justify-content: space-between; }
+.maker-card-progress { display: grid; gap: 9px; color: var(--mk-muted); font-size: 11px; }
+.maker-card-progress progress { appearance: none; border: 0; height: 5px; width: 100%; background: #eeedf5; border-radius: 5px; overflow: hidden; }
+.maker-card-progress progress::-webkit-progress-bar { background: #eeedf5; }
+.maker-card-progress progress::-webkit-progress-value { background: var(--mk-accent); }
+.maker-empty { display: flex; flex-direction: column; align-items: center; gap: 13px; padding: 48px 24px; text-align: center; color: var(--mk-muted); }
+.maker-empty h3 { color: var(--mk-ink); }
+.maker-empty > svg { color: #9e98bd; }
+.maker-back { display: inline-flex; align-items: center; gap: 8px; padding: 0; margin-bottom: 20px; border: 0; background: transparent; color: var(--mk-muted); }
+.maker-status { display: flex; align-items: center; gap: 14px; border: 1px solid var(--mk-line); background: var(--mk-surface); padding: 20px 23px; border-radius: 12px; margin-bottom: 24px; }
+.maker-status strong { font-size: 15px; }
+.maker-status p { color: var(--mk-muted); font-size: 12px; margin-top: 4px; }
+.maker-status > span:last-child { color: var(--mk-muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
+.maker-status-dot { width: 10px; height: 10px; background: #7b6bd9; box-shadow: 0 0 0 5px #efecff; border-radius: 50%; flex-shrink: 0; }
+.maker-status-dot.is-error { background: #b34d60; box-shadow: 0 0 0 5px #fcebf0; }
+.maker-workspace { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(270px, 1fr); gap: 24px; align-items: start; }
+.maker-result-column { display: grid; gap: 24px; min-width: 0; }
+.maker-panel { padding: 24px; border: 1px solid var(--mk-line); background: var(--mk-surface); border-radius: 14px; min-width: 0; }
+.maker-result-stage { min-height: 255px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: var(--mk-bg); border: 1px dashed #dedeea; padding: 26px; border-radius: 10px; text-align: center; }
+.maker-result-stage > p { color: var(--mk-muted); max-width: 390px; font-size: 13px; }
+.maker-result-icon { display: grid; place-items: center; width: 66px; height: 66px; border-radius: 18px; background: #ece9fc; color: var(--mk-accent); }
+.maker-muted { color: var(--mk-muted, #697087); font-size: 12px; margin-top: 14px !important; }
+.maker-icon-button { background: transparent; border: 1px solid var(--mk-line); border-radius: 7px; min-width: 34px; height: 34px; display: grid; place-items: center; color: var(--mk-muted); }
+.maker-check-empty { display: flex; gap: 14px; }
+.maker-check-empty > svg { color: var(--mk-accent); flex-shrink: 0; margin-top: 3px; }
+.maker-check-empty p { margin-top: 8px; color: var(--mk-muted); font-size: 12px; }
+.maker-progress > ol { list-style: none; padding: 0; margin: 0 0 24px; display: grid; gap: 21px; }
+.maker-progress li { display: flex; align-items: flex-start; gap: 12px; }
+.maker-progress li strong { font-size: 13px; font-weight: 550; }
+.maker-progress li p { font-size: 11px; color: var(--mk-muted); margin-top: 4px; }
+.maker-task-marker { margin-top: 2px; width: 23px; height: 23px; border: 1px solid #d4d5e2; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; }
+.maker-progress :is(li[data-status="completed"], li[data-status="merged"]) .maker-task-marker { background: #edebfc; color: var(--mk-accent); border-color: #d8d1f8; }
+.maker-progress li[data-status="running"] .maker-task-marker { color: var(--mk-accent); border-color: var(--mk-accent); }
+.maker-progress > .maker-button { width: 100%; font-size: 12px; }
+.maker-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0; border: 1px solid var(--mk-line); padding: 15px 20px; border-radius: 10px; }
+.maker-notice span { font-size: 12px; }
+.maker-notice--error { color: var(--mk-error); border-color: #edcfd6; background: #fff5f7; }
+.maker-run-picker { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 20px; color: var(--mk-muted); }
+.maker-run-picker select { max-width: 100%; min-width: 0; }
+.maker-dialog { --text: #25273d; --text-muted: #697087; --surface: #fff; --border: #e5e7f0; color: #25273d; background: #fff; max-width: min(650px, calc(100vw - 32px)); border-color: #e5e7f0; color-scheme: light; }
+.maker-dialog .work-dialog__heading { background: #fff; color: #25273d; }
+.maker-dialog .work-dialog__body { display: grid; gap: 20px; }
+.maker-dialog .work-dialog__heading .button { color: #697087; }
+.maker-dialog textarea { width: 100%; resize: vertical; }
+.maker-dialog .field { display: grid; gap: 9px; }
+.maker-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: #565972; background: #f7f8fc; padding: 16px; border-radius: 8px; }
+.maker-dialog details summary { cursor: pointer; color: #6655d9; font-size: 12px; }
+.maker-dialog details > textarea { margin-top: 12px; font-size: 12px; }
+.maker-dialog-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.maker-dialog-actions { justify-content: space-between; }
+.maker-connect-steps { margin: 0; padding-left: 24px; display: grid; gap: 10px; }
+.maker-plan-list { margin: 0; padding-left: 24px; display: grid; gap: 24px; }
+.maker-plan-list h3 { font-size: 15px; margin: 0 0 8px; }
+.maker-plan-list p, .maker-plan-list ul, .maker-plan-list small { font-size: 12px; color: #697087; }
+.maker-shell .user-checks { margin: 0; background: transparent; border: 0; padding: 0; }
+.maker-shell .user-check-card { background: #f7f8fc; border-color: #e5e7f0; color: #25273d; }
+.maker-shell .user-check-card :is(p, li, label, summary, code) { color: #565d75; }
+.maker-shell .user-check-card .button { color: #25273d; background: #fff; border-color: #d7d9e7; }
+.maker-shell .user-check-card .button--primary { color: #fff; background: #6655d9; }
+@media (max-width: 1150px) { .maker-steps { display: none; } .maker-content { padding: 28px; } .maker-workspace { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) {
+  .maker-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .maker-sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--mk-line); display: flex; flex-direction: row; align-items: center; padding: 14px 18px; gap: 12px; flex-wrap: wrap; }
+  .maker-brand { margin-right: auto; }
+  .maker-sidebar > .maker-project-nav { display: none; }
+  .maker-sidebar > nav { display: flex; overflow-x: auto; gap: 6px; width: 100%; }
+  .maker-sidebar > nav button { width: auto; flex-shrink: 0; font-size: 12px; padding: 8px 10px; }
+  .maker-sidebar-bottom { display: flex; gap: 12px; border: 0; padding: 0; width: 100%; margin: 0; }
+  .maker-sidebar-bottom .maker-connection { display: none; }
+  .maker-sidebar-bottom button { justify-content: center; font-size: 12px !important; padding: 4px !important; }
+  .maker-topbar { height: 58px; padding: 0 20px; }
+  .maker-content { padding: 25px 20px; }
+  .maker-page-heading { flex-wrap: wrap; }
+  .maker-hero { padding: 24px; gap: 14px; }
+  .maker-hero-icon { display: none; }
+  .maker-hero h2 { font-size: 18px; }
+  .maker-status { flex-wrap: wrap; }
+  .maker-status > span:last-child { margin-left: 24px; }
+  .maker-panel { padding: 18px; }
+  .maker-result-stage { padding: 22px 14px; }
+}
+@media (prefers-reduced-motion: reduce) { .maker-shell *, .maker-dialog * { animation: none !important; transition: none !important; } }

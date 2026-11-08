@@ -30,8 +30,15 @@ def _parser() -> argparse.ArgumentParser:
     mcp = sub.add_parser("mcp", help="serve orchestrator tools over MCP stdio")
     mcp_mode = mcp.add_mutually_exclusive_group()
     mcp_mode.add_argument("--allow-write", action="store_true", help="enable document, planning, and recovery actions")
+    mcp_mode.add_argument("--allow-planning", action="store_true", help="enable submission of externally authored plan drafts")
+    mcp_mode.add_argument("--allow-control", action="store_true", help="enable externally planned creation, execution and recovery")
     mcp_mode.add_argument("--watch-source", action="store_true", help="apply source changes to the open read-only MCP connection")
     mcp.add_argument("--projects-root", type=Path, help="existing host folder in which MCP can create new projects")
+    mcp.add_argument("--registry", dest="mcp_registry", default="", help="project registry for this MCP connection")
+
+    register = sub.add_parser("mcp-register", help="register this orchestrator with an external AI app")
+    register.add_argument("--client", choices=("codex", "claude", "claude-code"), required=True)
+    register.add_argument("--registry", dest="connection_registry", default="", help="project registry for this connection")
 
     start = sub.add_parser("start", help="receive, review, and plan a specification")
     start.add_argument("spec", help="planning document file or directory")
@@ -287,6 +294,13 @@ def main(argv: list[str] | None = None) -> int:
             from .desktop_entry import run_desktop
 
             return run_desktop(args.registry or None)
+        if args.command == "mcp-register":
+            from .mcp_bundle import register_external_connection
+
+            registry = ProjectRegistry(args.connection_registry or args.registry or None)
+            result = register_external_connection(args.client, registry.path)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0 if result["status"] == "registered" else 2
         if args.command == "mcp":
             try:
                 from .mcp_server import serve
@@ -294,7 +308,8 @@ def main(argv: list[str] | None = None) -> int:
                 if exc.name not in {"mcp", "anyio", "pydantic"}:
                     raise
                 raise ConfigError("Install MCP support from the source checkout: python -m pip install -e '.[mcp]'") from exc
-            serve(args.registry or None, allow_write=args.allow_write, projects_root=args.projects_root, watch_source=args.watch_source)
+            serve(args.mcp_registry or args.registry or None, allow_write=args.allow_write, allow_planning=args.allow_planning,
+                  allow_control=args.allow_control, projects_root=args.projects_root, watch_source=args.watch_source)
             return 0
         config = load_config(args.config)
         codex_sdk = CodexSdkManager()

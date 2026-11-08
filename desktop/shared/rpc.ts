@@ -1,5 +1,10 @@
 export const RPC_METHODS = [
   "system.hello",
+  "connections.externalGuide",
+  "connections.registerExternal",
+  "runs.resultArtifact",
+  "runs.registerResult",
+  "runs.launchResult",
   "runs.controlChat",
   "runs.decideProjectChat",
   "runs.performProjectChat",
@@ -44,6 +49,7 @@ export const RPC_METHODS = [
   "providers.planning",
   "providers.execution",
   "providers.status",
+  "providers.accountUsage",
   "planning.refreshIndex",
   "runs.list",
   "runs.activeGroups",
@@ -89,6 +95,11 @@ export const RPC_METHODS = [
   "tasks.repairFromChat",
   "tasks.updateExecutionProfile",
   "tasks.complete",
+  "tasks.completeManualVerification",
+  "runs.recordUserCheck",
+  "tasks.handoffToAi",
+  "tasks.deferManual",
+  "tasks.resumeManual",
   "runs.verify",
   "runs.verifyAndRepair",
   "runs.excludeTasks",
@@ -144,6 +155,7 @@ export type CodexMcpRegistration = "registered" | "codex_missing" | "registratio
 export interface DesktopApi {
   mcpConnectionCommand(): Promise<string | null>;
   registerCodexMcp(): Promise<CodexMcpRegistration>;
+  registerCodexPlanning(): Promise<CodexMcpRegistration>;
   openCodexInstallGuide(): Promise<void>;
   openClaudeLogin(): Promise<boolean>;
   nvidiaCredentialStatus(): Promise<import("./nvidiaCredentials").NvidiaCredentialStatus>;

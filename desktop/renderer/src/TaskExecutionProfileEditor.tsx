@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { TaskProfileSelection } from "./planDrafts";
-import type { ProviderProfile, RunState, WorkTask } from "./types";
+import type { ProviderProfile, RunState, TaskProfileSelection, WorkTask } from "./types";
 
 export function taskExecutionProfileSnapshot(task: WorkTask): Record<string, string> {
   return { agent_id: task.agent_id, model: task.model, reasoning_effort: task.reasoning_effort,

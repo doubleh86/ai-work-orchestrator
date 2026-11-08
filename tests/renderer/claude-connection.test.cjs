@@ -12,7 +12,7 @@ process.on('exit',()=>{assert.equal(dirname(output),temp);rmSync(output,{recursi
 const pkg=require.resolve('typescript/package.json',{paths:[root]});
 execFileSync(process.execPath,[resolve(dirname(pkg),require(pkg).bin.tsc),'--ignoreConfig','--strict','--target','ES2022',
   '--module','commonjs','--jsx','react-jsx','--skipLibCheck','--outDir',output,
-  'desktop/renderer/src/AiConnectionDialog.tsx','desktop/renderer/src/global.d.ts'],{cwd:root,stdio:'inherit'});
+  'desktop/renderer/src/ClaudeConnectionPanel.tsx','desktop/renderer/src/global.d.ts'],{cwd:root,stdio:'inherit'});
 const modulePath=join(output,'renderer/src/ClaudeConnectionPanel.js'),local=createRequire(modulePath);
 const connected=extra=>({installed:true,authenticated:true,auth_method:'claude_subscription',message:'Claude Pro 구독 로그인',
   account_email:'claude@example.test',plan_type:'pro',...extra});
@@ -35,12 +35,15 @@ function harness(extra={}){
 }
 async function load(view,value=connected()) {view.render();view.calls.at(-1).resolve(value);await tick();return view.render()}
 
-test('Claude exposes the same account fields and continue/refresh layout without an automatic login',async()=>{
+test('connected Claude shows continue and keeps account fields and management folded',async()=>{
   const view=harness(),tree=await load(view),markup=renderToStaticMarkup(tree);
   for(const label of ['현재 계정','로그인 방식','요금제','claude@example.test','Claude 구독 로그인','Pro'])assert.ok(markup.includes(label));
   assert.ok(nodes(tree).some(node=>node.props.className==='ai-auth-state'&&node.props['data-state']==='connected'));
-  assert.ok(nodes(tree).some(node=>node.type==='dl'&&node.props.className==='ai-account-details'));
-  assert.notEqual(nodes(tree).find(node=>node.type==='details').props.open,true);
+  const details=nodes(tree).find(node=>node.type==='details');
+  assert.ok(nodes(details).some(node=>node.type==='dl'&&node.props.className==='ai-account-details'));
+  assert.notEqual(details.props.open,true);
+  const footer=nodes(tree).find(node=>node.type==='footer');
+  assert.deepEqual(nodes(footer).filter(node=>node.type==='button').map(text),['계속하기']);
   assert.equal(view.statuses.at(-1).account_email,'claude@example.test');
   assert.deepEqual(view.calls.map(call=>call.method),['auth.claude.status']);
   button(tree,'계속하기').props.onClick();assert.deepEqual(view.continued,[true]);view.unmount();

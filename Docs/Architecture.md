@@ -46,9 +46,8 @@ IPC와 원자적인 상태 흐름을 우선한다.
 - Python backend가 registry, Pipeline, run lock, 상태 파일과 Git 부작용의 최종
   권한자다. stdout은 RPC frame 전용이고 진단 로그는 stderr로 분리한다.
 - CLI와 Planning·Task 작업용 Python backend는 공식 Python Codex SDK client를 지연 생성해
-  재사용한다. SDK가 설치 제품에 포함한 고정 Codex 런타임만 사용하며 외부 Codex CLI,
-  시스템 실행 파일 override 또는 직접 OpenAI HTTP 요청으로 우회하지 않는다. 각 진입점은
-  종료 시 자신이 소유한 SDK client를 닫는다.
+  재사용한다. 배포본은 작업 PC에 설치된 Codex 실행 파일을 SDK에 전달한다. 소스 실행은
+  기본적으로 SDK 런타임을 사용한다. 각 진입점은 종료 시 자신이 소유한 SDK client를 닫는다.
 - `codex_sdk`는 종료가 확인된 안전한 503·모델 혼잡 실패만 같은 thread에서 지연 재시도한다.
   SDK 재접속 중에는 새 turn을 만들지 않으며 실제 도구·파일 행동이 시작됐으면 자동 반복하지 않는다.
   대기는 활동 증거와 구분하고, Pipeline callback으로 종료된 호출과 새 호출의 사용량 기록을 분리한다.
@@ -109,6 +108,12 @@ renderer ──typed preload API──> Electron main
   직접 또는 SSH로 실행하며 같은 `DesktopApplication`과 프로젝트 등록 정보를 사용한다.
   MCP의 실행 권한과 요청 기록은 `mcp_operations`에서 관리하고, 작업 상태 전이와 잠금은
   `Pipeline`이 처리한다. 앱과 MCP는 등록 정보의 쓰기 잠금을 공유한다.
+- `--allow-planning` 연결은 `get_planning_context`의 기준 커밋에 맞춰 외부 작성 계획을
+  `submit_plan`으로 제출한다. Python은 기존 Task 계약 검증과 실행 배정을 재사용해 계획 검토 상태를
+  저장한다. 기획 모델 호출 없이 작성한 초안도 기존 앱의 계획 revision 승인과 실행 경계를 거친다.
+- 계획의 사용자 확인은 기준 Task 결과나 계획 기준 커밋에 연결한다. `planner`가 Task와 확인의
+  의존성을 검증하고, `Pipeline`이 확인 결과를 기록하며 대기할 Task와 통합 가능 여부를 결정한다.
+  데스크톱은 확인 결과를 기록하고 MCP는 기준 커밋과 확인 상태를 조회한다.
 - registry 명령은 프로젝트 설정이 선택되기 전에 `registry` 공개 API를 호출한다.
 - React renderer는 화면에 필요한 의미 단위의 typed method만 호출한다. Electron main은
   renderer payload를 shell command나 파일 접근으로 해석하지 않고 Python RPC로 중계한다.
@@ -513,6 +518,38 @@ renderer ──typed preload API──> Electron main
 - 실패는 예외와 `failed` 상태로 드러내며 성공 상태로 보정하지 않는다.
 
 ## 변경 배치 기준
+
+### 외부 AI와 결과 실행
+
+기본 renderer `MakerApp`은 실제 registry와 Run의 조회·계획 확인·사용자 확인·결과 실행을 제공한다.
+새 채팅은 외부 앱 선택 없이 MCP 설치·연결 프롬프트를 복사한다. `connections.externalGuide`의
+실제 서버 명령과 `mcp-register` 등록 도우미를 전달하며, 복사 동작에서 설정을 쓰지 않는다.
+등록 도우미는 현재 대화 앱에 해당하는 연결만 갱신하고 작업 AI 공급자·모델 설정을 유지한다.
+외부 계획 제출 후 태스크 생성·모델 배정이 완료된 계획 승인 알림을 제작 준비 알림으로 표시한다.
+대화는 Codex/Claude 앱이 담당한다. 작업 AI 연결·프로젝트 관리·알림·태스크 상세·실행과 마무리는
+`MakerWorkers`, `MakerProjects`, `MakerNotifications`, `MakerTaskDetails`, `MakerRunControls`로
+분리하고 같은 제작 화면 안에서 제공한다. 옛 `App`, 기획 채팅·사이드바·작업 화면과 전용 스타일·
+표현 helper는 삭제했다. 실행 프로필 선택 타입은 `types.ts`, 완료 결과 선택은 `taskResults.ts`에
+유지한다. 공통 인증·복구·승인 컴포넌트는 새 테마로 재사용하며 고정 preload RPC만 호출한다.
+공통 대화창은 Maker 화면의 modal과 portal만 제공하며 삭제한 기획 사이드바의 생명주기를 제어하지 않는다.
+계획 모델 수정은 기존 `runs.updatePlan`의 선택적 `expectedRevision`을 코어로 전달한다.
+
+`mcp --allow-control`은 외부 계획 제출과 검토·수정·확정, 실행·재개·중지·검증을 제공한다.
+기존 `draft_tasks` 기획 AI 도구는 이 역할에서 등록하지 않는다. 계획 확인은 review digest와
+revision으로 고정하고, 실행 요청은 UUID receipt로 중복 실행을 방지한다. MCP 프로세스 안의 로컬
+작업자가 접수한 제어를 수행하며 `get_control_request`가 접수·시작·완료·실패 기록과 실제 Run을
+반환한다. 접수·시작 기록만으로 현재 작업자 생존을 주장하지 않는다. Main·push·배포 승인
+경계는 기존 계약을 유지한다. 빈 프로젝트의 외부 계획에도 같은 Task 검증·배정 규칙을 적용한다.
+
+`Pipeline`이 개별 Task 또는 통합 검증을 마친 clean 공유 작업공간과 HEAD를 확인한 뒤 `result_artifacts`에 파일 경계·digest·
+실행 환경 검사를 위임한다. `StateStore`는 Run 디렉터리의 `result-artifact.json`을 원자적으로
+저장한다. 등록 파일 또는 Mac 앱 디렉터리의 내용이 바뀌면 실행을 거절한다. 개발 서버·임의 명령
+실행은 받지 않는다. Android는 명시적으로 선택한 기기에 APK를 설치하고 시작 요청을 보낸다.
+실행 요청·프로세스 시작과 실제 UI·기능 검증 결과는 구분한다.
+
+`mcp_bundle`의 연결 등록은 앱이 사용하는 registry와 제작 제어 역할을 전달한다. Windows 패키지는
+기존 안정 launcher와 동봉 runtime 갱신을 재사용하며, Claude Desktop은 자신의 stdio 설정을,
+Claude Code와 Codex는 각각의 CLI 등록 명령을 사용한다. 설정 저장을 실제 연결 성공으로 표시하지 않는다.
 
 - 새 CLI 옵션이나 표시 형식은 `cli.py`에 둔다.
 - 기획 문서 후보 수집, 메타데이터 추출과 색인 저장은 `document_index.py`에 둔다.

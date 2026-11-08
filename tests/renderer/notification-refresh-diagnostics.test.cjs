@@ -3,8 +3,6 @@ const assert = require('node:assert/strict');
 const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { dirname, join, resolve } = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { createElement } = require('react');
-const { renderToStaticMarkup } = require('react-dom/server');
 
 const root = resolve(__dirname, '../..');
 const tempRoot = resolve(root, '.tmp');
@@ -15,14 +13,13 @@ try {
   const packagePath = require.resolve('typescript/package.json', { paths: [root] });
   execFileSync(process.execPath, [resolve(dirname(packagePath), require(packagePath).bin.tsc), '--ignoreConfig',
     '--strict', '--target', 'ES2022', '--module', 'commonjs', '--jsx', 'react-jsx', '--skipLibCheck', '--types', 'node',
-    '--outDir', output, 'desktop/main/workNotifications.ts', 'desktop/renderer/src/NotificationRefreshStatus.tsx'],
+    '--outDir', output, 'desktop/main/workNotifications.ts'],
   { cwd: root, stdio: 'inherit' });
 } catch (error) { cleanup(); throw error; }
 process.on('exit', cleanup);
 const { WorkNotificationCenter } = require(join(output, 'main/workNotifications.js'));
 const { PythonBridgeRequestError } = require(join(output, 'main/pythonBridge.js'));
 const { notificationRefreshCopy, notificationErrorDetail, reconcileNotificationSnapshot, workNotificationCopy } = require(join(output, 'shared/workNotifications.js'));
-const { NotificationRefreshStatus } = require(join(output, 'renderer/src/NotificationRefreshStatus.js'));
 
 function event(id) {
   return { event_id: id, source_key: `source:${id}`, project_key: 'B-repo', project_name: 'B', run_id: 'run', run_title: '작업',
@@ -303,30 +300,7 @@ test('OS delivery failures remain notification diagnostics and never create an e
   }
 });
 
-test('diagnostic UI separates history and recovery, requires a click to retry, and keeps sensitive details hidden', async () => {
-  const f = fixture();
-  f.errors.set('A', new Error('token=private-value Authorization: Bearer another-secret'));
-  await f.center.poll();
-  const current = issue(f);
-  let selected;
-  const tree = NotificationRefreshStatus({ issues: [current], busy: false, onRefresh: (scope) => { selected = scope; } });
-  const html = renderToStaticMarkup(tree);
-  assert.match(html, /작업 알림을 갱신하지 못했습니다/);
-  assert.match(html, /상태 다시 확인/);
-  assert.match(html, /최근 알림이 늦게/);
-  assert.doesNotMatch(html, /private-value|another-secret|끊겼습니다/);
-  assert.equal(selected, undefined);
-  const section = tree.props.children[0];
-  const button = section.props.children.find((child) => child?.type === 'button');
-  button.props.onClick();
-  assert.equal(selected, current.scope_key);
-  const busy = renderToStaticMarkup(createElement(NotificationRefreshStatus, { issues: [current], busy: true, onRefresh() {} }));
-  assert.match(busy, /disabled=""/);
-  const recovered = renderToStaticMarkup(createElement(NotificationRefreshStatus, { issues: [{ ...current, recovered_at: '2026-10-02T01:00:00Z' }], busy: false, onRefresh() {} }));
-  assert.match(recovered, /정상화|복구됨/);
-  assert.doesNotMatch(recovered, /상태 다시 확인/);
-  assert.match(notificationErrorDetail(new Error('"password":"value" Basic xyz')), /\[가림\]/);
-});
+
 
 test('late snapshots cannot replace newer read, dismissal or recovery results in the same store', () => {
   const current = { storage_identity: 'same-store', revision: 8, refresh_issues: [{ recovered_at: 'now' }], items: [], unread_count: 0 };
@@ -346,4 +320,10 @@ test('historical connection-unknown records and legacy error details do not asse
   const copy = workNotificationCopy({ summary_code: 'connection_unknown', run_title: 'Python backend' });
   assert.match(copy.title, /이전/);
   assert.doesNotMatch(copy.body, /Python backend|끊겼/);
+});
+
+test('notification diagnostics redact sensitive error details', () => {
+  const detail = notificationErrorDetail(new Error('token=private-value Authorization: Bearer another-secret'));
+  assert.doesNotMatch(detail, /private-value|another-secret/);
+  assert.match(notificationErrorDetail(new Error('"password":"value" Basic xyz')), /\[가림\]/);
 });

@@ -1,19 +1,18 @@
 # AI Work Orchestrator
 
-Codex와 Claude를 연결해 코딩 작업을 계획하고 실행하는 로컬 데스크톱 앱입니다.
-채팅으로 요청하고, 진행 상황과 결과를 한곳에서 확인할 수 있습니다.
+Codex·Claude 앱에서 만들 내용을 정하고, 여러 작업 AI로 제작하는 로컬 데스크톱 앱입니다.
+오케스트레이터는 MCP로 계획을 받아 태스크·모델을 준비하고 진행 상황과 결과를 보여줍니다.
 
 ## 주요 기능
 
-- AI와 대화하며 작업 계획 수립·수정
-- 작업별 AI 배정과 Git worktree 기반 실행
-- 진행 확인, 중지·재개와 실패 복구
-- 변경 검증과 승인 후 프로젝트 반영·Push
+- 외부 AI 앱의 MCP 계획 제출·실행 제어
+- 여러 작업 AI 연결과 태스크별 모델 설정
+- Git worktree 기반 실행, 중지·재개와 실패 복구
+- 결과 실행·사용자 확인과 승인 후 반영·Push
 
-## 시작하기
+## 소스로 실행하기
 
-Windows x64에서는 [v0.5.0 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.5.0)에서 앱 ZIP을 받아 실행할 수 있습니다.
-소스 실행에는 Python 3.11 이상, Node.js 22.12 이상, Git이 필요합니다.
+Python 3.11 이상, Node.js 22.12 이상, Git이 필요합니다.
 
 Windows PowerShell:
 
@@ -21,40 +20,32 @@ Windows PowerShell:
 git clone https://github.com/doubleh86/ai-work-orchestrator.git
 cd ai-work-orchestrator
 py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install -e '.[mcp]'
 npm ci
 npx --no-install install-electron
 npm start
 ```
 
-macOS/Linux에서는 `python3 -m venv .venv`로 가상환경을 만들고,
-`.venv/bin/python -m pip install -e .`를 실행한 뒤 `npm ci`, `npx --no-install install-electron`, `npm start`를 실행합니다.
+macOS/Linux에서는 `python3 -m venv .venv`와 `.venv/bin/python -m pip install -e '.[mcp]'`를 사용합니다.
+이후 npm 명령은 같습니다. 기존 Windows 배포본인 [v0.5.0 ZIP](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.5.0)은 이전 UI입니다.
 
 ## 사용하기
 
-1. **AI 연결**에서 Codex 또는 Claude를 연결합니다. Claude는 Claude Code CLI가 필요합니다.
-2. 작업할 Git 프로젝트를 등록합니다.
-3. 채팅으로 요청하고 계획을 확인한 뒤 작업을 시작합니다.
+1. **새 채팅**에서 MCP 설치·연결 프롬프트를 복사해 Codex·Claude 등의 앱에 붙여 넣습니다.
+2. 연결한 앱에서 무엇을 만들지 정하고 오케스트레이터에 계획을 전달합니다.
+3. **작업 AI**에서 제작할 AI들을 연결하고, 태스크를 눌러 모델과 기록을 확인합니다.
+4. **제작 준비 완료** 알림에서 계획을 확인한 뒤 제작을 시작합니다.
 
-Push·Main 반영·배포는 사용자 승인 후 진행합니다.
-CLI 명령은 `ai-orchestrator --help`에서 확인할 수 있습니다.
+기획 대화는 외부 앱에서 진행합니다. 오케스트레이터에서는 결과 실행·사용자 확인,
+프로젝트 관리·알림과 반영·보관을 처리합니다. Push·Main 반영·배포는 사용자 승인 후 진행합니다.
 
-## Codex에서 MCP 연결
+연결 프롬프트에는 현재 실행 경로와 MCP 등록 도우미가 들어 있습니다.
+로컬 설정을 수정할 도구가 없는 대화 앱에서는 수동 설정이 필요할 수 있습니다.
+연결한 앱에서 도구 조회까지 확인하세요. CLI 명령은 `ai-orchestrator --help`를 참고합니다.
 
-Windows 앱에서 **설정 → Codex 연결 → Codex에서 진행 상황 보기**를 누르면 동봉된 연결 파일을 설치하고 조회 연결을 등록합니다.
-Codex를 다시 열고 “오케스트레이터 작업 진행 상황 알려줘”라고 물어보세요. 새 버전의 앱을 열면 다음 Codex 연결에 동봉된 새 버전이 적용됩니다.
-
-수동 연결과 작업 변경 권한은 같은 화면의 고급 설정에서 설정합니다.
-
-소스로 연결하려면 `python -m pip install -e '.[mcp]'`로 준비한 뒤
-`codex mcp add orchestrator -- ai-orchestrator mcp`로 등록합니다.
-
-## 문서
+## 문서와 라이선스
 
 - [구조와 설계](Docs/Architecture.md)
 - [개발 문서 안내](Docs/ProjectDocumentGuide.md)
 - [공개 소스 갱신·릴리즈](Docs/PublicReleases.md)
-
-## 라이선스
-
-[MIT](LICENSE) · [제3자 소프트웨어 고지](THIRD_PARTY_NOTICES.md)
+- [MIT 라이선스](LICENSE) · [제3자 소프트웨어 고지](THIRD_PARTY_NOTICES.md)

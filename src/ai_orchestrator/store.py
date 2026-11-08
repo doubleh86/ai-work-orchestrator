@@ -510,6 +510,18 @@ class StateStore:
             temporary.unlink(missing_ok=True)
         return path
 
+    def load_result_artifact(self, run_id: str) -> dict[str, object] | None:
+        path = self.run_dir(run_id) / "result-artifact.json"
+        if not path.exists():
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("결과물 기록을 확인하지 못했습니다.")
+        return raw
+
+    def save_result_artifact(self, run_id: str, payload: dict[str, object]) -> None:
+        self._write_json_atomic(self.run_dir(run_id) / "result-artifact.json", payload)
+
     def load_operation(self, run_id: str, request_id: str) -> OperationRecord | None:
         path = self.operation_path(run_id, request_id)
         if not path.exists():
@@ -618,10 +630,10 @@ class StateStore:
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             raise ValueError(f"invalid effort policy sidecar: {path}: {exc}") from exc
 
-    def initialize_effort_mode(self, state: RunState, mode: str) -> None:
+    def initialize_effort_mode(self, state: RunState, mode: str, *, recover_unpublished: bool = False) -> None:
         with self.effort_policy_lock(state.id):
             path = self.effort_policy_path(state.id)
-            if self.state_path(state.id).exists() or path.exists():
+            if self.state_path(state.id).exists() or (path.exists() and not recover_unpublished):
                 raise ValueError("cannot initialize effort mode for an existing run")
             policy, _ = EffortPolicyState().set_mode(mode, target="planning", expected_revision=0, request_id=str(uuid.uuid4()))
             path.parent.mkdir(parents=True, exist_ok=True)

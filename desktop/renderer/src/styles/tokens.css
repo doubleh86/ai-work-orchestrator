@@ -1,24 +1,26 @@
-/* Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4 */
-/* Hallmark · genre: modern-minimal · tone: technical · anchor: cobalt · macrostructure: Workbench · variation: top project switcher + planning chat + flat task queue + inspector · contrast: pass (40–41) · nav: utility header · footer: none · slop: pass (42–45) · honest: pass (46) · chrome: pass (47) · tokens: pass (48) · responsive: pass (49) · icons: pass (30) · mobile: pass (34, 49, 50–57) */
 :root {
-  color-scheme: dark;
-  --color-canvas: oklch(0.145 0.012 260);
-  --color-rail: oklch(0.165 0.014 260);
-  --color-surface: oklch(0.19 0.014 260);
-  --color-surface-raised: oklch(0.225 0.016 260);
-  --color-surface-hover: oklch(0.255 0.02 260);
-  --color-border: oklch(0.31 0.018 260);
-  --color-border-strong: oklch(0.43 0.025 260);
-  --color-text: oklch(0.93 0.01 260);
-  --color-text-muted: oklch(0.67 0.025 260);
-  --color-text-faint: oklch(0.6 0.022 260);
-  --color-accent: oklch(0.67 0.18 259);
-  --color-accent-ink: oklch(0.145 0.012 260);
-  --color-accent-quiet: oklch(0.3 0.08 259);
-  --color-success: oklch(0.72 0.15 155);
-  --color-warning: oklch(0.78 0.14 75);
-  --color-danger: oklch(0.67 0.2 25);
-  --color-focus: oklch(0.78 0.14 250);
+  color-scheme: light;
+  --color-canvas: #f7f8fc;
+  --color-rail: #fff;
+  --color-surface: #fff;
+  --color-surface-raised: #f5f4fc;
+  --color-surface-hover: #efedff;
+  --color-border: #e5e7f0;
+  --color-border-strong: #c9cbdc;
+  --color-text: #25273d;
+  --color-text-muted: #697087;
+  --color-text-faint: #697087;
+  --color-accent: #6655d9;
+  --color-accent-ink: #fff;
+  --color-accent-quiet: #efedff;
+  --color-success: #24744e;
+  --color-warning: #8d650b;
+  --color-danger: #a13345;
+  --color-focus: #6655d9;
+  --text: #25273d;
+  --text-muted: #697087;
+  --surface: #fff;
+  --border: #e5e7f0;
   --font-ui: "Geist Variable", "Segoe UI Variable", "Malgun Gothic", sans-serif;
   --font-mono: "JetBrains Mono Variable", Consolas, monospace;
   --space-1: 0.25rem;

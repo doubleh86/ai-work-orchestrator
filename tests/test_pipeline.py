@@ -72,6 +72,7 @@ from ai_orchestrator.pipeline import (
     ProviderCapacityError,
     ProviderRequestLimitError,
     ProviderTimeoutError,
+    TaskVerificationFailure,
 )
 from ai_orchestrator.document_index import PLANNING_INDEX_TIMEOUT_SECONDS, load_planning_source_index
 from ai_orchestrator.execution_control import ExecutionStopped
@@ -9628,6 +9629,233 @@ else:
             self.assertEqual(restored.stage, Stage.EXECUTING)
             self.assertIsNone(restored.active_step)
             self.assertFalse(pipeline.store.lock_path(state.id).exists())
+
+    def test_ai_handoff_executes_only_the_selected_manual_waiting_task(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = self._repository(root)
+            spec = root / "plan.md"
+            spec.write_text("## 작업\n\n- [general] 첫 작업\n- [general] 다음 작업\n", encoding="utf-8")
+            pipeline = Pipeline(Config(
+                path=root / "orchestrator.toml", project=ProjectConfig(repo=repo), execution=ExecutionConfig(),
+                agents=(AgentConfig("general", ("general",), (sys.executable, "-c", "pass"), 1),),
+            ))
+            waiting = pipeline.execute(pipeline.confirm_plan(pipeline.start(spec).id).id, manual=True)
+            first, second = waiting.tasks
+            worktree = Path(first.worktree)
+            version = {"expected_commit": first.started_commit, "expected_revision": waiting.plan_revision}
+
+            with self.assertRaisesRegex(PipelineError, "작업 계획 또는 검증 기준 커밋이 바뀌었습니다"):
+                pipeline.handoff_manual_task_to_ai(waiting.id, first.id, **(version | {"expected_revision": waiting.plan_revision + 1}))
+            scratch = worktree / "draft.txt"
+            scratch.write_text("manual draft", encoding="utf-8")
+            with self.assertRaisesRegex(PipelineError, "커밋하지 않은 변경"):
+                pipeline.handoff_manual_task_to_ai(waiting.id, first.id, **version)
+            self.assertEqual(scratch.read_text(encoding="utf-8"), "manual draft")
+            scratch.unlink()
+            second.status = TaskStatus.WAITING
+            pipeline.store.save(waiting)
+            with self.assertRaisesRegex(PipelineError, "수동 작업이 둘 이상"):
+                pipeline.handoff_manual_task_to_ai(waiting.id, first.id, **version)
+            second.status = TaskStatus.PENDING
+            pipeline.store.save(waiting)
+
+            def implement(_state, task, *_args):
+                self.assertEqual(task.id, first.id)
+                (worktree / "result.txt").write_text("agent implementation", encoding="utf-8")
+                return "implemented"
+
+            with patch.object(pipeline, "_invoke_agent", side_effect=implement) as invoke:
+                result = pipeline.handoff_manual_task_to_ai(waiting.id, first.id, **version)
+            invoke.assert_called_once()
+            self.assertEqual(result.stage, Stage.EXECUTING)
+            self.assertEqual([task.status for task in result.tasks], [TaskStatus.COMPLETED, TaskStatus.PENDING])
+            self.assertNotEqual(result.tasks[0].completed_commit, first.started_commit)
+            self.assertEqual(result.tasks[1].action_results, [])
+
+    def test_manual_verification_records_existing_commit_and_releases_dependent_task(self) -> None:
+        for mode in (ExecutionWorkspaceMode.SHARED, ExecutionWorkspaceMode.ISOLATED):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                repo = self._repository(root)
+                spec = root / "plan.md"
+                spec.write_text("## 작업\n\n- [general] 브라우저 확인\n- [general] 후속 작업\n", encoding="utf-8")
+                pipeline = Pipeline(Config(
+                    path=root / "orchestrator.toml", project=ProjectConfig(repo=repo), execution=ExecutionConfig(),
+                    agents=(
+                        AgentConfig("general", ("general",), (sys.executable, "-c", "pass"), 1),
+                        AgentConfig("reviewer", ("review",), (sys.executable, "-c", "pass"), 1),
+                    ),
+                ))
+                state = pipeline.start(spec)
+                state.workspace_mode = mode
+                task_id = state.tasks[0].id
+                state.tasks[0].expected_paths = ["src/**"]
+                if mode == ExecutionWorkspaceMode.SHARED:
+                    state.tasks[0].verify_commands = [[sys.executable, "-c", "pass"]]
+                state.tasks[1].dependencies = [task_id]
+                pipeline.store.save(state)
+                waiting = pipeline.execute(pipeline.confirm_plan(state.id).id, manual=True)
+                task = waiting.tasks[0]
+                commit = task.started_commit
+                note = "검증 환경: 스테이징\n두 AI 응답과 결과 저장 확인"
+                params = {"note": note, "expected_commit": commit, "expected_revision": waiting.plan_revision}
+                if mode == ExecutionWorkspaceMode.SHARED:
+                    task.reviewer_agent_id = "reviewer"
+                    pipeline.store.save(waiting)
+
+                review_reply = 'AI_REVIEW_RESULT: {"verdict":"approved","summary":"checked","findings":[]}'
+                with (
+                    patch.object(pipeline.git, "commit_all", wraps=pipeline.git.commit_all) as commit_all,
+                    patch.object(pipeline, "_invoke_agent", return_value=review_reply) as invoke,
+                ):
+                    completed = pipeline.complete_manual_verification(waiting.id, task_id, **params)
+                    repeated = pipeline.complete_manual_verification(waiting.id, task_id, **params)
+                commit_all.assert_not_called()
+                if mode == ExecutionWorkspaceMode.SHARED:
+                    invoke.assert_called_once()
+                    self.assertIn("repository-observable criteria", invoke.call_args.args[3])
+                    self.assertNotIn(note, invoke.call_args.args[3])
+                    self.assertEqual(completed.tasks[0].review_status, ReviewStatus.APPROVED)
+                else:
+                    invoke.assert_not_called()
+                self.assertEqual(completed.tasks[1].status, TaskStatus.WAITING)
+                self.assertEqual(completed.tasks[0].status, TaskStatus.COMPLETED)
+                self.assertEqual(pipeline.git.head(Path(task.worktree)), commit)
+                self.assertEqual(len(repeated.tasks[0].result_history), 1)
+                record = pipeline.status(waiting.id).tasks[0].result_history[-1]
+                self.assertEqual(record.manual_verification_note, note)
+                self.assertEqual(record.baseline_commit, commit)
+                self.assertEqual(record.result_commit, commit)
+                self.assertEqual(record.files_state, "none")
+                self.assertEqual(record.passed_commands, task.verify_commands)
+                next_task = completed.tasks[1]
+                final = pipeline.complete_manual_verification(
+                    completed.id, next_task.id, note="후속 수동 검사 통과", expected_commit=next_task.started_commit,
+                    expected_revision=completed.plan_revision,
+                )
+                self.assertEqual(final.stage, Stage.READY_TO_MERGE)
+                self.assertEqual(final.tasks[1].completed_commit, commit)
+
+    def test_manual_verification_rejects_stale_or_dirty_workspace_and_keeps_failed_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline, state = self._scope_test_run(Path(directory))
+            available = Path(directory) / "environment-ready"
+            check = f"from pathlib import Path; raise SystemExit(not Path({str(available)!r}).exists())"
+            state.tasks[0].verify_commands = [[sys.executable, "-c", check]]
+            pipeline.store.save(state)
+            waiting = pipeline.execute(state.id, manual=True)
+            task = waiting.tasks[0]
+            task.reviewer_agent_id = "reviewer"
+            pipeline.store.save(waiting)
+            params = {"note": "브라우저에서 완료 기준 확인", "expected_commit": task.started_commit, "expected_revision": waiting.plan_revision}
+            with self.assertRaisesRegex(PipelineError, "검증 기준 커밋이 바뀌었습니다"):
+                pipeline.complete_manual_verification(waiting.id, task.id, **(params | {"expected_revision": waiting.plan_revision + 1}))
+            with self.assertRaisesRegex(PipelineError, "1~4000자"):
+                pipeline.complete_manual_verification(waiting.id, task.id, **(params | {"note": "  "}))
+            scratch = Path(task.worktree) / "result.txt"
+            scratch.write_text("pending change", encoding="utf-8")
+            with self.assertRaisesRegex(PipelineError, "커밋하지 않은 변경"):
+                pipeline.complete_manual_verification(waiting.id, task.id, **params)
+            scratch.unlink()
+            with patch.object(pipeline.git, "head", return_value="unexpected-head"):
+                with self.assertRaisesRegex(PipelineError, "작업공간 커밋이 검증 기준과 다릅니다"):
+                    pipeline.complete_manual_verification(waiting.id, task.id, **params)
+            self.assertEqual(pipeline.status(waiting.id).tasks[0].status, TaskStatus.WAITING)
+            review_reply = 'AI_REVIEW_RESULT: {"verdict":"approved","summary":"checked","findings":[]}'
+            with patch.object(pipeline, "_invoke_agent", return_value=review_reply) as invoke:
+                with self.assertRaises(TaskVerificationFailure):
+                    pipeline.complete_manual_verification(waiting.id, task.id, **params)
+                failed = pipeline.status(waiting.id)
+                self.assertEqual(failed.stage, Stage.FAILED)
+                self.assertEqual(failed.tasks[0].status, TaskStatus.FAILED)
+                self.assertEqual(failed.tasks[0].result_history, [])
+                self.assertEqual(failed.tasks[0].action_results[-1].status, "failed")
+
+                available.touch()
+                restored = pipeline.resume(waiting.id, manual=True)
+                self.assertEqual(restored.tasks[0].status, TaskStatus.WAITING)
+                completed = pipeline.complete_manual_verification(waiting.id, task.id, **params)
+                self.assertEqual(completed.stage, Stage.READY_TO_MERGE)
+                self.assertEqual(completed.tasks[0].completed_commit, task.started_commit)
+                self.assertEqual(completed.tasks[0].result_history[0].manual_verification_note, params["note"])
+                self.assertEqual(invoke.call_count, 2)
+
+    def test_deferred_manual_task_hands_off_shared_workspace_but_keeps_dependencies_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = self._repository(root)
+            spec = root / "plan.md"
+            spec.write_text("## 작업\n\n- [general] HTTPS\n- [general] Independent\n- [general] Dependent\n- [general] Downstream\n", encoding="utf-8")
+            pipeline = Pipeline(Config(
+                path=root / "orchestrator.toml", project=ProjectConfig(repo=repo), execution=ExecutionConfig(),
+                agents=(AgentConfig("general", ("general",), (sys.executable, "-c", "pass"), 1),),
+            ))
+            state = pipeline.start(spec)
+            https, independent, dependent, downstream = (task.id for task in state.tasks)
+            state.tasks[2].dependencies = [https]
+            state.tasks[3].dependencies = [dependent]
+            pipeline.store.save(state)
+            state = pipeline.execute(pipeline.confirm_plan(state.id).id, manual=True)
+            worktree = Path(state.tasks[0].worktree)
+            baseline = state.tasks[0].started_commit
+
+            state = pipeline.set_manual_task_deferred(state.id, https, deferred=True)
+            self.assertEqual([task.status for task in state.tasks], [
+                TaskStatus.DEFERRED, TaskStatus.WAITING, TaskStatus.PENDING, TaskStatus.PENDING,
+            ])
+            self.assertEqual(state.tasks[0].completed_commit, "")
+            self.assertEqual(state.tasks[0].action_results, [])
+            self.assertEqual(state.tasks[2].blocked_by, [https])
+            self.assertEqual(pipeline.git.head(worktree), baseline)
+            with self.assertRaisesRegex(PipelineError, "공유 작업공간을 사용 중"):
+                pipeline.set_manual_task_deferred(state.id, https, deferred=False)
+            with self.assertRaisesRegex(PipelineError, "not waiting for manual completion"):
+                pipeline.complete_task(state.id, https)
+
+            def run_independent(_state, task, *_args):
+                self.assertEqual(task.id, independent)
+                (worktree / "result.txt").write_text("independent\n", encoding="utf-8")
+                return "independent task result"
+
+            with patch.object(pipeline, "_invoke_agent", side_effect=run_independent) as invoke:
+                state = pipeline.resume(state.id)
+            invoke.assert_called_once()
+            self.assertEqual(state.stage, Stage.EXECUTING)
+            self.assertIsNone(state.active_step)
+            self.assertEqual([task.status for task in state.tasks], [
+                TaskStatus.DEFERRED, TaskStatus.COMPLETED, TaskStatus.PENDING, TaskStatus.PENDING,
+            ])
+            reloaded, execution, integration = pipeline.status_with_controls(state.id)
+            self.assertEqual(reloaded.tasks[0].started_commit, baseline)
+            self.assertEqual(execution.action, RunExecutionAction.NONE)
+            self.assertFalse(integration.can_verify)
+            self.assertFalse(integration.can_apply_main)
+
+            state = pipeline.set_manual_task_deferred(state.id, https, deferred=False)
+            self.assertEqual(state.tasks[0].status, TaskStatus.WAITING)
+            self.assertEqual(state.tasks[0].started_commit, state.tasks[1].completed_commit)
+            with self.assertRaisesRegex(PipelineError, "produced no commit in the shared workspace"):
+                pipeline.complete_task(state.id, https)
+
+    def test_manual_deferral_preserves_dirty_or_committed_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline, state = self._scope_test_run(Path(directory))
+            state = pipeline.execute(state.id, manual=True)
+            task = state.tasks[0]
+            worktree = Path(task.worktree)
+            evidence = worktree / "result.txt"
+            evidence.write_text("partial result\n", encoding="utf-8")
+            with self.assertRaisesRegex(PipelineError, "아직 커밋하지 않은 변경"):
+                pipeline.set_manual_task_deferred(state.id, task.id, deferred=True)
+            self.assertEqual(evidence.read_text(encoding="utf-8"), "partial result\n")
+            git(worktree, "add", "result.txt")
+            git(worktree, "commit", "-m", "manual evidence")
+            head = pipeline.git.head(worktree)
+            with self.assertRaisesRegex(PipelineError, "커밋이 바뀌었습니다"):
+                pipeline.set_manual_task_deferred(state.id, task.id, deferred=True)
+            self.assertEqual(pipeline.status(state.id).tasks[0].status, TaskStatus.WAITING)
+            self.assertEqual(pipeline.git.head(worktree), head)
 
     def test_agent_timeout_is_logged_and_marks_failed_step(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

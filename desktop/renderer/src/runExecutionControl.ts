@@ -167,6 +167,13 @@ export function runExecutionPresentation(
   if (control.situation === "preparing") {
     return presentation("다음 작업 준비 중", "active", "none", "다음 작업 준비 중", true, control.reason);
   }
+  if (control.situation === "waiting_user_check") {
+    return presentation("사용자 확인 대기", "warning", "none", "사용자 확인 대기", true, control.reason);
+  }
+  if (run.stage === "executing" && control.situation === "resumable" && control.action === "none"
+    && run.tasks.some((task) => task.status === "deferred")) {
+    return presentation("수동 검증 보류", "warning", "none", "보류 작업 보기", true, control.reason);
+  }
   if (control.situation === "status_unknown") {
     return presentation("상태 확인 필요", "warning", "refresh", "상태 다시 확인", false, control.reason);
   }

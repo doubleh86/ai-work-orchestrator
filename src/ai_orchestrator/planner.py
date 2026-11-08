@@ -6,11 +6,14 @@ from collections import Counter
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from functools import cache
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path, PurePosixPath
 
 from .config import AgentConfig, RoutingConfig, supported_models, supported_reasoning_efforts
 from .document_index import SUPPORTED_DOCUMENT_SUFFIXES
-from .models import EffortMode, PlanningMode, ProfileSource, ReviewStatus, RiskLevel, TaskReadiness, TechStackComponents, TechStackOption, WorkTask
+from .models import (
+    EffortMode, PlanningMode, ProfileSource, ReviewStatus, RiskLevel, TaskReadiness, TechStackComponents, TechStackOption, UserCheck, WorkTask,
+)
 from .model_selection import AUTOMATIC_CODEX_MODELS, CODEX_SOL_MODEL, select_codex_model
 
 TAGGED_TASK = re.compile(r"^\s*[-*]\s+\[([^\]]+)\]\s+(.+?)\s*$")
@@ -1029,6 +1032,35 @@ def _topological_tasks(tasks: list[WorkTask]) -> list[WorkTask]:
         task.blocked_by = task.execution_dependencies
         task.readiness = TaskReadiness.BLOCKED if task.blocked_by else TaskReadiness.READY
     return ordered
+
+
+def validate_user_checks(tasks: list[WorkTask], checks: list[UserCheck]) -> None:
+    if not checks:
+        return
+    if len(checks) > 32:
+        raise PlanningError("사용자 확인은 최대 32개까지 제출할 수 있습니다.")
+    graph = TopologicalSorter({task.id: task.execution_dependencies for task in tasks})
+    task_ids = {task.id for task in tasks}
+    check_ids: set[str] = set()
+    for check in checks:
+        if not TASK_ID.fullmatch(check.id) or check.id in task_ids or check.id in check_ids:
+            raise PlanningError(f"사용자 확인 ID가 올바르지 않거나 중복됩니다: {check.id}")
+        if (not check.title.strip() or not check.instructions.strip() or not check.acceptance_criteria
+                or any(not criterion.strip() for criterion in check.acceptance_criteria)):
+            raise PlanningError(f"사용자 확인의 제목, 안내, 완료 기준이 필요합니다: {check.id}")
+        referenced_tasks = set(check.blocks_task_ids)
+        if check.after_task_id:
+            referenced_tasks.add(check.after_task_id)
+        if missing := referenced_tasks - task_ids:
+            raise PlanningError(f"사용자 확인 {check.id}에 등록되지 않은 작업이 있습니다: {', '.join(sorted(missing))}")
+        check_ids.add(check.id)
+        graph.add(check.id, *((check.after_task_id,) if check.after_task_id else ()))
+        for task_id in check.blocks_task_ids:
+            graph.add(task_id, check.id)
+    try:
+        tuple(graph.static_order())
+    except CycleError as exc:
+        raise PlanningError("작업과 사용자 확인에 순환 의존성이 있습니다: " + " → ".join(exc.args[1])) from exc
 
 
 def validate_task_graph(tasks: list[WorkTask]) -> list[WorkTask]:

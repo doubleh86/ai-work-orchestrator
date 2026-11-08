@@ -3,17 +3,13 @@ import "@fontsource-variable/jetbrains-mono";
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import { App } from "./App";
+import { MakerApp } from "./MakerApp";
 import "./styles/tokens.css";
-import "./styles/app.css";
-import "./styles/redesign.css";
-import "./styles/execution-monitor.css";
-import "./styles/work-centered.css";
-import "./styles/chat-first.css";
-import "./styles/chat-markdown.css";
+import "./styles/maker-controls.css";
+import "./styles/maker.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <MakerApp />
   </React.StrictMode>,
 );

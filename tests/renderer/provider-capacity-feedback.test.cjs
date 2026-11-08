@@ -13,17 +13,11 @@ process.on('exit', () => { assert.equal(dirname(output), temp); rmSync(output, {
 const pkg = require.resolve('typescript/package.json', { paths: [root] });
 execFileSync(process.execPath, [resolve(dirname(pkg), require(pkg).bin.tsc), '--ignoreConfig', '--strict', '--target', 'ES2022',
   '--module', 'commonjs', '--jsx', 'react-jsx', '--skipLibCheck', '--outDir', output,
-  'desktop/renderer/src/RecoveryDialog.tsx', 'desktop/renderer/src/TaskStatusOverview.tsx',
-  'desktop/renderer/src/TaskFlow.tsx', 'desktop/renderer/src/runRecoveryGuidance.ts',
+  'desktop/renderer/src/RecoveryDialog.tsx',
   'desktop/renderer/src/global.d.ts'], { cwd: root, stdio: 'inherit' });
 const modulePath = name => join(output, 'renderer/src', name);
 const failure = require(modulePath('providerFailure.js'));
 const recovery = require(modulePath('recoveryOperation.js'));
-const { taskDialogPresentation, TaskStatusOverview } = require(modulePath('TaskStatusOverview.js'));
-const { providerRetryWait } = require(modulePath('providerRetry.js'));
-const { taskActivityTiming } = require(modulePath('executionActivity.js'));
-const { TaskFlow } = require(modulePath('TaskFlow.js'));
-const { runRecoveryGuidance } = require(modulePath('runRecoveryGuidance.js'));
 const capacity = 'agent codex-general Codex SDK failed: Selected model is at capacity. Please try a different model.; see mock.log';
 const rateLimit = 'exceeded retry limit, last status: 429 Too Many Requests';
 const usageLimit = `${rateLimit}; {"error":{"code":"insufficient_quota"}}`;
@@ -34,10 +28,8 @@ const operation = overrides => ({ request_id: 'saved-request', run_id: 'run', ac
   finished_at: '', result: null, ...overrides });
 const partial = () => operation({ status: 'partial', error: capacity, error_code: 'replanning_failed', lock_state: 'unlocked',
   result_commit: 'kept-commit', result: { fingerprint: 'same-fingerprint', source_ids: ['source'], result_commit: 'kept-commit' } });
-const task = overrides => ({ id: 'task', title: '실패 작업', status: 'failed', error: capacity, action_results: [],
-  acceptance_criteria: [], dependencies: [], conflict_dependencies: [], blocked_by: [], ...overrides });
-const run = tasks => ({ id: 'run', stage: 'failed', failed_step: 'agent_execution', failure_message: capacity, tasks,
-  execution_control: { situation: 'resumable', action: 'resume' } });
+const task = () => ({ id: 'task', title: '실패 작업', status: 'failed', error: capacity });
+const run = tasks => ({ id: 'run', stage: 'failed', failed_step: 'agent_execution', tasks });
 function nodes(tree) {
   if (!tree || typeof tree !== 'object') return [];
   return Array.isArray(tree) ? tree.flatMap(nodes) : [tree, ...nodes(tree.props?.children)];
@@ -82,41 +74,9 @@ function mount(api) {
     unmount: () => cleanups.forEach(fn => fn?.()), writes: () => writes, applied: () => applied, closed: () => closed };
 }
 
-test('provider wait shows countdown and attempt count without inventing requests or exposing metadata', () => {
-  const detail = JSON.stringify({ retry_at: '2026-10-13T08:00:30Z', retry_index: 3, max_retries: 4 });
-  assert.equal(providerRetryWait('provider_retry_wait', detail, now), 'AI 서버 혼잡 · 30초 후 재시도 (3/4)');
-  assert.equal(providerRetryWait('provider_retry_wait', detail, now + 35000), 'AI 서버 혼잡 · 재시도 준비 중 (3/4)');
-  assert.equal(providerRetryWait('running_command', detail, now), undefined);
-  for (const invalid of ['{}', 'not json', '{"retry_at":"bad","retry_index":1,"max_retries":4}']) {
-    assert.equal(providerRetryWait('provider_retry_wait', invalid, now), 'AI 서버 혼잡 · 재시도 상태 확인 중');
-  }
-});
 
-test('waiting task retains stop and AI question actions and is not described as stopped or fresh activity', () => {
-  const clock = Date.now();
-  const waiting = task({ status:'running', active_action:'execute', last_attempt_started_at:new Date(clock - 120000).toISOString(),
-    progress_phase:'provider_retry_wait', progress_updated_at:new Date(clock - 90000).toISOString(),
-    progress_detail:JSON.stringify({ retry_at:new Date(clock + 30000).toISOString(), retry_index:2, max_retries:4 }),
-    blocked_by:[], readiness:'ready' });
-  const current = { ...run([waiting]), stage:'executing', execution_control:{situation:'running',can_stop:true,execution_id:'execution',active_task_id:'task'} };
-  const timing=taskActivityTiming(waiting,clock);
-  assert.equal(timing.lastActivityAt,undefined,'scheduled wait does not invent a provider activity timestamp');
-  assert.equal(timing.quietSeconds,undefined);
-  let stopped=0, questions=0;
-  const cards=TaskFlow({run:current,selectedTaskId:'task',onOpen(){},onStop(){stopped++;},onPlanning(){questions++;}});
-  const html=renderToStaticMarkup(cards);
-  assert.match(html,/AI 서버 혼잡/);assert.match(html,/초 후 재시도 \(2\/4\)/);
-  assert.doesNotMatch(html,/새 활동 없음|중단 미확인|retry_at/);
-  assert.equal(stopped,0);assert.equal(questions,0);
-  nodes(cards).find(node=>node.type==='button'&&text(node)==='작업 중지').props.onClick();
-  nodes(cards).find(node=>node.type==='button'&&text(node)==='AI 질문').props.onClick();
-  assert.equal(stopped,1);assert.equal(questions,1);
-  const view=TaskStatusOverview({task:waiting,run:current,busy:true,planDirty:false,onStop(){},onPlanning(){},onResult(){},onRun(){},onRefresh(){},onOpenTask(){}});
-  assert.match(renderToStaticMarkup(view),/AI 서버 혼잡/);
-  assert.doesNotMatch(renderToStaticMarkup(view),/새 활동 없음/);
-  const terminal={...waiting,status:'failed'};
-  assert.doesNotMatch(renderToStaticMarkup(TaskFlow({run:{...current,tasks:[terminal]},onOpen(){}})),/초 후 재시도/);
-});
+
+
 
 test('confirmed SDK service failure has its own short final guidance', () => {
   assert.equal(failure.providerFailurePresentation('AI 서버가 일시적으로 응답하지 않습니다. upstream').kind,'unavailable');
@@ -135,20 +95,7 @@ test('capacity requires confirmed specific evidence, preserving HTTP/quota/auth/
   assert.equal(recovery.recoveryPhaseLabel(partial()), '통합 결과 보존 · AI 모델 혼잡으로 재계획 실패');
 });
 
-test('failed task shows model capacity with original evidence and existing actions; other task states remain intact', () => {
-  const failed = task({}), group = run([failed]);
-  assert.equal(taskDialogPresentation(failed, group, false).title, failure.modelCapacityMessage);
-  assert.equal(taskDialogPresentation(failed, group, false).action, 'planning');
-  assert.equal(runRecoveryGuidance(group).cause, failure.modelCapacityMessage);
-  assert.ok(runRecoveryGuidance(group).evidence.includes(capacity));
-  const html = renderToStaticMarkup(TaskFlow({ run: group, selectedTaskId: 'task', retryAllowed: true,
-    onOpen() {}, onRetry() {}, onPlanning() {} }));
-  assert.match(html, /AI 모델 혼잡/); assert.match(html, /현재 계획 재실행/); assert.match(html, /AI 도움 요청/);
-  for (const status of ['pending', 'running', 'completed', 'merged', 'stopped']) {
-    assert.notEqual(taskDialogPresentation(task({ status }), group, false).title, failure.modelCapacityMessage);
-  }
-  assert.equal(taskDialogPresentation(task({ error: 'not enough codex agent capacity' }), group, false).tone, 'danger');
-});
+
 
 test('request limit presentation distinguishes confirmed usage limits and avoids unrelated HTTP failures', () => {
   for (const error of [rateLimit, `agent codex-general Codex SDK failed: HTTP 429; see mock.log`,
@@ -171,31 +118,7 @@ test('request limit presentation distinguishes confirmed usage limits and avoids
 
 for (const [error, label, title] of [[rateLimit, 'AI 요청 제한', 'AI 요청이 제한되었습니다'],
   [usageLimit, 'AI 사용 한도', 'AI 사용 한도에 도달했습니다']]) {
-  test(`${label}: failed card and detail stay concise while preserving existing retry permissions and raw evidence`, () => {
-    const failed = task({ error }), group = { ...run([failed]), failure_message: error };
-    assert.equal(taskDialogPresentation(failed, group, false).title, title);
-    assert.equal(runRecoveryGuidance(group).cause, title);
-    assert.ok(runRecoveryGuidance(group).evidence.includes(error));
-    const { TaskTechnicalRecord, TaskStatusOverview } = require(modulePath('TaskStatusOverview.js'));
-    assert.ok(text(TaskTechnicalRecord({ task: failed })).includes(error));
-    const overview = text(TaskStatusOverview({ task: failed, run: group, busy: false, planDirty: false }));
-    assert.ok(overview.includes(failure.providerFailurePresentation(error).description));
-    assert.ok(overview.includes(error));
-    let retried = 0;
-    const props = { run: group, selectedTaskId: 'task', retryAllowed: true, onOpen() {}, onRetry() { retried++; }, onPlanning() {} };
-    const tree = TaskFlow(props);
-    assert.match(renderToStaticMarkup(tree), new RegExp(label));
-    assert.ok(!text(tree).includes(error));
-    assert.equal(retried, 0);
-    const retry = nodes(tree).find(node => node.type === 'button' && text(node) === '현재 계획 재실행');
-    assert.ok(retry); retry.props.onClick(); assert.equal(retried, 1);
-    assert.doesNotMatch(renderToStaticMarkup(TaskFlow({ ...props, retryAllowed: false })), /현재 계획 재실행/);
-    assert.equal(nodes(TaskFlow({ ...props, busy: true })).find(node => text(node) === '현재 계획 재실행').props.disabled, true);
-    for (const status of ['running', 'pending', 'completed', 'merged', 'stopped']) {
-      assert.notEqual(taskDialogPresentation(task({ error, status }), group, false).title, title);
-      assert.ok(!text(TaskFlow({ ...props, run: run([task({ error, status })]) })).includes(label));
-    }
-  });
+
 
   test(`${label}: confirmed partial preserves integration and only explicit approved replan can retry`, async () => {
     const calls = [], current = { ...partial(), error };

@@ -922,6 +922,7 @@ class TaskStatus(StrEnum):
     REVIEWING = "reviewing"
     REVISING = "revising"
     WAITING = "waiting"
+    DEFERRED = "deferred"
     COMPLETED = "completed"
     FAILED = "failed"
     STOPPED = "stopped"
@@ -971,6 +972,7 @@ class RunExecutionSituation(StrEnum):
     RUNNING = "running"
     PREPARING = "preparing"
     RESUMABLE = "resumable"
+    WAITING_USER_CHECK = "waiting_user_check"
     ATTENTION_REQUIRED = "attention_required"
     TASKS_COMPLETE = "tasks_complete"
     STATUS_UNKNOWN = "status_unknown"
@@ -1173,6 +1175,7 @@ class TaskResultRecord:
     self_report: str = ""
     verification_status: str = "unverified"
     passed_commands: list[list[str]] = field(default_factory=list)
+    manual_verification_note: str = ""
 
 
 @dataclass(slots=True)
@@ -1454,6 +1457,31 @@ class WorkTask:
         self.clear_progress(reset_observation=False)
 
 
+class UserCheckOutcome(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    DEFERRED = "deferred"
+
+
+@dataclass(frozen=True, slots=True)
+class UserCheck:
+    id: str
+    title: str
+    instructions: str
+    acceptance_criteria: tuple[str, ...]
+    after_task_id: str = ""
+    blocks_task_ids: tuple[str, ...] = ()
+    required_for_integration: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class UserCheckResult:
+    reference_commit: str
+    outcome: UserCheckOutcome
+    note: str
+    recorded_at: str
+
+
 @dataclass(slots=True)
 class RunState:
     id: str
@@ -1539,6 +1567,9 @@ class RunState:
     verification_repair_head: str = ""
     verification_repair_main_head: str = ""
     verification_repair_task_heads: dict[str, str] = field(default_factory=dict)
+    external_plan_digest: str = ""
+    user_check_plan: list[UserCheck] = field(default_factory=list)
+    user_check_results: dict[str, list[UserCheckResult]] = field(default_factory=dict)
 
     @property
     def plan_is_approved(self) -> bool:
@@ -1665,9 +1696,43 @@ class RunState:
         self.failure_message = ""
         self.transition(stage, message)
 
+    def user_check_reference(self, check: UserCheck) -> str:
+        if not check.after_task_id:
+            return self.base_commit
+        task = next((task for task in self.tasks if task.id == check.after_task_id), None)
+        if task is None or task.status not in {TaskStatus.COMPLETED, TaskStatus.MERGED}:
+            return ""
+        return task.completed_commit
+
+    def current_user_check_result(self, check: UserCheck) -> UserCheckResult | None:
+        reference = self.user_check_reference(check)
+        if not reference:
+            return None
+        return next((result for result in reversed(self.user_check_results.get(check.id, [])) if result.reference_commit == reference), None)
+
+    def unresolved_user_checks(self) -> list[UserCheck]:
+        return [check for check in self.user_check_plan
+                if (result := self.current_user_check_result(check)) is None or result.outcome != UserCheckOutcome.PASSED]
+
+    def integration_user_checks_pending(self) -> bool:
+        return any(check.required_for_integration for check in self.unresolved_user_checks())
+
+    def user_check_blocked_task_ids(self) -> set[str]:
+        blocked = {task_id for check in self.unresolved_user_checks() for task_id in check.blocks_task_ids}
+        while blocked:
+            dependents = {task.id for task in self.tasks if blocked.intersection(task.execution_dependencies)} - blocked
+            if not dependents:
+                break
+            blocked.update(dependents)
+        return blocked
+
     def refresh_task_readiness(self) -> None:
         statuses = {task.id: task.status for task in self.tasks}
         satisfied = {TaskStatus.COMPLETED, TaskStatus.MERGED}
+        check_blockers: dict[str, list[str]] = {}
+        for check in self.unresolved_user_checks():
+            for task_id in check.blocks_task_ids:
+                check_blockers.setdefault(task_id, []).append(check.id)
         for task in self.tasks:
             if task.status in satisfied:
                 task.readiness = TaskReadiness.DONE
@@ -1682,7 +1747,8 @@ class RunState:
                 task.blocked_by = []
                 continue
             task.blocked_by = [dependency for dependency in task.execution_dependencies if statuses.get(dependency) not in satisfied]
-            task.readiness = TaskReadiness.BLOCKED if task.blocked_by else TaskReadiness.READY
+            task.blocked_by.extend(check_blockers.get(task.id, ()))
+            task.readiness = TaskReadiness.BLOCKED if task.blocked_by or task.status == TaskStatus.DEFERRED else TaskReadiness.READY
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -1832,6 +1898,15 @@ class RunState:
             planning_claude_session_id=raw.get("planning_claude_session_id", ""),
             planning_mode=PlanningMode(raw.get("planning_mode", PlanningMode.AUTO.value)),
             planning_request=raw.get("planning_request", ""),
+            external_plan_digest=str(raw.get("external_plan_digest") or ""),
+            user_check_plan=[UserCheck(
+                id=item["id"], title=item["title"], instructions=item["instructions"],
+                acceptance_criteria=tuple(item["acceptance_criteria"]), after_task_id=item.get("after_task_id", ""),
+                blocks_task_ids=tuple(item.get("blocks_task_ids", ())), required_for_integration=item.get("required_for_integration", False),
+            ) for item in raw.get("user_check_plan", [])],
+            user_check_results={check_id: [UserCheckResult(
+                item["reference_commit"], UserCheckOutcome(item["outcome"]), item["note"], item["recorded_at"],
+            ) for item in results] for check_id, results in raw.get("user_check_results", {}).items()},
             revision_source_run_id=str(raw.get("revision_source_run_id", "")),
             revision_request_id=str(raw.get("revision_request_id", "")),
             revision_request_text=str(raw.get("revision_request_text", "")),
@@ -2119,6 +2194,7 @@ def _task_result_from_dict(raw: dict[str, Any]) -> TaskResultRecord:
         files=_result_files_from_dict(raw), error=str(raw.get("error", "")), self_report=str(raw.get("self_report", "")),
         verification_status=str(raw.get("verification_status", "unverified")),
         passed_commands=[list(command) for command in raw.get("passed_commands", [])],
+        manual_verification_note=str(raw.get("manual_verification_note") or ""),
     )
 
 

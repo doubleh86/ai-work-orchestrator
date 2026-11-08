@@ -323,6 +323,63 @@ def test_direction_change_rpc_requires_explicit_request_and_routes_to_control_ba
         })
 
 
+def test_manual_handoff_rpc_requires_selected_task_and_observed_version() -> None:
+    rpc, application = service()
+    params = {"projectName": "sample", "runId": "run-1", "taskId": "one", "expectedCommit": "observed-head", "expectedRevision": 2}
+    rpc.dispatch("tasks.handoffToAi", params)
+    for invalid in ({"taskId": ""}, {"expectedCommit": ""}, {"expectedRevision": True}):
+        with pytest.raises(RpcError, match=next(iter(invalid))):
+            rpc.dispatch("tasks.handoffToAi", params | invalid)
+    assert application.calls == [
+        ("handoff_manual_task_to_ai", "sample", "run-1", "one", {"expected_commit": "observed-head", "expected_revision": 2}),
+    ]
+
+
+def test_manual_verification_rpc_binds_note_to_task_revision_and_commit() -> None:
+    rpc, application = service()
+    method = "tasks.completeManualVerification"
+    params = {"projectName": "sample", "runId": "run-1", "taskId": "https", "note": "브라우저 확인",
+              "expectedCommit": "observed-head", "expectedRevision": 2}
+    rpc.dispatch(method, params)
+    for invalid in ({"note": " "}, {"expectedCommit": ""}, {"expectedRevision": True}):
+        with pytest.raises(RpcError, match=next(iter(invalid))):
+            rpc.dispatch(method, params | invalid)
+    assert application.calls == [
+        ("complete_manual_verification", "sample", "run-1", "https", {
+            "note": "브라우저 확인", "expected_commit": "observed-head", "expected_revision": 2,
+        }),
+    ]
+
+
+def test_record_user_check_rpc_binds_outcome_to_revision_and_commit() -> None:
+    rpc, application = service()
+    method = "runs.recordUserCheck"
+    params = {"projectName": "sample", "runId": "run-1", "checkId": "browser", "outcome": "deferred", "note": "환경 대기",
+              "expectedCommit": "observed-head", "expectedRevision": 2}
+    rpc.dispatch(method, params)
+    for invalid in ({"checkId": ""}, {"outcome": ""}, {"expectedCommit": ""}, {"expectedRevision": True}):
+        with pytest.raises(RpcError, match=next(iter(invalid))):
+            rpc.dispatch(method, params | invalid)
+    assert application.calls == [
+        ("record_user_check", "sample", "run-1", "browser", {
+            "outcome": "deferred", "note": "환경 대기", "expected_commit": "observed-head", "expected_revision": 2,
+        }),
+    ]
+
+
+def test_manual_deferral_and_resume_require_a_task_and_route_separately_from_completion() -> None:
+    rpc, application = service()
+    params = {"projectName": "sample", "runId": "run-1"}
+    for method in ("tasks.deferManual", "tasks.resumeManual"):
+        with pytest.raises(RpcError, match="taskId"):
+            rpc.dispatch(method, params)
+        rpc.dispatch(method, {**params, "taskId": "https"})
+    assert application.calls == [
+        ("set_manual_task_deferred", "sample", "run-1", "https", {"deferred": True}),
+        ("set_manual_task_deferred", "sample", "run-1", "https", {"deferred": False}),
+    ]
+
+
 def test_retry_instruction_and_preview_status_have_separate_rpc_contracts() -> None:
     rpc, application = service()
     params = {"projectName": "sample", "runId": "run-1"}
@@ -939,6 +996,18 @@ def test_plan_update_and_confirmation_are_routed() -> None:
         ("update_plan", "sample", "run-1", [draft], {}),
         ("confirm_plan", "sample", "run-1", {}),
     ]
+
+
+def test_plan_update_forwards_optional_revision_and_rejects_invalid_revision() -> None:
+    rpc, application = service()
+    draft = {"id": "task-1", "title": "Task"}
+    params = {"projectName": "sample", "runId": "run-1", "tasks": [draft], "expectedRevision": 3}
+    rpc.dispatch("runs.updatePlan", params)
+    assert application.calls == [("update_plan", "sample", "run-1", [draft], {"expected_revision": 3})]
+    for invalid in (True, -1, "3", None):
+        with pytest.raises(RpcError):
+            rpc.dispatch("runs.updatePlan", {**params, "expectedRevision": invalid})
+    assert len(application.calls) == 1
 
 
 def test_next_execution_profile_rpc_requires_a_complete_current_snapshot() -> None:

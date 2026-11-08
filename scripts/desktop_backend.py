@@ -7,11 +7,11 @@ from subprocess import SubprocessError
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if sys.platform == "win32" and getattr(sys, "frozen", False):
-        if args == ["mcp-connect"]:
+        if args in (["mcp-connect"], ["mcp-connect", "--allow-planning"]):
             from ai_orchestrator.mcp_bundle import connect_packaged_mcp
 
             try:
-                registered = connect_packaged_mcp()
+                registered = connect_packaged_mcp(allow_planning=len(args) == 2)
             except (OSError, ValueError, RuntimeError, SubprocessError):
                 print("registration_failed")
                 return 2
@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError):
                 return 2
             return 0
-    if args[:1] == ["mcp"]:
+    if args[:1] in (["mcp"], ["mcp-register"]):
         from ai_orchestrator.cli import main as cli_main
 
         return cli_main(args)

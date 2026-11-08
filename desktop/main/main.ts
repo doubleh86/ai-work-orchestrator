@@ -80,6 +80,18 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+function registerCodexConnection(allowPlanning: boolean): Promise<CodexMcpRegistration> {
+  if (process.platform !== "win32" || !packagedBackend) return Promise.resolve("registration_failed");
+  const args = allowPlanning ? ["mcp-connect", "--allow-planning"] : ["mcp-connect"];
+  return new Promise((resolveRegistration) => {
+    execFile(packagedBackend, args, { cwd: dirname(packagedBackend), timeout: 45_000, windowsHide: true }, (error, stdout) => {
+      const status = stdout.trim();
+      if (!error && status === "registered") resolveRegistration("registered");
+      else resolveRegistration(status === "codex_missing" ? "codex_missing" : "registration_failed");
+    });
+  });
+}
+
 app.whenReady().then(() => {
   if (process.platform === "win32" && packagedBackend) {
     execFile(packagedBackend, ["mcp-stage"], { cwd: dirname(packagedBackend), timeout: 45_000, windowsHide: true }, (error) => {
@@ -87,16 +99,8 @@ app.whenReady().then(() => {
     });
   }
   ipcMain.handle("orchestrator:mcp-command", () => packagedBackend ?? null);
-  ipcMain.handle("orchestrator:mcp-register-codex", (): Promise<CodexMcpRegistration> => {
-    if (process.platform !== "win32" || !packagedBackend) return Promise.resolve("registration_failed");
-    return new Promise((resolveRegistration) => {
-      execFile(packagedBackend, ["mcp-connect"], { cwd: dirname(packagedBackend), timeout: 45_000, windowsHide: true }, (error, stdout) => {
-        const status = stdout.trim();
-        if (!error && status === "registered") resolveRegistration("registered");
-        else resolveRegistration(status === "codex_missing" ? "codex_missing" : "registration_failed");
-      });
-    });
-  });
+  ipcMain.handle("orchestrator:mcp-register-codex", () => registerCodexConnection(false));
+  ipcMain.handle("orchestrator:mcp-register-planning", () => registerCodexConnection(true));
   ipcMain.handle("orchestrator:codex-install-guide", () => shell.openExternal("https://learn.chatgpt.com/docs/codex/cli"));
   messageQueue = new PlanningMessageQueue(join(app.getPath("userData"), "queued-chat-messages.json"), planningRequests, bridge, chatControls);
   const menu: MenuItemConstructorOptions[] = [

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from ai_orchestrator.app_paths import application_config_root
-from ai_orchestrator.codex_sdk import CodexSdkError, CodexSdkManager, _new_client
+from ai_orchestrator.codex_sdk import CodexSdkError, CodexSdkManager, _new_client, installed_codex_executable
 from ai_orchestrator.registry import default_registry_path
 
 
@@ -93,6 +93,36 @@ def test_home_creation_failure_never_falls_back_to_shared_authentication(tmp_pat
             manager.close()
     assert state.status == "status_error" and state.error_code == "auth_permission_denied"
     create.assert_not_called()
+
+
+@pytest.mark.parametrize("source", ["override", "path", "standalone", "npm", "missing"])
+def test_packaged_codex_uses_external_native_executable(tmp_path, monkeypatch, source):
+    monkeypatch.delenv("AI_ORCHESTRATOR_CODEX", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+    relative = {
+        "override": "custom/codex.exe",
+        "path": "path/codex.exe",
+        "standalone": "local/Programs/OpenAI/Codex/bin/codex.exe",
+        "npm": "roaming/npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+    }.get(source)
+    with (patch("ai_orchestrator.codex_sdk.sys.platform", "win32"),
+          patch("ai_orchestrator.codex_sdk.platform.machine", return_value="AMD64")):
+        if relative is None:
+            with pytest.raises(FileNotFoundError, match="설치"):
+                installed_codex_executable()
+            return
+        executable = tmp_path / relative
+        executable.parent.mkdir(parents=True)
+        executable.touch(mode=0o700)
+        if source == "override":
+            monkeypatch.setenv("AI_ORCHESTRATOR_CODEX", str(executable))
+        with (patch("ai_orchestrator.codex_sdk.sys.frozen", True, create=True),
+              patch("ai_orchestrator.codex_sdk.application_config_root", return_value=tmp_path / "app"),
+              patch("openai_codex.Codex") as create):
+            _new_client()
+        assert create.call_args.args[0].codex_bin == str(executable)
 
 
 def test_symlink_home_is_rejected_before_runtime_start(tmp_path):
