@@ -199,28 +199,21 @@ function visibleText(tree) {
 const disclosure = (tree, label) => nodes(tree).find(node => node.type === 'details'
   && text(nodes(node.props.children).find(item => item.type === 'summary')) === label);
 
-test('task details keep technical content collapsed and poll logs only while both disclosures are open', () => {
-  const observed = [], task = taskFixture('one', { status: 'running', readiness: 'active', description: 'HTTP implementation details' });
+test('task details omit execution diagnostics and never load raw logs', () => {
+  const task = taskFixture('one', { status: 'running', readiness: 'active', description: '앱 화면을 만듭니다.',
+    expected_paths: ['src/internal-scope.cs'], forbidden_paths: ['private/internal-scope.cs'], verify_commands: [['internal-check-command']],
+    error: '{"transport":"sdk","detail":"internal diagnostic output"}' });
   const view = harness('MakerTaskDetails', { projectName: 'fixture', run: runFixture(), task, onUpdated() {}, onClose() {} }, {
-    source: 'MakerTaskDetails', modules: { './useTaskLog': { useTaskLog(key, enabled) {
-      observed.push({ key, enabled }); return { value: enabled ? 'SDK diagnostic output' : '', error: '', loading: false, refresh() {} };
-    } } },
+    source: 'MakerTaskDetails', modules: { './useTaskLog': { useTaskLog() { throw Error('Raw logs must not be loaded'); } } },
   });
-  let tree = view.render();
+  const tree = view.render();
   assert.match(visibleText(tree), /작업 중/);
-  assert.doesNotMatch(visibleText(tree), /HTTP implementation|완료 기준|SDK diagnostic|running|active|아직 완료 결과/);
-  assert.equal(observed.at(-1).enabled, false);
-  disclosure(tree, '자세히 보기').props.onToggle({ currentTarget: { open: true } }); tree = view.render();
-  assert.match(visibleText(tree), /HTTP implementation/); assert.doesNotMatch(visibleText(tree), /SDK diagnostic/);
-  assert.equal(observed.at(-1).enabled, false);
-  disclosure(tree, '실행 로그').props.onToggle({ currentTarget: { open: true } }); tree = view.render();
-  assert.equal(observed.at(-1).enabled, true); assert.equal(observed.at(-1).key, 'fixture/run/one');
-  assert.match(visibleText(tree), /SDK diagnostic/);
-  disclosure(tree, '실행 로그').props.onToggle({ currentTarget: { open: false } }); tree = view.render();
-  assert.equal(observed.at(-1).enabled, false);
-  disclosure(tree, '실행 로그').props.onToggle({ currentTarget: { open: true } }); tree = view.render();
-  disclosure(tree, '자세히 보기').props.onToggle({ currentTarget: { open: false } }); tree = view.render();
-  assert.equal(observed.at(-1).enabled, false); assert.doesNotMatch(visibleText(tree), /SDK diagnostic/); view.unmount();
+  assert.match(visibleText(tree), /확인할 문제/);
+  assert.doesNotMatch(renderToStaticMarkup(tree), /internal-scope|internal-check-command|internal diagnostic|실행 로그|추론 설정|running|active/);
+  const content = disclosure(tree, '작업 내용');
+  assert.notEqual(content.props.open, true); assert.match(text(content), /앱 화면을 만듭니다/);
+  assert.equal(button(tree, '로그 갱신'), undefined); assert.equal(button(tree, '전체 기록 파일 열기'), undefined);
+  assert.equal(view.calls.some(call => call.method === 'tasks.log'), false); view.unmount();
 });
 
 test('compact task view exposes problems and distinguishes saved results from verified completion', () => {
@@ -230,16 +223,16 @@ test('compact task view exposes problems and distinguishes saved results from ve
   let tree = view.render();
   assert.match(visibleText(tree), /확인이 필요해요/); assert.match(visibleText(tree), /확인할 문제/);
   assert.doesNotMatch(visibleText(tree), /Fixture transport|Detailed implementation|작업 검증을 통과/);
-  disclosure(tree, '자세히 보기').props.onToggle({ currentTarget: { open: true } });
-  tree = view.render(); assert.match(visibleText(tree), /Fixture transport failure/);
+  assert.doesNotMatch(renderToStaticMarkup(tree), /Fixture transport failure/);
   const completed = { ...task, status: 'completed', error: '', completed_commit: 'newer' };
   tree = view.render({ task: completed }); assert.match(visibleText(tree), /완료 결과 기록을 확인하지 못했습니다/);
   assert.doesNotMatch(text(tree), /Detailed implementation|작업 검증을 통과/);
   tree = view.render({ task: { ...completed, completed_commit: 'final', result_history: [{ ...result, verification_status: 'unverified' }] } });
   assert.match(visibleText(tree), /검증 기록을 확인/); assert.doesNotMatch(visibleText(tree), /작업 검증을 통과/);
   tree = view.render({ task: { ...completed, completed_commit: 'final' } });
-  assert.match(visibleText(tree), /작업 검증을 통과/); assert.match(visibleText(tree), /Detailed implementation report/);
-  assert.match(visibleText(tree), /src\/final.cs/); view.unmount();
+  assert.match(visibleText(tree), /작업 검증을 통과/);
+  assert.match(text(disclosure(tree, '작업 내용')), /Detailed implementation report/);
+  assert.doesNotMatch(renderToStaticMarkup(tree), /src\/final.cs|<code>/); view.unmount();
 });
 
 test('planned task model changes carry revision and preserve other task contracts', async () => {

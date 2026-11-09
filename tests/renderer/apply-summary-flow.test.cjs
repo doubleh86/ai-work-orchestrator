@@ -79,6 +79,27 @@ test('verification uses a repair request with its request ID while Main and Push
   ]);
 });
 
+test('work apply generates the required verification request id before asking for Push approval', async () => {
+  const initial = run(), inspected = verified(), calls = [];
+  const api = {
+    async request(method, params) {
+      assert.equal(method, 'runs.verifyAndRepair');
+      assert.equal(params.projectName, 'project'); assert.equal(params.runId, 'group');
+      assert.equal(typeof params.requestId, 'string');
+      assert.match(params.requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+      calls.push(['request', method]); return inspected;
+    },
+    async approve(method, params) {
+      assert.equal(method, 'runs.push'); assert.equal(params.workspaceMode, 'shared');
+      calls.push(['approve', method]); return null;
+    },
+  };
+  const { ui } = session([result(initial), result(inspected)],
+    (method, extra) => sendApplySummaryCommand(api, method, { projectName: 'project', runId: 'group', ...extra }));
+  assert.equal(await ui.perform('work', initial), 'cancelled');
+  assert.deepEqual(calls, [['request', 'runs.verifyAndRepair'], ['approve', 'runs.push']]);
+});
+
 test('a failed local verification can accept an independently verified repair without applying Main', async () => {
   const initial = run({ stage: 'failed', failed_step: 'verify', integration_control: { ...run().integration_control, remote_configured: false } });
   const inspected = verified({ integration_control: { ...verified().integration_control, remote_configured: false,

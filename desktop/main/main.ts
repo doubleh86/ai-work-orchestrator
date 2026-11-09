@@ -15,6 +15,7 @@ import { DESKTOP_WINDOW_BACKGROUND } from "../shared/theme";
 import type { WorkNotificationDismissScope, WorkNotificationSettings, StoredWorkNotification } from "../shared/workNotifications";
 import type { CodexAuthMethod } from "../shared/codexAuth";
 import { CodexAuthController } from "./codexAuth";
+import { DesktopTray } from "./desktopTray";
 import { NvidiaCredentialStore } from "./nvidiaCredentials";
 import { openTaskRecord } from "./taskRecord";
 import { openClaudeLogin } from "./claudeLogin";
@@ -36,6 +37,7 @@ const codexAuth = new CodexAuthController(bridge, {
 let notificationCenter: WorkNotificationCenter | undefined;
 let pendingNotificationOpen: StoredWorkNotification | undefined;
 let messageQueue: PlanningMessageQueue | undefined;
+let desktopTray: DesktopTray | undefined;
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -54,8 +56,11 @@ function createWindow(): BrowserWindow {
     },
   });
 
+  desktopTray?.attach(window);
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-prevent-unload", (event) => {
+    if (window.isMinimized()) window.restore();
+    window.show();
     const choice = dialog.showMessageBoxSync(window, {
       type: "warning",
       title: "미저장 변경 있음",
@@ -67,6 +72,7 @@ function createWindow(): BrowserWindow {
       noLink: true,
     });
     if (choice === 1) event.preventDefault();
+    else desktopTray?.cancelQuit();
   });
   window.once("ready-to-show", () => window.show());
   const developmentUrl = process.env.VITE_DEV_SERVER_URL?.trim();
@@ -78,6 +84,15 @@ function createWindow(): BrowserWindow {
     );
   }
   return window;
+}
+
+function showMainWindow(): void {
+  if (backendStoppingForQuit) return;
+  const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed()) || createWindow();
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.moveTop();
+  window.focus();
 }
 
 function registerCodexConnection(allowPlanning: boolean): Promise<CodexMcpRegistration> {
@@ -366,26 +381,33 @@ app.whenReady().then(() => {
     }
     return planningRequests.interrupt(projectName, runId, requestId);
   });
+  try {
+    desktopTray = new DesktopTray(showMainWindow, () => app.quit());
+  } catch (error) {
+    process.stderr.write(`Tray setup failed: ${String(error)}\n`);
+    dialog.showErrorBox("트레이 준비 실패", "트레이를 만들 수 없어 창을 닫으면 앱이 종료됩니다. 앱을 다시 실행해 주세요.");
+  }
   createWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
+  app.on("activate", showMainWindow);
 });
 
+app.on("before-quit", () => desktopTray?.beginQuit());
+
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
+  if (process.platform !== "darwin" && !desktopTray?.isAvailable()) {
     app.quit();
   }
 });
 
 let backendStoppedForQuit = false;
+let backendStoppingForQuit = false;
 
 // Stop the backend only after every window has accepted closing its drafts.
 app.on("will-quit", (event) => {
   if (backendStoppedForQuit) return;
   event.preventDefault();
+  if (backendStoppingForQuit) return;
+  backendStoppingForQuit = true;
   ipcMain.removeHandler("orchestrator:request");
   ipcMain.removeHandler("orchestrator:codex-auth-status");
   ipcMain.removeHandler("orchestrator:codex-auth-start");
@@ -415,6 +437,7 @@ app.on("will-quit", (event) => {
   codexAuth.clear();
   void bridge.stop().finally(() => {
     backendStoppedForQuit = true;
+    desktopTray?.destroy();
     app.quit();
   });
 });

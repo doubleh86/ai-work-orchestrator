@@ -9,7 +9,10 @@ type OperationsResult = { run: RunState; snapshot: OperationsSnapshot };
 
 export function sendApplySummaryCommand(api: Pick<DesktopApi, "request" | "approve">,
   method: ApplySummaryMethod, params: RpcParams): Promise<RunState | null> {
-  return method === "runs.verifyAndRepair" ? api.request<RunState>(method, params) : api.approve<RunState>(method, params);
+  if (method === "runs.verifyAndRepair") {
+    return api.request<RunState>(method, params.requestId === undefined ? { ...params, requestId: crypto.randomUUID() } : params);
+  }
+  return api.approve<RunState>(method, params);
 }
 
 export function applySummaryTitle(run: RunState | undefined): string {
