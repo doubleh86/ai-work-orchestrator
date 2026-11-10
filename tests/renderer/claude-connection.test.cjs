@@ -55,7 +55,7 @@ test('old backends, missing account data and API authentication never invent a s
   for(const data of [connected({account_email:undefined,plan_type:undefined}),connected({auth_method:'api_key'}),connected({auth_method:'external'})]){
     const details=view.details(data);
     if(data.auth_method==='claude_subscription') {assert.match(details.email,/제공되지/);assert.match(details.plan,/제공되지/)}
-    else {assert.doesNotMatch(details.email,/claude@example/);assert.match(details.plan,/제공되지/)}
+    else {assert.doesNotMatch(details.email,/claude@example/);assert.match(details.plan,data.auth_method==='api_key'?/별도 과금/:/제공되지/)}
   }
   assert.equal(view.details(connected({authenticated:null})),undefined);
   assert.equal(view.details(connected({authenticated:false})),undefined);view.unmount();

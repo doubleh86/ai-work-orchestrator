@@ -119,6 +119,15 @@ const api: DesktopApi = {
   openClaudeLogin() {
     return ipcRenderer.invoke("orchestrator:claude-login");
   },
+  claudeCredentialStatus() {
+    return ipcRenderer.invoke("orchestrator:claude-credential-status");
+  },
+  saveClaudeCredential(key) {
+    return ipcRenderer.invoke("orchestrator:claude-credential-save", key);
+  },
+  deleteClaudeCredential() {
+    return ipcRenderer.invoke("orchestrator:claude-credential-delete");
+  },
   nvidiaCredentialStatus() {
     return ipcRenderer.invoke("orchestrator:nvidia-credential-status");
   },

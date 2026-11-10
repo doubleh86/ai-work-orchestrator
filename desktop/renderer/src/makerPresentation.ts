@@ -51,6 +51,11 @@ export function makerStage(run: Pick<RunSummary, "stage">): string {
 }
 
 export function latestMakerRun(runs: RunSummary[]): RunSummary | undefined {
-  return [...runs].filter(run => !run.archived).sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
-    ?? [...runs].sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+  return [...runs].filter(run => !run.archived).sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+}
+
+export function makerRunTitle(summary: string): string {
+  const title = summary.replace(/\s+/gu, " ").trim();
+  const characters = Array.from(title);
+  return characters.length > 36 ? `${characters.slice(0, 35).join("").trimEnd()}…` : title;
 }

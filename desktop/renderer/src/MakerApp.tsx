@@ -6,14 +6,15 @@ import { MakerNotifications } from "./MakerNotifications";
 import { MakerRunControls } from "./MakerRunControls";
 import { MakerTaskDetails } from "./MakerTaskDetails";
 import { MakerProgress } from "./MakerProgress";
+import { MakerRunPicker } from "./MakerRunPicker";
 import type { StoredWorkNotification } from "../../shared/workNotifications";
 import { WorkDialog } from "./WorkDialog";
 import { UserChecks, type UserCheckInput } from "./UserChecks";
-import { latestMakerRun, mcpConnectionPrompt, makerStage, readMcpConnectionGuide, type McpConnectionGuide } from "./makerPresentation";
+import { latestMakerRun, mcpConnectionPrompt, makerStage, makerRunTitle, readMcpConnectionGuide, type McpConnectionGuide } from "./makerPresentation";
 import type { RegisteredProject, RunState, RunSummary } from "./types";
 
 interface ProjectCard { project: RegisteredProject; runs: RunSummary[]; error: string }
-interface Selection { project: string; runId: string }
+interface Selection { project: string; runId: string; allowArchived?: boolean }
 interface ResultArtifact {
   status: string; can_launch: boolean; reason: string; kind?: "web" | "windows" | "macos" | "android";
   digest?: string; relative_path?: string; verification_scope?: "task" | "integration"; devices?: { id: string; name: string }[];
@@ -62,7 +63,7 @@ export function MakerApp() {
   }, [loadProjects, page]);
   useEffect(() => {
     setRun(undefined); setRunError(""); setRunReadAt(0);
-    if (!selection || page !== "projects") return;
+    if (!selection?.runId || page !== "projects") return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
@@ -81,7 +82,7 @@ export function MakerApp() {
   useEffect(() => { main.current?.scrollTo({ top: 0 }); heading.current?.focus({ preventScroll: true }); }, [selection, page]);
   function openNotification(item: StoredWorkNotification) {
     if (!item.project_name || !item.run_id) { setPage("notifications"); return; }
-    setPage("projects"); setSelection({ project: item.project_name, runId: item.run_id });
+    setPage("projects"); setSelection({ project: item.project_name, runId: item.run_id, allowArchived: true });
     setTaskId(item.target_kind === "task" ? item.target_id : "");
     setDialog(item.summary_code === "plan_confirmation_required" ? "plan" : undefined);
   }
@@ -117,6 +118,17 @@ export function MakerApp() {
     } finally { setSaving(false); }
   }
   const selectedCard = cards.find(card => card.project.name === selection?.project);
+  useEffect(() => {
+    if (run?.archive && selectedCard?.runs.some(item => item.id === run.id && !item.archived)) {
+      const cleanupStatus = run.archive.cleanup_status;
+      setCards(current => current.map(card => card.project.name === selection?.project
+        ? { ...card, runs: card.runs.map(item => item.id === run.id ? { ...item, archived: true, cleanup_status: cleanupStatus } : item) } : card));
+    }
+    if (page !== "projects" || !selection?.runId || selection.allowArchived) return;
+    if (!run?.archive && !selectedCard?.runs.some(item => item.id === selection.runId && item.archived)) return;
+    const latest = latestMakerRun(selectedCard?.runs.filter(item => item.id !== selection.runId) || []);
+    setTaskId(""); setSelection({ project: selection.project, runId: latest?.id || "" });
+  }, [page, selection, run?.archive, selectedCard]);
   const finishedTasks = new Set(run?.tasks.filter(task => ["completed", "merged"].includes(task.status)).map(task => task.id));
   return <>
     <div className="maker-shell">
@@ -131,8 +143,7 @@ export function MakerApp() {
         <div className="maker-project-nav"><p>프로젝트</p>{cards.map(card => <button key={card.project.name}
           className={selection?.project === card.project.name ? "is-current" : ""} onClick={() => {
             const latest = latestMakerRun(card.runs);
-            if (latest) { setPage("projects"); setTaskId(""); setSelection({ project: card.project.name, runId: latest.id }); }
-            else setDialog("connection");
+            setPage("projects"); setTaskId(""); setSelection({ project: card.project.name, runId: latest?.id || "" });
           }}><FolderOpen size={16} /><span>{card.project.name}</span></button>)}</div>
         <div className="maker-sidebar-bottom"><div className="maker-connection"><span className="maker-client-icon"><Sparkles size={18} /></span>
           <div><strong>외부 앱에서 기획·제어</strong><small>MCP 연결 프롬프트로 시작</small></div></div>
@@ -155,10 +166,16 @@ export function MakerApp() {
           <div className="maker-card-grid">{cards.map(card => <ProjectTile key={card.project.name} card={card} onOpen={runId => { setTaskId(""); setSelection({ project: card.project.name, runId }); }} onStart={() => setDialog("connection")} />)}</div>
         </div> : <div className="maker-content">
           <button className="maker-back" onClick={() => { setPage("projects"); setSelection(undefined); setTaskId(""); }}><ArrowLeft size={16} />프로젝트 목록</button>
-          <div className="maker-page-heading"><div><p className="maker-eyebrow">내 프로젝트</p><h1 ref={heading} tabIndex={-1}>{selection.project}</h1><p>{run?.summary || "제작 내용을 확인하고 있어요."}</p></div><p className="maker-muted">수정·추가 요청은 연결한 외부 앱에서 이야기하세요.</p></div>
-          {selectedCard && selectedCard.runs.length > 1 ? <label className="maker-run-picker">작업 선택<select value={selection.runId} onChange={event => setSelection({ project: selection.project, runId: event.target.value })}>{selectedCard.runs.map(item => <option key={item.id} value={item.id}>{item.summary || item.id}{item.archived ? " · 보관됨" : ""}</option>)}</select></label> : null}
+          <div className="maker-page-heading"><div><p className="maker-eyebrow">내 프로젝트</p><h1 ref={heading} tabIndex={-1}>{selection.project}</h1>
+            {run?.summary && makerRunTitle(run.summary) !== run.summary.trim() ? <details className="maker-run-description"><summary>{makerRunTitle(run.summary)}</summary><p>{run.summary}</p></details>
+              : selection.runId ? <p>{run?.summary || "제작 내용을 확인하고 있어요."}</p> : null}
+          </div><p className="maker-muted">수정·추가 요청은 연결한 외부 앱에서 이야기하세요.</p></div>
+          {selectedCard ? <MakerRunPicker key={selection.project} runs={selectedCard.runs} selectedId={selection.runId} onSelect={(runId, archived) => {
+            setTaskId(""); setSelection({ project: selection.project, runId, allowArchived: archived });
+          }} /> : null}
           {runError ? <p className="maker-notice maker-notice--error" role="alert">현재 상태를 확인하지 못했습니다. {runError}</p> : null}
-          {!run ? <p className="maker-empty" role="status">제작 상태를 불러오고 있어요.</p> : <>
+          {!selection.runId ? <section className="maker-empty"><h2>진행할 작업이 없습니다</h2><button className="maker-button" onClick={() => setDialog("connection")}>새 채팅으로 시작</button></section>
+            : !run ? <p className="maker-empty" role="status">제작 상태를 불러오고 있어요.</p> : <>
             <MakerProgress run={run} checkedAt={runReadAt} readError={Boolean(runError)} completedCount={finishedTasks.size} onReviewPlan={() => setDialog("plan")} />
             {run.failure_message ? <details className="maker-failure-detail"><summary>문제 내용 보기</summary><p>{run.failure_message}</p></details> : null}
             <MakerRunControls key={`${selection.project}/${run.id}`} projectName={selection.project} run={run} onUpdated={acceptRun}
@@ -184,7 +201,8 @@ export function MakerApp() {
 
 export function ProjectTile({ card, onOpen, onStart }: { card: ProjectCard; onOpen(runId: string): void; onStart(): void }) {
   const latest = latestMakerRun(card.runs);
-  return <article className="maker-project-card"><div className="maker-project-visual"><FolderOpen size={40} /><span>{latest ? makerStage(latest) : "시작 준비"}</span></div><div className="maker-project-body"><h3>{card.project.name}</h3><p>{card.error || latest?.summary || "AI와 만들 내용을 정리해 주세요."}</p>{latest ? <><div className="maker-card-progress"><span>{latest.completed_task_count} / {latest.task_count} 작업 완료</span><progress value={latest.completed_task_count} max={Math.max(1, latest.task_count)} aria-label="제작 진행" /></div><button className="maker-button" onClick={() => onOpen(latest.id)}>프로젝트 열기<ArrowRight size={16} /></button></> : <button className="maker-button" onClick={onStart}>MCP 연결 프롬프트<ArrowRight size={16} /></button>}</div></article>;
+  const hasHistory = card.runs.some(run => run.archived);
+  return <article className="maker-project-card"><div className="maker-project-visual"><FolderOpen size={40} /><span>{latest ? makerStage(latest) : hasHistory ? "작업 없음" : "시작 준비"}</span></div><div className="maker-project-body"><h3>{card.project.name}</h3><p>{card.error || (latest ? makerRunTitle(latest.summary) : hasHistory ? "모든 작업을 보관했습니다." : "AI와 만들 내용을 정리해 주세요.")}</p>{latest ? <><div className="maker-card-progress"><span>{latest.completed_task_count} / {latest.task_count} 작업 완료</span><progress value={latest.completed_task_count} max={Math.max(1, latest.task_count)} aria-label="제작 진행" /></div><button className="maker-button" onClick={() => onOpen(latest.id)}>프로젝트 열기<ArrowRight size={16} /></button></> : hasHistory ? <button className="maker-button" onClick={() => onOpen("")}>프로젝트 열기<ArrowRight size={16} /></button> : <button className="maker-button" onClick={onStart}>MCP 연결 프롬프트<ArrowRight size={16} /></button>}</div></article>;
 }
 
 function PlanDialog({ selection, run, onClose, onConfirmed }: { selection: Selection; run: RunState; onClose(): void; onConfirmed(run: RunState): void }) {

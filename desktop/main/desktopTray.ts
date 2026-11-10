@@ -1,4 +1,4 @@
-import { Menu, nativeImage, Tray, type BrowserWindow } from "electron";
+import { app, Menu, nativeImage, Tray, type BrowserWindow } from "electron";
 
 // Embedded PNG keeps the tray icon available in both development and packaged apps.
 const TRAY_ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABE0lEQVR4nM2Xyw3DIAxAMwELZJ6MUCnnHHpgB24ZIEuwQkaolBE6QcZojWSkiGJD+Mg9vEsE9osxhAzPx3uQRDR5qYACJkADBtH4TPUUmIEd+CTYcWwzAfdmR0bikAPnVgmYgsQhplRga5Dcs90VaPHmWZWg1jwV7AQssCIWn6Xm/fRETIBrOJdkYZZtSYgcKYGZmfwCRia5Z8SxVJyZE6D2+ZmZ/CpBVWKnBBRjzZWdWw4qnooJUM13FiT3UFWYYgKaGGwrBCwRU8cEqL2/VgisREzzlwLiSyDehOLb0CF6EDnEj2KH6MeIa8ZQpNvnmDsTasi+kHhEr2QtK1F8Kb32hNi1PNyiIj8mIWK/Zl0QF/gClsjarhIexgQAAAAASUVORK5CYII=";
@@ -41,6 +41,10 @@ export class DesktopTray {
       if (this.quitting || !this.isAvailable()) return;
       event.preventDefault();
       window.hide();
+      if (process.platform === "darwin") {
+        try { app.dock?.hide(); }
+        catch (error) { process.stderr.write(`Dock hide failed: ${String(error)}\n`); }
+      }
     });
   }
 

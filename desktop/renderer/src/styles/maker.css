@@ -100,6 +100,14 @@
 .maker-notice--error { color: var(--mk-error); border-color: #edcfd6; background: #fff5f7; }
 .maker-run-picker { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 20px; color: var(--mk-muted); }
 .maker-run-picker select { max-width: 100%; min-width: 0; }
+.maker-run-navigation { min-width: 0; }
+.maker-archive-picker { margin-bottom: 20px; color: var(--mk-muted); }
+.maker-archive-picker > summary, .maker-run-description > summary { cursor: pointer; overflow-wrap: anywhere; }
+.maker-archive-picker > .maker-run-picker { margin: 12px 0 0; }
+.maker-page-heading > div { min-width: 0; }
+.maker-run-description { margin-top: 10px; color: var(--mk-muted); }
+.maker-run-description:not([open]) > summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.maker-run-description p { overflow-wrap: anywhere; white-space: pre-wrap; }
 .maker-dialog { --text: #25273d; --text-muted: #697087; --surface: #fff; --border: #e5e7f0; color: #25273d; background: #fff; max-width: min(650px, calc(100vw - 32px)); border-color: #e5e7f0; color-scheme: light; }
 .maker-dialog .work-dialog__heading { background: #fff; color: #25273d; }
 .maker-dialog .work-dialog__body { display: grid; gap: 20px; }

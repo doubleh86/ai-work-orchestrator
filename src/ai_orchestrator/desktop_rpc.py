@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from .account_usage import AccountUsage, read_claude_quota
+from .claude_credentials import claude_credential_scope
 from .codex_sdk import CodexSdkManager, read_codex_quota
 from .code_style import ProjectCodeStylePreference, inspect_project_code_style
 from .config import create_default_config, load_config, resolve_workspace_location, supported_models, supported_reasoning_efforts
@@ -1849,6 +1850,9 @@ def handle_request(service: RpcService, raw: object) -> dict[str, object]:
     request_id: object = None
     credential = raw.get("nvidia_api_key") if isinstance(raw, dict) else None
     secrets = [credential] if isinstance(credential, str) else []
+    claude_credential = raw.get("claude_api_key") if isinstance(raw, dict) else None
+    if isinstance(claude_credential, str) and claude_credential.strip():
+        secrets.append(claude_credential.strip())
     if isinstance(raw, dict) and raw.get("method") == "auth.codex.apiKey" and isinstance(raw.get("params"), dict):
         codex_key = raw["params"].get("apiKey")
         if isinstance(codex_key, str) and codex_key.strip():
@@ -1871,7 +1875,7 @@ def handle_request(service: RpcService, raw: object) -> dict[str, object]:
         method = raw.get("method")
         if not isinstance(method, str) or not method.strip():
             raise RpcError("invalid_request", "method must be a non-empty string")
-        with nvidia_credential_scope(raw.get("nvidia_api_key"), model_credentials):
+        with nvidia_credential_scope(raw.get("nvidia_api_key"), model_credentials), claude_credential_scope(claude_credential):
             result = service.dispatch(method.strip(), raw.get("params"))
         return {"id": request_id, "result": _json_value(result)}
     except RpcError as exc:

@@ -15,7 +15,7 @@ execFileSync(process.execPath, [resolve(dirname(pkg), require(pkg).bin.tsc), '--
   '--module', 'commonjs', '--jsx', 'react-jsx', '--skipLibCheck', '--outDir', output,
   'desktop/renderer/src/MakerApp.tsx', 'desktop/renderer/src/global.d.ts'], { cwd: root, stdio: 'inherit' });
 const file = join(output, 'renderer/src/MakerApp.js'), local = createRequire(file);
-const { latestMakerRun, mcpConnectionPrompt, readMcpConnectionGuide } = require(join(output, 'renderer/src/makerPresentation.js'));
+const { latestMakerRun, makerRunTitle, mcpConnectionPrompt, readMcpConnectionGuide } = require(join(output, 'renderer/src/makerPresentation.js'));
 const guide = { command: 'C:\\Orchestrator App\\server.exe', args: ['mcp', '--registry', 'C:\\My Data\\projects.json', '--allow-control'],
   registration_command: 'C:\\Orchestrator App\\server.exe', registration_args: ['mcp-register', '--registry', 'C:\\My Data\\projects.json'] };
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -117,6 +117,8 @@ test('plan confirmation carries the displayed revision and cannot silently start
 
 test('project selection prefers active work and prompt contains helper, paths and multi-worker boundaries', () => {
   assert.equal(latestMakerRun([{ id: 'old', archived: false, updated_at: '1' }, { id: 'archive', archived: true, updated_at: '9' }]).id, 'old');
+  assert.equal(latestMakerRun([{ id: 'archive', archived: true, updated_at: '9' }]), undefined);
+  assert.equal(latestMakerRun([{ id: 'done', stage: 'pushed', archived: false, updated_at: '2' }]).id, 'done');
   const prompt = mcpConnectionPrompt(readMcpConnectionGuide(guide));
   assert.ok(prompt.includes(JSON.stringify({ command: guide.command, args: guide.args }, null, 2)));
   assert.match(prompt, /mcp-register/); assert.match(prompt, /여러 작업 AI·모델·계정 설정은 그대로 유지/);
@@ -127,6 +129,60 @@ test('project selection prefers active work and prompt contains helper, paths an
   assert.match(prompt, /상태를 묻거나 요청한 후속 행동에 필요한 경우에만 상태를 조회/);
   assert.match(prompt, /처음 제작을 시작하기 전에 작업 AI·모델과 속도·품질·비용 기준을 짧게 확인/);
   assert.match(prompt, /이미 합의한 설정은 다시 묻거나 임의로 바꾸지 마/);
+});
+
+test('run picker separates archived history and bounds native option labels', () => {
+  const long = '작업 설명이 아주 길게 이어집니다. '.repeat(20), chosen = [];
+  const runs = [{ id: 'one', summary: long, archived: false }, { id: 'two', summary: '두 번째 작업', archived: false },
+    { id: 'old', summary: long, archived: true, cleanup_status: 'completed' }];
+  const view = harness('MakerRunPicker', { runs, selectedId: 'one', onSelect: (...args) => chosen.push(args) }, { source: 'MakerRunPicker' });
+  const tree = view.render(), selects = nodes(tree).filter(node => node.type === 'select');
+  assert.deepEqual(nodes(selects[0]).filter(node => node.type === 'option').map(node => node.props.value), ['one', 'two']);
+  assert.deepEqual(nodes(selects[1]).filter(node => node.type === 'option').map(node => node.props.value), ['', 'old']);
+  assert.notEqual(nodes(tree).find(node => node.type === 'details').props.open, true);
+  assert.ok(nodes(tree).filter(node => node.type === 'option').every(node => Array.from(text(node)).length <= 40));
+  assert.equal(Array.from(makerRunTitle('😀'.repeat(45))).length, 36);
+  assert.equal(makerRunTitle('짧은\n 제목'), '짧은 제목');
+  selects[0].props.onChange({ target: { value: 'two' } }); selects[1].props.onChange({ target: { value: 'old' } });
+  assert.deepEqual(chosen, [['two', false], ['old', true]]); view.unmount();
+});
+
+test('a project with only archived work stays empty until its history is explicitly selected', async () => {
+  const view = harness('MakerApp'); view.render();
+  view.calls[0].resolve([{ name: 'fixture' }]); await tick();
+  view.calls.at(-1).resolve([{ id: 'old', summary: '예전 작업', archived: true, updated_at: 'now' }]); await tick();
+  let tree = view.render(); button(tree, 'fixture').props.onClick(); tree = view.render();
+  assert.match(visibleText(tree), /진행할 작업이 없습니다/);
+  assert.equal(view.calls.some(call => call.method === 'runs.get'), false);
+  nodes(tree).find(node => node.type?.name === 'MakerRunPicker').props.onSelect('old', true); view.render();
+  assert.equal(view.calls.at(-1).params.runId, 'old');
+  view.calls.at(-1).resolve(runFixture({ id: 'old', summary: '예전 작업', archive: { cleanup_status: 'completed' } })); await tick();
+  tree = view.render(); view.render();
+  assert.equal(nodes(tree).find(node => node.type?.name === 'MakerRunControls').props.run.id, 'old');
+  const opened = [];
+  const tile = harness('ProjectTile', { card: { project: { name: 'fixture' }, runs: [{ id: 'old', summary: '예전 작업', archived: true }], error: '' },
+    onOpen: id => opened.push(id), onStart() {} });
+  const card = tile.render(); assert.doesNotMatch(text(card), /예전 작업|작업 완료/);
+  button(card, '프로젝트 열기').props.onClick(); assert.deepEqual(opened, ['']);
+  tile.unmount(); view.unmount();
+});
+
+test('archiving selected work moves to remaining work and keeps the full description folded', async () => {
+  const view = harness('MakerApp'), long = '길게 작성된 작업 설명입니다. '.repeat(20); view.render();
+  view.calls[0].resolve([{ name: 'fixture' }]); await tick();
+  view.calls.at(-1).resolve([{ id: 'run', summary: long, archived: false, updated_at: '2' },
+    { id: 'next', summary: '다음 작업', archived: false, updated_at: '1' }]); await tick();
+  let tree = view.render(); button(tree, 'fixture').props.onClick(); view.render();
+  view.calls.at(-1).resolve(runFixture({ summary: long })); await tick(); tree = view.render();
+  const description = nodes(tree).find(node => node.type === 'details' && node.props.className === 'maker-run-description');
+  assert.notEqual(description.props.open, true); assert.ok(text(description).includes(long));
+  assert.ok(Array.from(text(nodes(description).find(node => node.type === 'summary'))).length <= 36);
+  nodes(tree).find(node => node.type?.name === 'MakerRunControls').props.onUpdated(runFixture({ summary: long, archive: { cleanup_status: 'completed' } }));
+  view.render(); tree = view.render();
+  assert.equal(nodes(tree).find(node => node.type?.name === 'MakerRunPicker').props.runs.find(item => item.id === 'run').archived, true);
+  assert.equal(view.calls.at(-1).method, 'runs.get'); assert.equal(view.calls.at(-1).params.runId, 'next');
+  view.calls.at(-1).resolve(runFixture({ id: 'next', summary: '다음 작업' })); await tick(); tree = view.render();
+  assert.equal(nodes(tree).find(node => node.type?.name === 'MakerRunControls').props.run.id, 'next'); view.unmount();
 });
 
 test('new chat opens prompt copy without client selection or another idea form', () => {

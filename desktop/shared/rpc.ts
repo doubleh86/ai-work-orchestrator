@@ -160,6 +160,9 @@ export interface DesktopApi {
   registerCodexPlanning(): Promise<CodexMcpRegistration>;
   openCodexInstallGuide(): Promise<void>;
   openClaudeLogin(): Promise<boolean>;
+  claudeCredentialStatus(): Promise<import("./claudeCredentials").ClaudeCredentialStatus>;
+  saveClaudeCredential(key: string): Promise<import("./claudeCredentials").ClaudeCredentialStatus>;
+  deleteClaudeCredential(): Promise<import("./claudeCredentials").ClaudeCredentialStatus>;
   nvidiaCredentialStatus(): Promise<import("./nvidiaCredentials").NvidiaCredentialStatus>;
   saveNvidiaCredential(key: string, options?: import("./nvidiaCredentials").NvidiaCredentialOptions): Promise<import("./nvidiaCredentials").NvidiaCredentialStatus>;
   deleteNvidiaCredential(id?: string): Promise<import("./nvidiaCredentials").NvidiaCredentialStatus>;

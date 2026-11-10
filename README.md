@@ -15,7 +15,7 @@ Codex·Claude 앱에서 만들 내용을 정하고, 여러 작업 AI로 제작�
 [v0.6.0 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.6.0)에서 앱 ZIP 전체를 받아
 새 폴더에 압축을 풀고 `AI Work Orchestrator.exe`를 실행합니다. MCP만 사용할 때는 MCP 전용 ZIP을 받습니다.
 앱 실행에 Python·Node.js 설치는 필요하지 않습니다. Git과 작업 AI·프로젝트별 개발 도구는 별도로 준비합니다.
-ZIP은 v0.6.0 배포 시점의 UI입니다. 이후 연결·작업 상세·트레이 개선은 최신 소스에 반영되어 있습니다.
+ZIP은 v0.6.0 배포 시점의 UI입니다. 이후 API 키 연결·보관함·트레이 개선은 최신 소스에 반영되어 있습니다.
 
 ## 소스로 실행하기
 
@@ -50,10 +50,14 @@ macOS/Linux에서는 `python3 -m venv .venv`와 `.venv/bin/python -m pip install
 창의 닫기 버튼은 트레이로 숨기며 작업은 계속됩니다. 트레이 아이콘이나 `열기`로 창을
 다시 열고, 완전히 끝내려면 트레이 메뉴의 `종료`를 선택합니다.
 
+보관한 작업은 기본 목록에서 빠지고 **보관함**에서 열 수 있습니다. 긴 설명은 펼쳐서 확인합니다.
+
 연결 프롬프트에는 현재 실행 경로와 MCP 등록 도우미가 들어 있습니다.
 로컬 설정을 수정할 도구가 없는 대화 앱에서는 수동 설정이 필요할 수 있습니다.
 연결한 앱에서 도구 조회까지 확인하세요. CLI 명령은 `ai-orchestrator --help`를 참고합니다.
 Claude 실행 파일을 찾지 못하면 **작업 AI** 화면에서 직접 선택하고 연결을 다시 확인할 수 있습니다.
+**작업 AI → Claude → API 키로 연결**에서 Anthropic 키를 암호화해 저장·교체·삭제할 수 있습니다.
+Claude Code 설치가 필요하며 [API 사용량은 별도 과금](https://support.claude.com/en/articles/12304248-manage-api-key-environment-variables-in-claude-code)됩니다.
 
 ## 문서와 라이선스
 

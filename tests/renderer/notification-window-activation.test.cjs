@@ -18,7 +18,7 @@ execFileSync(process.execPath, [resolve(dirname(packagePath), require(packagePat
 const mainPath = join(output, 'main/main.js');
 const mainRequire = createRequire(mainPath);
 
-async function host({ trayUnavailable = false, stopBackend = () => Promise.resolve() } = {}) {
+async function host({ trayUnavailable = false, stopBackend = () => Promise.resolve(), platform = 'win32' } = {}) {
   const windows = [], notifications = [], handlers = new Map(), deferred = [], requests = [], trays = [], errors = [];
   const shutdown = { backend: 0, notifications: 0 };
   let focused, notificationHost;
@@ -55,15 +55,17 @@ async function host({ trayUnavailable = false, stopBackend = () => Promise.resol
     isDestroyed() { return this.destroyed; }
     destroy() { this.destroyed = true; }
   }
-  const app = Object.assign(new EventEmitter(), { quitCount: 0, whenReady: () => Promise.resolve(), getPath: () => output,
+  const dock = { visible: true, calls: [], isVisible() { return this.visible; }, hide() { this.calls.push('hide'); this.visible = false; },
+    show() { this.calls.push('show'); this.visible = true; return Promise.resolve(); } };
+  const app = Object.assign(new EventEmitter(), { quitCount: 0, dock, whenReady: () => Promise.resolve(), getPath: () => output,
     quit() { this.quitCount++; this.emit('before-quit'); } });
   const dialog = { choice: 0, showMessageBoxSync() { return this.choice; }, showErrorBox(...args) { errors.push(args); } };
   const electron = { app, BrowserWindow: Window, Notification: OsNotification, Tray,
-    nativeImage: { createFromDataURL: () => ({ isEmpty: () => false, setTemplateImage() {} }) },
+    nativeImage: { createFromDataURL: () => ({ isEmpty: () => false, resize() { return this; }, setTemplateImage() {} }) },
     ipcMain: { handle: (name, fn) => handlers.set(name, fn), removeHandler: name => handlers.delete(name) },
     Menu: { setApplicationMenu() {}, buildFromTemplate: template => template }, clipboard: {}, shell: {}, dialog };
   const bridge = { bundledBackendExecutable() {}, PythonBridge: class {
-    setNvidiaApiKey() {} start() {} request(...args) { requests.push(args); return Promise.resolve(); }
+    setNvidiaApiKey() {} setClaudeApiKey() {} start() {} request(...args) { requests.push(args); return Promise.resolve(); }
     stop() { shutdown.backend++; return stopBackend(); }
   } };
   const center = { WorkNotificationCenter: class {
@@ -73,16 +75,16 @@ async function host({ trayUnavailable = false, stopBackend = () => Promise.resol
   } };
   const desktopTray = {};
   runInNewContext(readFileSync(join(output, 'main/desktopTray.js'), 'utf8'), {
-    exports: desktopTray, require: name => name === 'electron' ? electron : mainRequire(name), process: { platform: 'win32' },
+    exports: desktopTray, require: name => name === 'electron' ? electron : mainRequire(name), process: { platform, stderr: { write() {} } },
   });
   runInNewContext(readFileSync(mainPath, 'utf8'), { exports: {}, __dirname: dirname(mainPath),
-    process: { platform: 'win32', resourcesPath: output, env: {}, stderr: { write() {} } },
+    process: { platform, resourcesPath: output, env: {}, stderr: { write() {} } },
     setImmediate: fn => deferred.push(fn),
     require: name => name === 'electron' ? electron : name === './pythonBridge' ? bridge
       : name === './workNotifications' ? center : name === './desktopTray' ? desktopTray
       : name === './codexAuth' ? { CodexAuthController: class { clear() {} } } : mainRequire(name) });
   await Promise.resolve();
-  return { windows, notifications, handlers, deferred, requests, Window, app, trays, dialog, errors, shutdown,
+  return { windows, notifications, handlers, deferred, requests, Window, app, dock, trays, dialog, errors, shutdown,
     get notificationHost() { return notificationHost; }, setFocused(value) { focused = value; } };
 }
 const item = id => ({ event_id: id, project_name: 'project', run_id: id, target_kind: 'task', target_id: `task-${id}` });
@@ -105,6 +107,21 @@ test('window close hides without stopping work, and tray actions reopen the same
   }
   w.visible = false; w.calls = []; h.app.emit('activate');
   assert.deepEqual(w.calls, ['show', 'moveTop', 'focus']);
+});
+
+test('macOS close hides the Electron Dock icon and tray restore shows it again', async () => {
+  const h = await host({ platform: 'darwin' }), w = h.windows[0], tray = h.trays[0];
+  w.visible = true;
+  const close = cancellableEvent(); w.emit('close', close);
+  assert.equal(close.prevented, true);
+  assert.equal(w.visible, false);
+  assert.deepEqual(h.dock.calls, ['hide']);
+  assert.equal(h.app.quitCount, 0);
+  tray.menu.find(entry => entry.label === '열기').click();
+  await Promise.resolve();
+  assert.deepEqual(h.dock.calls, ['hide', 'show']);
+  assert.equal(w.visible, true);
+  assert.equal(h.windows.length, 1);
 });
 
 test('cancelling quit preserves drafts and restores close-to-tray for a later quit attempt', async () => {

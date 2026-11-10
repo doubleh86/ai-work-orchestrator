@@ -165,9 +165,16 @@ renderer ──typed preload API──> Electron main
   고정하고 요청 모델에 해당하는 키만 NVIDIA subprocess 환경에 주입한다. 다른 AI 환경이나
   OS 환경 변수는 바꾸지 않는다. 저장·삭제 후 다음 요청부터 반영하며 실행 중 작업과
   backend 프로세스를 재시작하지 않는다. 앱 키가 없으면 OS 환경 변수 설정을 사용한다.
+  Claude 앱 키도 main의 `ClaudeCredentialStore`가 safeStorage로 암호화해 userData에
+  저장한다. 고정 preload API는 키 없는 상태와 저장·삭제만 제공한다. 내부 JSON Lines의
+  `claude_api_key`와 요청별 credential scope를 통해 Pipeline 생성 당시 값을 유지하고,
+  Claude 인증 조회·작업 자식 환경에만 주입한다. 앱 키를 사용할 때 상속한 외부 인증·
+  endpoint·cloud provider 환경 변수는 이 자식에서만 제거한다. CLI의 관리 정책은
+  변경하지 않는다. 원문 출력·RPC 오류에서 키를 마스킹하고, 저장 상태와 실제 API 검증은
+  구분한다. 삭제하면 기존 CLI·환경 인증을 따르며 실행 중 작업은 재시작하지 않는다.
   모델 연결의 모델 ID는 수동 프로필 목록·계획 검증·실행 모델 검증에 포함한다. planner에는
   추가 모델 ID만 명시적으로 전달하며 비밀값·credential scope 접근은 추가하지 않는다.
-  공통 AI 연결 dialog는 Codex 로그인과 NVIDIA 키를 독립적으로 관리하며, 화면의 제공자
+  공통 AI 연결 dialog는 Codex 로그인·Claude 로그인/API 키·NVIDIA 키를 독립적으로 관리하며, 화면의 제공자
   선택으로 연결 해제·기본 실행 AI 변경·키 자동 순환을 수행하지 않는다.
   Claude Planning 채팅만 `Pipeline`이 소유한 session
   ID를 `--session-id`·`--resume`으로 전달한다. Claude의 Task·Review와 custom command는

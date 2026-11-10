@@ -173,6 +173,29 @@ test('credential changes affect subsequent requests across all roles and survive
   assert.equal(Object.hasOwn(frame, 'nvidia_api_key'), false); child.respond({ id: frame.id, result: [] }); await fallback;
 });
 
+test('Claude app credentials stay out of params and follow updates in existing and new Planning sessions', async () => {
+  const h = harness(); h.bridge.start(); h.bridge.setClaudeApiKey('first-claude-fixture');
+  const active = h.bridge.request('tasks.execute', { projectName: 'A' });
+  const old = h.children[2].requests[0];
+  const first = h.bridge.requestPlanning('runs.sendPlanningMessage', { projectName: 'A', runId: 'one' });
+  const session = h.children[3], firstFrame = session.requests[0];
+  assert.equal(firstFrame.claude_api_key, 'first-claude-fixture');
+  session.respond({ id: firstFrame.id, result: 'ready' }); await first;
+  h.bridge.setClaudeApiKey('next-claude-fixture');
+  const next = h.bridge.requestPlanning('runs.sendPlanningMessage', { projectName: 'A', runId: 'one' });
+  const nextFrame = session.requests[1];
+  assert.equal(nextFrame.claude_api_key, 'next-claude-fixture');
+  assert.equal(Object.hasOwn(nextFrame.params, 'claude_api_key'), false);
+  assert.equal(old.claude_api_key, 'first-claude-fixture');
+  session.respond({ id: nextFrame.id, result: 'updated' }); await next;
+  h.children[2].respond({ id: old.id, result: 'finished' }); await active;
+  h.bridge.setClaudeApiKey(undefined);
+  const fallback = h.bridge.request('auth.claude.status', {}), child = h.children[0], frame = child.requests.at(-1);
+  assert.equal(Object.hasOwn(frame, 'claude_api_key'), false);
+  child.respond({ id: frame.id, result: {} }); await fallback;
+  await h.bridge.stop();
+});
+
 test('model credential mappings are private snapshots and cannot be changed by renderer RPC params', async () => {
   const h = harness(); h.bridge.start();
   const bindings = { 'vendor/review': 'review-fixture' };

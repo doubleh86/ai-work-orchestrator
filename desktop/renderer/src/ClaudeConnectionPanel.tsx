@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, FolderOpen, RefreshCw, ShieldCheck, Terminal } from "lucide-react";
+import { ClaudeApiKeyConnection } from "./ClaudeApiKeyConnection";
 
 export interface ClaudeConnectionStatus {
   installed: boolean;
@@ -22,7 +23,7 @@ export function claudeAccountDetails(status?: ClaudeConnectionStatus): { email: 
   return {
     email: status.auth_method === "api_key" ? "API 인증 · 계정 이메일을 제공하지 않습니다" : "외부 인증 · 계정 이메일을 제공하지 않습니다",
     method: status.auth_method === "api_key" ? "API 인증" : "외부 인증",
-    plan: "구독 요금제 정보가 제공되지 않습니다",
+    plan: status.auth_method === "api_key" ? "Anthropic API 사용량에 따라 별도 과금" : "구독 요금제 정보가 제공되지 않습니다",
   };
 }
 
@@ -120,10 +121,11 @@ export function ClaudeConnectionPanel({ visible, onChanged, onStatusChange, onCo
   const connected = status?.authenticated === true;
   const account = claudeAccountDetails(status);
   const state = action === "refresh" ? "checking" : connected ? "connected" : error || status?.authenticated === null ? "status_error" : "signed_out";
-  const title = action === "refresh" ? "연결 확인 중…" : connected ? `연결 완료 · ${status.message}` : error ? "연결 확인 실패" : status?.message || "연결 확인 필요";
+  const title = action === "refresh" ? "연결 확인 중…" : connected ? status.auth_method === "api_key" ? "API 키 설정됨" : `연결 완료 · ${status.message}`
+    : error ? "연결 확인 실패" : status?.message || "연결 확인 필요";
   const description = action === "refresh" ? "Claude 로그인 상태를 확인하고 있어요."
-    : connected ? "이제 Claude를 작업에 사용할 수 있어요."
-      : status?.installed ? "Claude로 로그인하려면 아래 버튼을 누르세요."
+    : connected ? status.auth_method === "api_key" ? "실제 API 연결은 작업 실행 시 확인합니다." : "이제 Claude를 작업에 사용할 수 있어요."
+      : status?.installed ? "Claude 로그인이나 API 키로 연결하세요."
         : status?.selected_executable ? "선택한 실행 파일을 사용할 수 없습니다. 다시 선택하거나 자동 탐색으로 돌아가세요."
           : status ? "Claude Code를 설치했는데도 찾지 못한다면 실행 파일을 직접 선택하세요." : "연결 상태를 다시 확인해 주세요.";
   return <section className="claude-connection-panel ai-auth-content" aria-label="Claude 연결">
@@ -145,6 +147,7 @@ export function ClaudeConnectionPanel({ visible, onChanged, onStatusChange, onCo
       {!connected && (status?.selected_executable || error) ? <button className="button button--quiet" type="button" disabled={busy}
         onClick={() => void resetExecutable()}>{action === "reset" ? "복구 중…" : "자동 탐색으로 돌아가기"}</button> : null}
     </footer>
+    <ClaudeApiKeyConnection visible={visible} busy={busy} onChanged={refresh} />
     <details className="ai-connection-options">
       <summary>{connected ? "연결 관리" : "설치·터미널 안내"}</summary>
       <div className="ai-connection-options__body">

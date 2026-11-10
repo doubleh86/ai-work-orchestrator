@@ -214,6 +214,7 @@ export function requestTimeoutMilliseconds(method: RpcMethod): number | undefine
 export class PythonBridge {
   private readonly planningSessions = new Map<string, { bridge: PythonBridge; active: number; idle?: NodeJS.Timeout }>();
   private nvidiaApiKey: string | undefined;
+  private claudeApiKey: string | undefined;
   private nvidiaModelApiKeys: Readonly<Record<string, string>> = {};
   private controlProcess: ChildProcessWithoutNullStreams | null = null;
   private planningProcess: ChildProcessWithoutNullStreams | null = null;
@@ -232,6 +233,11 @@ export class PythonBridge {
     for (const session of this.planningSessions.values()) session.bridge.setNvidiaApiKey(key, modelKeys);
   }
 
+  setClaudeApiKey(key: string | undefined): void {
+    this.claudeApiKey = key;
+    for (const session of this.planningSessions.values()) session.bridge.setClaudeApiKey(key);
+  }
+
   async requestPlanning<Result>(method: RpcMethod, params: RpcParams): Promise<Result> {
     if (!PLANNING_REQUEST_METHODS.has(method)) return this.request<Result>(method, params);
     const key = JSON.stringify([params.projectName || "", params.runId || ""]);
@@ -240,6 +246,7 @@ export class PythonBridge {
       if (session?.idle) clearTimeout(session.idle);
       const bridge = new PythonBridge(this.backendExecutable);
       bridge.setNvidiaApiKey(this.nvidiaApiKey, this.nvidiaModelApiKeys);
+      bridge.setClaudeApiKey(this.claudeApiKey);
       bridge.startBackend("planning");
       session = { bridge, active: 0 };
       this.planningSessions.set(key, session);
@@ -382,7 +389,8 @@ export class PythonBridge {
     try {
       const credential = this.nvidiaApiKey === undefined ? {} : { nvidia_api_key: this.nvidiaApiKey };
       const modelCredentials = Object.keys(this.nvidiaModelApiKeys).length ? { nvidia_model_api_keys: this.nvidiaModelApiKeys } : {};
-      child.stdin.write(`${JSON.stringify({ id, method, params, ...credential, ...modelCredentials })}\n`, "utf8", (error) => {
+      const claudeCredential = this.claudeApiKey === undefined ? {} : { claude_api_key: this.claudeApiKey };
+      child.stdin.write(`${JSON.stringify({ id, method, params, ...credential, ...modelCredentials, ...claudeCredential })}\n`, "utf8", (error) => {
         if (!error || this.processFor(backend) !== child) return;
         this.closedChannels.add(child);
         this.failBackend(backend, error, "transport");

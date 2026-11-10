@@ -15,6 +15,7 @@ import { DESKTOP_WINDOW_BACKGROUND } from "../shared/theme";
 import type { WorkNotificationDismissScope, WorkNotificationSettings, StoredWorkNotification } from "../shared/workNotifications";
 import type { CodexAuthMethod } from "../shared/codexAuth";
 import { CodexAuthController } from "./codexAuth";
+import { ClaudeCredentialStore } from "./claudeCredentials";
 import { DesktopTray } from "./desktopTray";
 import { NvidiaCredentialStore } from "./nvidiaCredentials";
 import { openTaskRecord } from "./taskRecord";
@@ -89,6 +90,9 @@ function createWindow(): BrowserWindow {
 function showMainWindow(): void {
   if (backendStoppingForQuit) return;
   const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed()) || createWindow();
+  if (process.platform === "darwin" && app.dock && !app.dock.isVisible()) {
+    void app.dock.show().catch((error: unknown) => process.stderr.write(`Dock restore failed: ${String(error)}\n`));
+  }
   if (window.isMinimized()) window.restore();
   window.show();
   window.moveTop();
@@ -153,6 +157,12 @@ app.whenReady().then(() => {
   );
   const syncNvidiaCredentials = () => bridge.setNvidiaApiKey(nvidiaCredentials.apiKey(), nvidiaCredentials.modelApiKeys());
   syncNvidiaCredentials();
+  const claudeCredentials = new ClaudeCredentialStore(
+    join(app.getPath("userData"), "claude-api-key.bin"), safeStorage,
+    () => Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
+  );
+  const syncClaudeCredentials = () => bridge.setClaudeApiKey(claudeCredentials.apiKey());
+  syncClaudeCredentials();
   bridge.start();
   notificationCenter = new WorkNotificationCenter(
     join(app.getPath("userData"), "work-notifications.json"),
@@ -193,6 +203,17 @@ app.whenReady().then(() => {
     },
   );
   ipcMain.handle("orchestrator:nvidia-credential-status", () => nvidiaCredentials.status());
+  ipcMain.handle("orchestrator:claude-credential-status", () => claudeCredentials.status());
+  ipcMain.handle("orchestrator:claude-credential-save", (_event, key: unknown) => {
+    const status = claudeCredentials.save(key);
+    syncClaudeCredentials();
+    return status;
+  });
+  ipcMain.handle("orchestrator:claude-credential-delete", () => {
+    const status = claudeCredentials.delete();
+    syncClaudeCredentials();
+    return status;
+  });
   ipcMain.handle("orchestrator:claude-login", async () => {
     const status = await bridge.request<{ selected_executable?: unknown }>("auth.claude.status", {});
     if (status.selected_executable !== undefined && typeof status.selected_executable !== "string") {
@@ -409,6 +430,9 @@ app.on("will-quit", (event) => {
   if (backendStoppingForQuit) return;
   backendStoppingForQuit = true;
   ipcMain.removeHandler("orchestrator:request");
+  ipcMain.removeHandler("orchestrator:claude-credential-status");
+  ipcMain.removeHandler("orchestrator:claude-credential-save");
+  ipcMain.removeHandler("orchestrator:claude-credential-delete");
   ipcMain.removeHandler("orchestrator:codex-auth-status");
   ipcMain.removeHandler("orchestrator:codex-auth-start");
   ipcMain.removeHandler("orchestrator:codex-auth-api-key");
