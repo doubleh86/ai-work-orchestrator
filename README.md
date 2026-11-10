@@ -12,10 +12,10 @@ Codex·Claude 앱에서 만들 내용을 정하고, 여러 작업 AI로 제작�
 
 ## Windows에서 바로 실행하기
 
-[v0.6.0 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.6.0)에서 앱 ZIP 전체를 받아
+[v0.7.0 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.7.0)에서 앱 ZIP 전체를 받아
 새 폴더에 압축을 풀고 `AI Work Orchestrator.exe`를 실행합니다. MCP만 사용할 때는 MCP 전용 ZIP을 받습니다.
 앱 실행에 Python·Node.js 설치는 필요하지 않습니다. Git과 작업 AI·프로젝트별 개발 도구는 별도로 준비합니다.
-ZIP은 v0.6.0 배포 시점의 UI입니다. 이후 API 키 연결·보관함·트레이 개선은 최신 소스에 반영되어 있습니다.
+v0.7.0 ZIP에는 API 키 연결·보관함·트레이 개선을 포함합니다.
 
 ## 소스로 실행하기
 
