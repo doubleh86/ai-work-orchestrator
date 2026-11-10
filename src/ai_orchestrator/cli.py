@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .codex_sdk import CodexSdkManager
+from .claude_credentials import current_claude_api_key
 from .config import ConfigError, create_default_config, load_config
 from .models import ProviderStatus, RunLockStatus, RunState, WorkspaceStatus
 from .pipeline import Pipeline, PipelineError
@@ -313,7 +314,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         config = load_config(args.config)
         codex_sdk = CodexSdkManager()
-        pipeline = Pipeline(config, codex_sdk=codex_sdk)
+        pipeline = Pipeline(
+            config, codex_sdk=codex_sdk,
+            account_usage_reader=lambda provider, key=current_claude_api_key(): Pipeline.account_usage(provider, claude_api_key=key),
+        )
         if args.command == "start":
             state = pipeline.start(args.spec)
         elif args.command == "clarify":

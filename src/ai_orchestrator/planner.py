@@ -14,7 +14,7 @@ from .document_index import SUPPORTED_DOCUMENT_SUFFIXES
 from .models import (
     EffortMode, PlanningMode, ProfileSource, ReviewStatus, RiskLevel, TaskReadiness, TechStackComponents, TechStackOption, UserCheck, WorkTask,
 )
-from .model_selection import AUTOMATIC_CODEX_MODELS, CODEX_SOL_MODEL, select_codex_model
+from .model_selection import AUTOMATIC_CODEX_MODELS, CODEX_SOL_MODEL, automatic_claude_profile, select_claude_model, select_codex_model
 
 TAGGED_TASK = re.compile(r"^\s*[-*]\s+\[([^\]]+)\]\s+(.+?)\s*$")
 PLAIN_TASK = re.compile(r"^\s*[-*]\s+(?!\[[ xX]\]\s)(.+?)\s*$")
@@ -1355,6 +1355,13 @@ def _assign_agents(
             decision = select_codex_model(effort_mode or EffortMode.BALANCED, purpose="task", task=task, reasoning_effort=recommended_effort)
             task.model, task.reasoning_effort = decision.model, decision.reasoning_effort
             task.profile_source = ProfileSource.MODE
+            task.effort_baseline_reasoning = recommended_effort
+            task.model_selection_reason = decision.reason
+        elif selected.provider_id == "claude" and automatic_claude_profile(task.profile_source, selected_model):
+            decision = select_claude_model(effort_mode or EffortMode.BALANCED, purpose="task", task=task, reasoning_effort=recommended_effort)
+            task.model = decision.model
+            task.reasoning_effort = recommended_effort if manual and recommended_effort else decision.reasoning_effort
+            task.profile_source = ProfileSource.MANUAL if manual and recommended_effort else ProfileSource.MODE
             task.effort_baseline_reasoning = recommended_effort
             task.model_selection_reason = decision.reason
         assigned[selected.id] += 1

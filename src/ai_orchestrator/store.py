@@ -110,6 +110,16 @@ class StateStore:
                     raise ValueError(f"invalid next execution policy reference: {path}")
                 if item["applied_policy_id"]:
                     EffortProfileSnapshot.from_dict(item.get("policy_baseline"))
+            if "quota_fallback" in item:
+                selected = EffortProfileSnapshot.from_dict(item["quota_fallback"])
+                if ("applied_policy_id" not in item or selected.profile_source not in {ProfileSource.MODE, ProfileSource.ROUTING}
+                        or not isinstance(item.get("quota_exhausted_provider"), str)
+                        or not isinstance(item.get("quota_model_selection_reason"), str)
+                        or "quota_baseline_reasoning" not in item
+                        or item["quota_baseline_reasoning"] is not None and not isinstance(item["quota_baseline_reasoning"], str)
+                        or item["selection"] != {"agent_id": selected.agent_id, "model": selected.model,
+                                                 "reasoning_effort": selected.reasoning_effort}):
+                    raise ValueError(f"invalid quota fallback profile: {path}")
         return profiles
 
     def save_task_execution_profiles(self, run_id: str, profiles: dict[str, dict[str, object]]) -> None:

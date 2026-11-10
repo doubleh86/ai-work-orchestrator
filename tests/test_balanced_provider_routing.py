@@ -24,11 +24,11 @@ def assign(selected_tasks, *, agents=AGENTS, routing=None, available=None, seque
     return plan.tasks
 
 
-def test_auto_profiles_balance_by_provider_and_use_configured_models_without_adding_review():
+def test_auto_profiles_balance_by_provider_and_resolve_models_without_adding_review():
     selected = assign(tasks(6))
     assert [task.provider_id for task in selected] == ["codex", "claude"] * 3
-    assert [task.model for task in selected] == ["gpt-6.1-sol", "sonnet"] * 3
-    assert all(task.profile_source == (ProfileSource.MODE if task.provider_id == "codex" else ProfileSource.ROUTING) for task in selected)
+    assert [task.model for task in selected] == ["gpt-6.1-sol", "opus"] * 3
+    assert all(task.profile_source == ProfileSource.MODE for task in selected)
     assert all(task.review_status == ReviewStatus.NOT_REQUIRED and not task.reviewer_agent_id for task in selected)
     assert all(task.routing_reason == "connected provider workload balance" for task in selected)
 

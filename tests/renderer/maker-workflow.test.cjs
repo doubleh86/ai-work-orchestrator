@@ -82,8 +82,30 @@ test('result launch requires a ready artifact and sends the selected Android dev
   const call = view.calls.at(-1); assert.equal(call.method, 'runs.launchResult');
   assert.equal(call.params.expectedDigest, 'v1'); assert.equal(call.params.deviceId, 'two'); assert.equal(call.params.projectName, 'fixture');
   call.reject(Error('artifact changed')); await tick(); tree = view.render();
-  assert.match(renderToStaticMarkup(tree), /artifact changed/); assert.doesNotMatch(renderToStaticMarkup(tree), /실행을 요청했습니다/);
+  assert.match(renderToStaticMarkup(tree), /결과가 변경됐어요/); assert.doesNotMatch(renderToStaticMarkup(tree), /artifact changed|실행을 요청했습니다/);
+  view.calls.at(-1).resolve({ status: 'ready', can_launch: true, kind: 'android', digest: 'v2', reason: 'ready', devices: [] });
+  await tick(); tree = view.render(); assert.match(renderToStaticMarkup(tree), /결과가 변경됐어요/);
+  nodes(tree).find(node => node.type === 'button' && node.props['aria-label'] === '결과 새로 확인').props.onClick();
+  view.calls.at(-1).resolve({ status: 'ready', can_launch: true, kind: 'android', digest: 'v2', reason: 'ready', devices: [] });
+  await tick(); tree = view.render(); assert.doesNotMatch(renderToStaticMarkup(tree), /결과가 변경됐어요/);
   view.unmount();
+});
+
+test('result lookup failure uses a short explanation without raw Git paths or a rebuild prompt', async () => {
+  const view = harness('ResultPanel', { selection: { project: 'fixture', runId: 'run' } });
+  view.render();
+  const raw = "Error invoking remote method 'orchestrator:request': PythonBridgeRequestError: application_error: "
+    + 'worktree has uncommitted changes: M private/project/Runner.cs\n?? private/project/new-file.cs';
+  view.calls[0].reject(Error(raw)); await tick(); let tree = view.render();
+  let markup = renderToStaticMarkup(tree);
+  assert.match(markup, /변경사항이 남아 있어 아직 실행할 수 없어요/);
+  assert.doesNotMatch(markup, /PythonBridge|orchestrator:request|worktree|Runner\.cs|new-file\.cs|실행할 결과물을 준비/);
+  assert.equal(button(tree, '결과 실행하기'), undefined);
+  nodes(tree).find(node => node.type === 'button' && node.props['aria-label'] === '결과 새로 확인').props.onClick();
+  view.calls.at(-1).resolve({ status: 'unavailable', can_launch: false, reason: '변경사항이 남아 있어 아직 실행할 수 없어요.' });
+  await tick(); tree = view.render(); markup = renderToStaticMarkup(tree);
+  assert.match(markup, /변경사항이 남아 있어/);
+  assert.doesNotMatch(markup, /실행할 결과물을 준비/); view.unmount();
 });
 
 test('incompatible host and missing result offer preparation without a launch button', async () => {
@@ -107,9 +129,17 @@ test('connection prompt copy carries actual runtime and does not register or cha
 });
 
 test('plan confirmation carries the displayed revision and cannot silently start execution', async () => {
-  const run = { id: 'run', summary: '앱', plan_revision: 3, plan_approved_revision: 0, tasks: [] }, confirmed = [];
+  const summary = '만들고 싶은 앱의 설명이 길게 이어집니다. '.repeat(12), title = '앱 화면 정리와 사용성 개선 '.repeat(8);
+  const run = { id: 'run', summary, plan_revision: 3, plan_approved_revision: 0, tasks: [{ id: 'task-one', title,
+    description: 'INTERNAL_EXECUTION_RECORD '.repeat(100), acceptance_criteria: ['INTERNAL_COMPLETION_CRITERION'],
+    provider_id: 'INTERNAL_PROVIDER', agent_id: 'INTERNAL_AGENT', model: 'INTERNAL_MODEL' }] }, confirmed = [];
   const view = harness('PlanDialog', { selection: { project: 'fixture', runId: 'run' }, run, onClose() {}, onConfirmed: value => confirmed.push(value) });
-  button(view.render(), '이 계획으로 확정').props.onClick(); assert.equal(view.calls[0].method, 'runs.confirmPlan'); assert.equal(view.calls[0].params.expectedRevision, 3);
+  const tree = view.render(), markup = renderToStaticMarkup(tree);
+  assert.match(text(tree), /총 1개 작업/); assert.equal(nodes(tree).filter(node => node.type === 'li').length, 1);
+  assert.equal(text(nodes(tree).find(node => node.type === 'h3')), makerRunTitle(title));
+  assert.ok(text(tree).includes(makerRunTitle(summary))); assert.ok(!markup.includes(summary)); assert.ok(!markup.includes(title));
+  assert.doesNotMatch(markup, /INTERNAL_EXECUTION_RECORD|INTERNAL_COMPLETION_CRITERION|INTERNAL_PROVIDER|INTERNAL_AGENT|INTERNAL_MODEL/);
+  button(tree, '이 계획으로 확정').props.onClick(); assert.equal(view.calls[0].method, 'runs.confirmPlan'); assert.equal(view.calls[0].params.expectedRevision, 3);
   view.calls[0].resolve({}); await tick(); assert.equal(view.calls.at(-1).method, 'runs.get');
   view.calls.at(-1).resolve({ ...run, plan_approved_revision: 3 }); await tick();
   assert.match(renderToStaticMarkup(view.render()), /제작 시작을 요청하세요/); assert.equal(confirmed.length, 1); assert.equal(view.calls.some(call => call.method === 'runs.execute'), false); view.unmount();

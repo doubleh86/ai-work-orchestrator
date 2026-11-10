@@ -120,9 +120,8 @@
 .maker-dialog-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .maker-dialog-actions { justify-content: space-between; }
 .maker-connect-steps { margin: 0; padding-left: 24px; display: grid; gap: 10px; }
-.maker-plan-list { margin: 0; padding-left: 24px; display: grid; gap: 24px; }
-.maker-plan-list h3 { font-size: 15px; margin: 0 0 8px; }
-.maker-plan-list p, .maker-plan-list ul, .maker-plan-list small { font-size: 12px; color: #697087; }
+.maker-plan-list { margin: 0; padding-left: 24px; display: grid; gap: 12px; }
+.maker-plan-list h3 { font-size: 15px; margin: 0; overflow-wrap: anywhere; }
 .maker-shell .user-checks { margin: 0; background: transparent; border: 0; padding: 0; }
 .maker-shell .user-check-card { background: #f7f8fc; border-color: #e5e7f0; color: #25273d; }
 .maker-shell .user-check-card :is(p, li, label, summary, code) { color: #565d75; }

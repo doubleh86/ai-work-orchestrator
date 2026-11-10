@@ -72,6 +72,7 @@ IPC와 원자적인 상태 흐름을 우선한다.
 | `app_paths` | OS별 앱 사용자 설정 root의 경로 계산 | 디렉터리 생성, 인증·registry 내용 조회, 전역 환경 변경 |
 | `nvidia_agent` | 수동 NVIDIA 코딩 프로필, OpenCode argv·도구 권한, 완료 응답·사용량 해석과 키 마스킹 | Pipeline 상태 전이, Git 실행, 프로젝트 설정·키 저장 |
 | `provider_executable` | 외부 provider 실행 파일의 명시 경로·`PATH`·Claude 사용자 설치 경로 탐색 | 인증 정보 조회, provider 실행, 상태 전이 |
+| `account_usage` | 공급자 계정 한도 요약·소진 판정과 요청별 짧은 조회 캐시 | 작업 token 집계, 인증 변경, Task 배정·상태 전이 |
 | `planner` | 문서 형식 확인, 구조화 계획 검증, 작업 분해, 공급자 라우팅과 에이전트·리뷰어 배정 | 외부 AI 프로세스 실행, worktree 생성, 상태 파일 쓰기 |
 | `git` | Git·외부 명령 실행과 오류 변환 | 실행 단계 결정, 사용자 승인 판단 |
 | `store` | `RunState`와 Planning 결과 캐시의 원자적 저장·조회, run lock | 상태 전이 정책, Git 접근 |
@@ -259,7 +260,14 @@ renderer ──typed preload API──> Electron main
   AI 추천보다 우선한다. 일반 응답과 캐시 모두 배정 전에 복원하고 정확한 agent의 가용성·역량·
   모델·용량을 검증한다. 사용할 수 없는 수동 선택은 다른 AI로 대체하지 않고 실패시킨다.
   새 Task에는 기존 수동 선택을 전파하지 않으며 Task 설정의 명시적 변경은 그대로 허용한다.
-- `model_selection`은 Codex 자동 모델의 닫힌 허용 목록과 위험/역량/범위/작업 내용에 따른
+- CLI·desktop/MCP 호스트는 읽기 전용 계정 한도 reader를 Pipeline에 주입하고 Claude 인증을
+  요청 시점에 고정한다. 캐시는 Pipeline 인스턴스 안에서 최대 30초, 숫자 reset 시각까지다.
+  확인된 5시간·주간 한도 소진만 신규 자동 후보에서 제외하며 조회 실패·미제공·API 키는
+  소진으로 취급하지 않는다. dispatch 직전 미시작 자동 작업만 연결된 대안으로 전환한다.
+  수동·legacy·명시적 routing rule과 시작한 작업·리뷰 계약은 보존한다. 대안이 없으면 명시적으로
+  실패한다. 전환 snapshot과 원래 정책 근거를 기존 execution profile sidecar에 먼저 저장하고,
+  started 정책 검증은 그 기록과 일치하는 전환만 허용한다. 인증 방식을 자동 변경하지 않는다.
+- `model_selection`은 Codex·Claude 자동 모델의 닫힌 허용 목록과 위험/역량/범위/작업 내용에 따른
   순수 선택 규칙을 소유하며 `models`에만 의존한다. `planner`와 `effort_policy`가 같은 규칙으로
   계획·미리보기·기획 호출을 해석한다. 수동·레거시 출처는 보존한다. 자동 기획/원인 판단/충돌
   해결은 Sol, 절약의 명확한 낮은 위험 작은 수정은 Luna, 나머지는 Sol을 사용한다. SDK의
@@ -268,6 +276,11 @@ renderer ──typed preload API──> Electron main
   Task의 선택 이유와 정책 ID·실패 action 인덱스를 저장하고 재시작/호출 전 원래 고정 프로필과
   실패 근거를 대조한다. 원래 정책과 이전 사용량은 수정하지 않으며 v1/v2 정책은 그대로 해석한다.
   SDK·권한·파일 잠금·시간 초과·사용자 중지·범위 실패는 모델 승격으로 우회하지 않는다.
+  Claude 자동 선택은 일반 구현에 Sonnet, 높은 위험·민감 계약·설계·동시성·선행 필수 작업·
+  충돌·넓거나 불명확한 범위에 Opus를 사용한다. 집중과 내부 기획·원인 판단도 Opus다.
+  명시적인 버전 ID와 수동·레거시 프로필은 유지하고, 배정·미리보기·호출이 같은 규칙을 따른다.
+  실행 전에는 선택 이유를 기존 필드에 기록하고, 시작된 정책은 snapshot을 재사용한다.
+  Claude 실패 후의 새 자동 승격·재시도는 추가하지 않는다.
 - `RunState`는 task lifecycle과 dependency 상태에서 readiness와 차단 dependency를
   계산하고, `Pipeline`은 이 계산 결과로 실행 가능한 task를 선택한다.
 - `planner`는 예상 경로의 잠재 교집합으로 충돌 그룹과 자동 선행 관계를 계산한다.

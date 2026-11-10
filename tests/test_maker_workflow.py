@@ -15,7 +15,7 @@ from ai_orchestrator import mcp_bundle, result_artifacts
 from ai_orchestrator.config import AgentConfig, Config, ExecutionConfig, ProjectConfig
 from ai_orchestrator.desktop_rpc import DesktopApplication, RpcService
 from ai_orchestrator.mcp_operations import McpOperations
-from ai_orchestrator.models import RunState, Stage, UserCheck
+from ai_orchestrator.models import RunState, Stage, TaskStatus, UserCheck, WorkTask
 from ai_orchestrator.pipeline import Pipeline, PipelineError
 from ai_orchestrator.registry import ProjectRegistry
 from ai_orchestrator.result_artifacts import ResultArtifact, artifact_digest, artifact_path, inspect_result, launch_result
@@ -208,6 +208,48 @@ def test_result_registration_pins_verified_worktree_and_file_content(pipeline: P
     state.stage = Stage.EXECUTING
     pipeline.store.save(state)
     assert not pipeline.result_artifact_info(state.id)["can_launch"]
+
+
+@pytest.mark.parametrize("stage", [Stage.VERIFIED, Stage.EXECUTING])
+@pytest.mark.parametrize("tracked", [True, False])
+def test_dirty_result_is_explained_without_file_list_and_still_blocks_launch(pipeline: Pipeline, stage: Stage, tracked: bool) -> None:
+    state = RunState("dirty-result", "", "", str(pipeline.config.project.repo), "main", stage,
+                     plan_revision=1, plan_approved_revision=1)
+    worktree = pipeline._shared_run_worktree_path(state)
+    git(pipeline.config.project.repo, "worktree", "add", "-b", "ai/dirty-result", str(worktree))
+    output = worktree / "build" / "index.html"
+    output.parent.mkdir()
+    output.write_text("<h1>Fixture</h1>", encoding="utf-8")
+    state.execution_branch, state.execution_worktree = "ai/dirty-result", str(worktree)
+    state.verified_integration_head = pipeline.git.head(worktree)
+    state.tasks = [WorkTask("done", "완료", ["general"], status=TaskStatus.COMPLETED, completed_commit=state.verified_integration_head)]
+    pipeline.store.save(state)
+    registered = pipeline.register_result_artifact(state.id, kind="web", relative_path="build/index.html",
+                                                   expected_commit=state.verified_integration_head)
+    changed = worktree / (".gitignore" if tracked else "pending-private-file.txt")
+    original = changed.read_bytes() if tracked else None
+    changed.write_text("build/\n# pending change\n" if tracked else "preserve this change", encoding="utf-8")
+    contents = changed.read_bytes()
+    status = pipeline.git.status(worktree)
+    saved_state = pipeline.store.state_path(state.id).read_bytes()
+    info = pipeline.result_artifact_info(state.id)
+    assert info["status"] == "unavailable" and not info["can_launch"]
+    assert "변경사항이 남아 있어" in info["reason"]
+    assert changed.name not in info["reason"] and "worktree" not in info["reason"]
+    with patch.object(result_artifacts, "launch_result") as launch:
+        with pytest.raises(PipelineError, match="변경사항이 남아 있어"):
+            pipeline.launch_result_artifact(state.id, expected_digest=registered["digest"])
+        launch.assert_not_called()
+    with pytest.raises(PipelineError, match="변경사항이 남아 있어"):
+        pipeline.register_result_artifact(state.id, kind="web", relative_path="build/index.html",
+                                           expected_commit=state.verified_integration_head)
+    assert changed.read_bytes() == contents and pipeline.git.status(worktree) == status
+    assert pipeline.store.state_path(state.id).read_bytes() == saved_state
+    if original is None:
+        changed.unlink()
+    else:
+        changed.write_bytes(original)
+    assert pipeline.result_artifact_info(state.id)["can_launch"]
 
 
 def test_background_call_returning_a_failed_run_is_reported_as_failure(tmp_path: Path) -> None:

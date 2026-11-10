@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .config import supported_reasoning_efforts
 from .models import EffortMode, ProfileSource, WorkTask
-from .model_selection import automatic_codex_profile, select_codex_model
+from .model_selection import automatic_claude_profile, automatic_codex_profile, select_claude_model, select_codex_model
 
 
 class EffortPolicyError(ValueError):
@@ -99,8 +99,13 @@ def resolve_reasoning_profile(
         selected_source = ProfileSource.ROUTING
     if not provider:
         raise EffortPolicyError("effort policy requires a selected provider")
-    if purpose and provider == "codex" and automatic_codex_profile(selected_source, selected_model):
-        decision = select_codex_model(selected_mode, purpose=purpose, task=task, reasoning_effort=effort)
+    automatic = (provider == "codex" and automatic_codex_profile(selected_source, selected_model)
+                 or provider == "claude" and automatic_claude_profile(selected_source, selected_model))
+    if purpose and automatic:
+        if provider == "claude" and effort and effort not in supported_reasoning_efforts(provider, selected_model):
+            raise EffortPolicyError(f"unsupported reasoning effort for {provider}/{selected_model}: {effort}")
+        select_model = select_codex_model if provider == "codex" else select_claude_model
+        decision = select_model(selected_mode, purpose=purpose, task=task, reasoning_effort=effort)
         # A provider's automatic model option may accompany explicit reasoning.
         manual_effort = selected_source == ProfileSource.MANUAL and effort
         if manual_effort and effort not in supported_reasoning_efforts(provider, decision.model):

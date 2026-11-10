@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from .account_usage import AccountUsage, read_claude_quota
-from .claude_credentials import claude_credential_scope
+from .claude_credentials import claude_credential_scope, current_claude_api_key
 from .codex_sdk import CodexSdkManager, read_codex_quota
 from .code_style import ProjectCodeStylePreference, inspect_project_code_style
 from .config import create_default_config, load_config, resolve_workspace_location, supported_models, supported_reasoning_efforts
@@ -1045,6 +1045,7 @@ class DesktopApplication:
             dotnet_executable=project.dotnet_executable,
             code_style_preference=project.code_style_preference,
             code_style_preference_revision=project.code_style_preference_revision,
+            account_usage_reader=lambda provider, key=current_claude_api_key(): Pipeline.account_usage(provider, claude_api_key=key),
         )
 
 

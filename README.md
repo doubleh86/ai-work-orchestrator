@@ -12,10 +12,10 @@ Codex·Claude 앱에서 만들 내용을 정하고, 여러 작업 AI로 제작�
 
 ## Windows에서 바로 실행하기
 
-[v0.7.0 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.7.0)에서 앱 ZIP 전체를 받아
+[v0.7.1 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.7.1)에서 앱 ZIP 전체를 받아
 새 폴더에 압축을 풀고 `AI Work Orchestrator.exe`를 실행합니다. MCP만 사용할 때는 MCP 전용 ZIP을 받습니다.
 앱 실행에 Python·Node.js 설치는 필요하지 않습니다. Git과 작업 AI·프로젝트별 개발 도구는 별도로 준비합니다.
-v0.7.0 ZIP에는 API 키 연결·보관함·트레이 개선을 포함합니다.
+v0.7.1 ZIP에는 Claude 자동 모델 선택·한도 소진 시 AI 전환·간결한 결과 안내를 포함합니다.
 
 ## 소스로 실행하기
 
@@ -51,6 +51,10 @@ macOS/Linux에서는 `python3 -m venv .venv`와 `.venv/bin/python -m pip install
 다시 열고, 완전히 끝내려면 트레이 메뉴의 `종료`를 선택합니다.
 
 보관한 작업은 기본 목록에서 빠지고 **보관함**에서 열 수 있습니다. 긴 설명은 펼쳐서 확인합니다.
+
+일반 Claude 작업은 Sonnet, 중요하거나 복잡한 작업은 Opus로 자동 배정합니다.
+구독 한도 소진이 확인되면 미시작 자동 작업은 다른 연결 AI로 전환합니다. 직접 지정·진행 중인 작업은 유지합니다.
+현재 작업 계정의 한도는 **AI 사용량**에서 확인합니다. 조회 실패를 소진으로 판단하지 않습니다.
 
 연결 프롬프트에는 현재 실행 경로와 MCP 등록 도우미가 들어 있습니다.
 로컬 설정을 수정할 도구가 없는 대화 앱에서는 수동 설정이 필요할 수 있습니다.

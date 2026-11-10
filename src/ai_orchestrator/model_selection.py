@@ -10,6 +10,9 @@ CODEX_SOL_MODEL = "gpt-6.1-sol"
 CODEX_TERRA_MODEL = "gpt-6.1-terra"
 CODEX_LUNA_MODEL = "gpt-6-luna"
 AUTOMATIC_CODEX_MODELS = (CODEX_SOL_MODEL, CODEX_TERRA_MODEL, CODEX_LUNA_MODEL)
+CLAUDE_SONNET_MODEL = "sonnet"
+CLAUDE_OPUS_MODEL = "opus"
+AUTOMATIC_CLAUDE_MODELS = (CLAUDE_SONNET_MODEL, CLAUDE_OPUS_MODEL)
 
 _SENSITIVE_WORDS = (
     "auth", "security", "permission", "database", "migration", "schema", "contract", "state transition",
@@ -77,3 +80,37 @@ def select_codex_model(
 
 def automatic_codex_profile(source: ProfileSource, model: str) -> bool:
     return source not in {ProfileSource.MANUAL, ProfileSource.LEGACY} or source == ProfileSource.MANUAL and not model.strip()
+
+
+def automatic_claude_profile(source: ProfileSource, model: str) -> bool:
+    return (source not in {ProfileSource.MANUAL, ProfileSource.LEGACY} and model.strip() in {"", *AUTOMATIC_CLAUDE_MODELS}
+            or source == ProfileSource.MANUAL and not model.strip())
+
+
+def select_claude_model(
+    mode: EffortMode, *, purpose: str, task: WorkTask | None = None, reasoning_effort: str = "",
+) -> ModelSelection:
+    if purpose != "task":
+        return ModelSelection(CLAUDE_OPUS_MODEL, "high", "기획·원인 판단은 Opus")
+    important = task is None
+    if task is not None:
+        text = " ".join((task.title, task.description, *task.acceptance_criteria, *task.expected_paths)).casefold()
+        paths = [path.replace("\\", "/") for path in task.expected_paths]
+        important = bool(
+            task.risk_level == RiskLevel.HIGH or task.is_prerequisite or task.conflict_group
+            or set(task.capabilities) & {"architecture", "security", "concurrency", "migration"}
+            or any(word in text for word in (*_SENSITIVE_WORDS, "architecture", "아키텍처", "설계", "복잡", "대규모", "cross-module"))
+            or not paths or len(paths) >= 6 or any(any(mark in path for mark in ("*", "?", "..")) for path in paths)
+            or reasoning_effort in {"xhigh", "max"}
+        )
+    if mode == EffortMode.FOCUSED:
+        decision = ModelSelection(CLAUDE_OPUS_MODEL, "xhigh" if important else "high", "집중 · Opus로 추론 강화")
+    elif important:
+        decision = ModelSelection(CLAUDE_OPUS_MODEL, "high", "중요 계약·복잡하거나 범위가 불명확한 작업은 Opus")
+    else:
+        decision = ModelSelection(CLAUDE_SONNET_MODEL, "low" if mode == EffortMode.ECONOMY else "medium",
+                                  "절약 · 일반 구현은 Sonnet" if mode == EffortMode.ECONOMY else "일반 구현은 Sonnet")
+    efforts = ("low", "medium", "high", "xhigh", "max")
+    if mode != EffortMode.ECONOMY and reasoning_effort in efforts and efforts.index(reasoning_effort) > efforts.index(decision.reasoning_effort):
+        return ModelSelection(decision.model, reasoning_effort, f"{decision.reason} · 권장 추론 유지")
+    return decision

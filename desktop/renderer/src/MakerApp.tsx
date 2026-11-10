@@ -21,6 +21,18 @@ interface ResultArtifact {
 }
 const message = (cause: unknown) => cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다. 다시 시도해 주세요.";
 
+function resultErrorMessage(cause: unknown, launching = false): string {
+  const detail = message(cause);
+  if (detail.includes("worktree has uncommitted changes") || detail.includes("변경사항이 남아 있어")) {
+    return "변경사항이 남아 있어 아직 실행할 수 없어요. 작업을 마무리하고 다시 검증해 주세요.";
+  }
+  if (detail.includes("artifact changed") || /결과(?:물| 버전| 파일|가).*바뀌|결과(?:물|가).*변경/.test(detail)) {
+    return "결과가 변경됐어요. 새로 확인한 뒤 다시 실행해 주세요.";
+  }
+  return launching ? "결과를 실행하지 못했어요. 실행 환경을 확인한 뒤 다시 시도해 주세요."
+    : "결과를 확인하지 못했어요. 잠시 후 새로 확인해 주세요.";
+}
+
 export function MakerApp() {
   const [cards, setCards] = useState<ProjectCard[]>([]);
   const [loading, setLoading] = useState(true);
@@ -218,7 +230,14 @@ function PlanDialog({ selection, run, onClose, onConfirmed }: { selection: Selec
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(false); }
   }
-  return <WorkDialog title="제작 계획 확인" className="maker-dialog" onClose={() => { if (!busy) onClose(); }}><p>{run.summary}</p><ol className="maker-plan-list">{run.tasks.map(task => <li key={task.id}><h3>{task.title}</h3><p>{task.description}</p><ul>{task.acceptance_criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul><p className="maker-muted">작업 AI · {task.provider_id || task.agent_id}{task.model ? ` / ${task.model}` : ""}</p></li>)}</ol>{error ? <p role="alert">{error}</p> : null}{confirmed ? <p role="status">계획이 확정됐습니다. 대화 중인 AI에게 제작 시작을 요청하세요.</p> : <button className="maker-button maker-button--primary" disabled={busy || Boolean(run.archive)} onClick={() => void confirm()}>{busy ? "계획 확인 중…" : "이 계획으로 확정"}</button>}</WorkDialog>;
+  return <WorkDialog title="제작 계획 확인" className="maker-dialog" onClose={() => { if (!busy) onClose(); }}>
+    <p>{makerRunTitle(run.summary) || "제작 계획을 확인해 주세요."}</p>
+    <p className="maker-muted">총 {run.tasks.length}개 작업</p>
+    <ol className="maker-plan-list">{run.tasks.map(task => <li key={task.id}><h3>{makerRunTitle(task.title) || "이름 없는 작업"}</h3></li>)}</ol>
+    {error ? <p role="alert">{error}</p> : null}
+    {confirmed ? <p role="status">계획이 확정됐습니다. 대화 중인 AI에게 제작 시작을 요청하세요.</p>
+      : <button className="maker-button maker-button--primary" disabled={busy || Boolean(run.archive)} onClick={() => void confirm()}>{busy ? "계획 확인 중…" : "이 계획으로 확정"}</button>}
+  </WorkDialog>;
 }
 
 function ConnectionDialog({ onClose }: { onClose(): void }) {
@@ -271,9 +290,9 @@ export function ResultPanel({ selection, clientName = "연결한 AI 앱" }: { se
   const active = useRef(true);
   const launching = useRef(false);
   const params = { projectName: selection.project, runId: selection.runId };
-  const load = useCallback(async () => {
-    try { const next = await window.orchestrator.request<ResultArtifact>("runs.resultArtifact", { projectName: selection.project, runId: selection.runId }); if (active.current) { setArtifact(next); setError(""); } }
-    catch (cause) { if (active.current) { setArtifact(undefined); setError(message(cause)); } }
+  const load = useCallback(async (preserveError = false) => {
+    try { const next = await window.orchestrator.request<ResultArtifact>("runs.resultArtifact", { projectName: selection.project, runId: selection.runId }); if (active.current) { setArtifact(next); if (!preserveError) setError(""); } }
+    catch (cause) { if (active.current) { setArtifact(undefined); setError(resultErrorMessage(cause)); } }
   }, [selection.project, selection.runId]);
   useEffect(() => { active.current = true; void load(); return () => { active.current = false; }; }, [load]);
   async function launch() {
@@ -283,8 +302,8 @@ export function ResultPanel({ selection, clientName = "연결한 AI 앱" }: { se
     try {
       const result = await window.orchestrator.request<{ status: string }>("runs.launchResult", { ...params, expectedDigest: artifact.digest, deviceId });
       if (active.current) setFeedback(result.status === "started" ? "앱 실행을 시작했습니다. 열린 창에서 직접 확인해 주세요." : "실행을 요청했습니다. 브라우저나 기기에서 결과를 확인해 주세요.");
-    } catch (cause) { if (active.current) setError(message(cause)); }
-    finally { launching.current = false; if (active.current) { setBusy(false); void load(); } }
+    } catch (cause) { if (active.current) setError(resultErrorMessage(cause, true)); }
+    finally { launching.current = false; if (active.current) { setBusy(false); void load(true); } }
   }
   const names = { web: "웹 결과물", windows: "Windows 앱", macos: "Mac 앱", android: "Android 앱" };
   const needsDevice = artifact?.kind === "android" && (artifact.devices?.length ?? 0) > 1 && !deviceId;
@@ -293,8 +312,7 @@ export function ResultPanel({ selection, clientName = "연결한 AI 앱" }: { se
       <button className="maker-icon-button" disabled={busy} aria-label="결과 새로 확인" onClick={() => void load()}><RefreshCw size={16} /></button></div>
     <div className="maker-result-stage"><span className="maker-result-icon"><Play size={32} /></span>
       <h3>{artifact?.kind ? names[artifact.kind] : "만든 결과를 여기서 실행해요"}</h3>
-      <p>{artifact?.reason || (error ? "결과 정보를 다시 확인해 주세요." : "실행할 결과를 확인하고 있어요.")}</p>
-      {error ? <p role="alert">{error}</p> : null}
+      <p role={error ? "alert" : undefined}>{error || artifact?.reason || "실행할 결과를 확인하고 있어요."}</p>
       {artifact?.verification_scope === "task" ? <p>제작 중인 결과입니다. 직접 확인을 마치면 다음 제작 단계로 진행할 수 있어요.</p> : null}
       {artifact?.can_launch && artifact.kind === "android" ? <label>실행할 휴대폰
         <select value={deviceId} disabled={busy} onChange={event => setDeviceId(event.target.value)}>
@@ -303,7 +321,7 @@ export function ResultPanel({ selection, clientName = "연결한 AI 앱" }: { se
         </select></label> : null}
       {artifact?.can_launch ? <button className="maker-button maker-button--primary" disabled={busy || Boolean(needsDevice)}
         onClick={() => void launch()}><Play size={17} />{busy ? "실행 준비 중…" : "결과 실행하기"}</button>
-        : artifact || error ? <p>{clientName}에서 이 프로젝트의 실행할 결과물을 준비해 달라고 요청하세요.</p> : null}
+        : artifact && artifact.status !== "unavailable" ? <p>{clientName}에서 이 프로젝트의 실행할 결과물을 준비해 달라고 요청하세요.</p> : null}
     </div>
     <p role="status">{feedback}</p><p className="maker-muted">웹은 브라우저에서, PC 앱은 별도 창에서 열립니다.
       Android 앱은 선택한 기기에 설치하고 실행합니다.</p>

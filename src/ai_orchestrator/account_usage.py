@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
-from typing import Literal
+from typing import Callable, Literal
 
 from .provider_executable import resolve_provider_executable
 
@@ -24,6 +25,40 @@ class AccountUsage:
     status: Literal["available", "unavailable", "signed_out", "api_key", "not_installed", "error"]
     five_hour: QuotaWindow | None = None
     weekly: QuotaWindow | None = None
+
+
+def quota_exhausted(usage: AccountUsage, *, now: float | None = None) -> bool:
+    """Only an unexpired provider-reported quota can exclude a provider."""
+    checked_at = time.time() if now is None else now
+    return usage.status == "available" and any(
+        window is not None and window.used_percent >= 100 and (window.resets_at is None or window.resets_at > checked_at)
+        for window in (usage.five_hour, usage.weekly)
+    )
+
+
+class AccountUsageCache:
+    """A short-lived cache owned by one credential-scoped Pipeline instance."""
+
+    def __init__(self, reader: Callable[[str], AccountUsage] | None, *, ttl: float = 30):
+        self._reader = reader
+        self._ttl = ttl
+        self._entries: dict[str, tuple[float, AccountUsage]] = {}
+
+    def read(self, provider: str) -> AccountUsage:
+        if self._reader is None or provider not in {"codex", "claude"}:
+            return AccountUsage("unavailable")
+        monotonic = time.monotonic()
+        cached = self._entries.get(provider)
+        if cached is not None and cached[0] > monotonic:
+            return cached[1]
+        usage = self._reader(provider)
+        now = time.time()
+        duration = self._ttl
+        for window in (usage.five_hour, usage.weekly):
+            if window is not None and window.resets_at is not None:
+                duration = min(duration, max(0, window.resets_at - now))
+        self._entries[provider] = (time.monotonic() + duration, usage)
+        return usage
 
 
 def codex_quota_summary(payload: dict[str, object]) -> AccountUsage:

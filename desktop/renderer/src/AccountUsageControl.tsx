@@ -63,6 +63,7 @@ export function AccountUsageControl() {
       footer={<button type="button" className="button button--secondary" disabled={providers.some(({ id }) => !usage[id])}
         onClick={() => void refresh()}>새로 확인</button>}>
       <div className="account-usage__providers">
+        <p>한도를 모두 사용한 AI는 미시작 자동 작업에서 다른 연결 AI로 전환합니다.</p>
         {providers.map(({ id, label }) => {
           const result = usage[id];
           return <section className="account-usage__provider" key={id} aria-label={label}>
