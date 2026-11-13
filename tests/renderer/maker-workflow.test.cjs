@@ -116,6 +116,54 @@ test('incompatible host and missing result offer preparation without a launch bu
   assert.match(renderToStaticMarkup(tree), /연결한 AI 앱에서 이 프로젝트의 실행할 결과물을 준비/); view.unmount();
 });
 
+test('project tools distinguish approved settings from a live connection and preserve settings on cancel', async () => {
+  const tool = { id: 'fixture', label: 'Fixture MCP', transport: 'http', command: '', args: [], url: 'https://example.com/mcp',
+    env_vars: {}, bearer_token_env_var: '', env_http_headers: {}, enabled_tools: null, enabled: true, exclusive: true };
+  let changed = 0;
+  const view = harness('ProjectToolConnections', { projectName: 'one', active: true, onChanged: async () => { changed++; } },
+    { source: 'ProjectToolConnections' });
+  view.render(); assert.equal(view.calls[0].method, 'projects.workerMcp');
+  view.calls[0].resolve({ revision: 0, servers: [] }); await tick(); let tree = view.render();
+  button(tree, '도구 추가').props.onClick(); tree = view.render();
+  nodes(tree).find(node => node.type === 'input' && node.props.type === 'url').props.onChange({ target: { value: tool.url } });
+  tree = view.render(); nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  let call = view.calls.at(-1);
+  assert.equal(call.method, 'projects.updateWorkerMcp'); assert.equal(call.approved, true); assert.equal(call.params.append, true);
+  assert.equal(call.params.expectedRevision, 0); call.resolve(null); await tick(); tree = view.render();
+  assert.equal(changed, 0); assert.ok(nodes(tree).some(node => node.type === 'form'));
+  nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  call = view.calls.at(-1); call.resolve({ revision: 1, servers: [tool] }); await tick(); tree = view.render();
+  assert.equal(changed, 1); assert.match(renderToStaticMarkup(tree), /저장됨 · 연결 확인 전/);
+  assert.equal(view.calls.some(item => item.method === 'projects.checkWorkerMcp'), false);
+  button(tree, '연결 확인').props.onClick(); call = view.calls.at(-1);
+  assert.equal(call.params.expectedRevision, 1); assert.equal(call.params.serverId, tool.id);
+  call.resolve({ id: tool.id, status: 'error', message: '연결하지 못했습니다.' }); await tick(); tree = view.render();
+  assert.match(renderToStaticMarkup(tree), /연결하지 못했습니다/);
+  button(tree, '연결 확인').props.onClick(); view.calls.at(-1).resolve({ id: tool.id, status: 'connected', tool_count: 3 });
+  await tick(); tree = view.render(); assert.match(renderToStaticMarkup(tree), /연결 확인됨 · 도구 3개/);
+  button(tree, '사용 중지').props.onClick(); call = view.calls.at(-1);
+  assert.equal(call.params.servers[0].enabled, false); assert.equal(call.approved, true);
+  call.resolve({ revision: 2, servers: [{ ...tool, enabled: false }] }); await tick(); tree = view.render();
+  assert.equal(button(tree, '연결 확인').props.disabled, true); view.unmount();
+});
+
+test('project tools ignore responses from another project and hide inactive connection dialogs', async () => {
+  const view = harness('ProjectToolConnections', { projectName: 'one', active: true, onChanged: async () => {} },
+    { source: 'ProjectToolConnections' });
+  view.render(); const old = view.calls[0];
+  view.render({ projectName: 'two' });
+  view.calls.at(-1).resolve({ revision: 0, servers: [] }); await tick();
+  old.reject(Error('private error from another project')); await tick(); let tree = view.render();
+  assert.doesNotMatch(renderToStaticMarkup(tree), /private error/);
+  button(tree, '도구 추가').props.onClick(); tree = view.render();
+  assert.ok(nodes(tree).some(node => node.type === 'form'));
+  view.render({ projectName: 'three' }); tree = view.render();
+  assert.equal(nodes(tree).some(node => node.type === 'form'), false);
+  assert.equal(button(tree, '도구 추가').props.disabled, true);
+  view.calls.at(-1).resolve({ revision: 0, servers: [] }); await tick();
+  assert.equal(view.render({ active: false }), null); view.unmount();
+});
+
 test('connection prompt copy carries actual runtime and does not register or change worker AI settings', async () => {
   const view = harness('ConnectionDialog', { onClose() {} });
   let tree = view.render(); assert.deepEqual(view.calls.map(call => call.method), ['connections.externalGuide']);

@@ -92,7 +92,7 @@ class ProjectRegistryTest(unittest.TestCase):
             self.assertEqual(registry.list(), [project])
             self.assertFalse(registry.path.with_suffix(".tmp").exists())
             raw = json.loads(registry.path.read_text(encoding="utf-8"))
-            self.assertEqual(raw["schema_version"], 3)
+            self.assertEqual(raw["schema_version"], 4)
 
             removed = registry.remove("EXAMPLE")
 

@@ -13,9 +13,10 @@ from typing import Concatenate, Mapping, ParamSpec, TypeVar
 from .app_paths import application_config_root
 from .code_style import CodeStyleError, ProjectCodeStylePreference, normalize_custom_instruction_paths
 from .file_lock import exclusive_file_lock
+from .worker_mcp import WorkerMcpError, WorkerMcpServer, parse_mcp_servers
 
-REGISTRY_SCHEMA_VERSION = 3
-SUPPORTED_REGISTRY_SCHEMA_VERSIONS = {1, 2, REGISTRY_SCHEMA_VERSION}
+REGISTRY_SCHEMA_VERSION = 4
+SUPPORTED_REGISTRY_SCHEMA_VERSIONS = {1, 2, 3, REGISTRY_SCHEMA_VERSION}
 
 
 class RegistryError(ValueError):
@@ -45,6 +46,8 @@ class RegisteredProject:
     dotnet_executable: str = ""
     code_style_preference: ProjectCodeStylePreference = field(default_factory=ProjectCodeStylePreference)
     code_style_preference_revision: int = 0
+    worker_mcp_servers: tuple[WorkerMcpServer, ...] | None = None
+    worker_mcp_revision: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -56,6 +59,8 @@ class RegisteredProject:
             "planning_source_dir": (str(self.planning_source_dir) if self.planning_source_dir is not None else None),
             "code_style_preference": self.code_style_preference.to_dict(),
             "code_style_preference_revision": self.code_style_preference_revision,
+            "worker_mcp_servers": [server.to_dict() for server in self.worker_mcp_servers] if self.worker_mcp_servers is not None else None,
+            "worker_mcp_revision": self.worker_mcp_revision,
         }
 
     @classmethod
@@ -88,6 +93,13 @@ class RegisteredProject:
             raise RegistryError("registry project code_style_preference_revision must be a non-negative integer") from exc
         if code_style_preference_revision < 0:
             raise RegistryError("registry project code_style_preference_revision must be a non-negative integer")
+        try:
+            servers = parse_mcp_servers(raw["worker_mcp_servers"]) if raw.get("worker_mcp_servers") is not None else None
+        except WorkerMcpError as exc:
+            raise RegistryError(str(exc)) from exc
+        revision = raw.get("worker_mcp_revision", 0)
+        if type(revision) is not int or revision < 0:
+            raise RegistryError("invalid worker MCP revision")
         return cls(
             name=values["name"],
             repo=Path(values["repo"]).expanduser().resolve(),
@@ -97,6 +109,8 @@ class RegisteredProject:
             dotnet_executable=dotnet_executable,
             code_style_preference=code_style_preference,
             code_style_preference_revision=code_style_preference_revision,
+            worker_mcp_servers=servers,
+            worker_mcp_revision=revision,
         )
 
 
@@ -218,6 +232,25 @@ class ProjectRegistry:
                 code_style_preference=normalized_preference,
                 code_style_preference_revision=expected_revision + 1,
             )
+            projects[index] = updated
+            self._save(projects)
+            return updated
+        raise RegistryError(f"unknown project: {name}")
+
+    @_serialized_write
+    def update_worker_mcp_servers(self, name: str, servers: tuple[WorkerMcpServer, ...], *, expected_revision: int) -> RegisteredProject:
+        normalized = self._normalize_name(name)
+        try:
+            selected = parse_mcp_servers([server.to_dict() for server in servers])
+        except WorkerMcpError as exc:
+            raise RegistryError(str(exc)) from exc
+        projects = self._load()
+        for index, project in enumerate(projects):
+            if project.name.casefold() != normalized:
+                continue
+            if type(expected_revision) is not int or expected_revision != project.worker_mcp_revision:
+                raise RegistryError("도구 연결 설정이 변경됐습니다. 새로 확인한 뒤 저장해 주세요.")
+            updated = replace(project, worker_mcp_servers=selected, worker_mcp_revision=expected_revision + 1)
             projects[index] = updated
             self._save(projects)
             return updated

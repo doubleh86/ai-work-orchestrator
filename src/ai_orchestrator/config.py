@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import WorkspaceLocation, WorkspaceLocationSource
+from .worker_mcp import WorkerMcpError, WorkerMcpServer, parse_mcp_servers
 
 
 DEFAULT_WORKTREE_DIR = ".ai_auto_work/worktree"
@@ -86,6 +87,7 @@ class Config:
     agents: tuple[AgentConfig, ...]
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     planning: PlanningConfig = field(default_factory=PlanningConfig)
+    worker_mcp_servers: tuple[WorkerMcpServer, ...] = ()
 
 
 class ConfigError(ValueError):
@@ -399,4 +401,9 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError(f"routing references providers without agents: {missing}")
     if routing.review_required and len(provider_ids) < 2:
         raise ConfigError("routing.review_required needs at least two providers")
-    return Config(path=config_path, project=project, execution=execution, agents=tuple(agents), routing=routing, planning=planning)
+    try:
+        worker_mcp_servers = parse_mcp_servers(raw.get("mcp_servers", {}))
+    except WorkerMcpError as exc:
+        raise ConfigError(str(exc)) from exc
+    return Config(path=config_path, project=project, execution=execution, agents=tuple(agents), routing=routing, planning=planning,
+                  worker_mcp_servers=worker_mcp_servers)

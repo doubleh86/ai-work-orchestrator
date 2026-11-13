@@ -69,6 +69,7 @@ IPC와 원자적인 상태 흐름을 우선한다.
 | `project_chat` | 프로젝트 채팅의 허용 행동·구조화 AI 응답 계약 | 파일 I/O, 실행 권한 부여, 상태 저장 |
 | `document_index` | 기획 문서 후보 필터링, 메타데이터 추출, 프로젝트 로컬 색인의 원자적 저장·재사용 | Planning AI 실행, run 상태 전이, Git 명령 실행 |
 | `codex_sdk` | 공식 Python Codex SDK client pool, 비밀값 없는 인증 상태 조회, 실제 실행 model profile 해석·보고, thread·turn 결과·timeout·interrupt | Pipeline 상태 전이, SDK 내부 JSON-RPC 구현, 프로젝트 registry 접근 |
+| `worker_mcp` | 프로젝트 외부 도구 연결 정의·검증, Codex/Claude 설정 변환, 초기 연결 확인·연결 점유 잠금과 출력 마스킹 | 외부 대화 앱 설정 수정, MCP 서버 설치, Pipeline 상태 전이 |
 | `app_paths` | OS별 앱 사용자 설정 root의 경로 계산 | 디렉터리 생성, 인증·registry 내용 조회, 전역 환경 변경 |
 | `nvidia_agent` | 수동 NVIDIA 코딩 프로필, OpenCode argv·도구 권한, 완료 응답·사용량 해석과 키 마스킹 | Pipeline 상태 전이, Git 실행, 프로젝트 설정·키 저장 |
 | `provider_executable` | 외부 provider 실행 파일의 명시 경로·`PATH`·Claude 사용자 설치 경로 탐색 | 인증 정보 조회, provider 실행, 상태 전이 |
@@ -121,6 +122,23 @@ renderer ──typed preload API──> Electron main
   의존성을 검증하고, `Pipeline`이 확인 결과를 기록하며 대기할 Task와 통합 가능 여부를 결정한다.
   데스크톱은 확인 결과를 기록하고 MCP는 기준 커밋과 확인 상태를 조회한다.
 - registry 명령은 프로젝트 설정이 선택되기 전에 `registry` 공개 API를 호출한다.
+- 작업 AI의 외부 MCP는 `worker_mcp`의 stdio·Streamable HTTP 연결 정의를 사용한다.
+  `config`와 `registry`가 정의를 읽고 `desktop_rpc`가 revision·native 확인을 거쳐 저장한다.
+  registry schema 4는 1~3을 호환해서 읽는다. 미설정은 TOML을, 명시적인 빈 목록은 연결 해제를 뜻한다.
+  `Pipeline`은 생성 시 설정을 고정하고 실행·수정 요청에만 전달한다. `codex_sdk`는 해당 thread에
+  필수 연결을 넣고 MCP를 쓴 client는 닫으며, Claude는 strict 설정과 명시적인 도구 권한을 받는다.
+  다른 공급자에 연결을 전달할 수 없으면 명시적으로 실패한다. 저장과 연결 확인은 구분하며,
+  연결 확인은 initialize·tools/list만 수행한다. 인증 값은 도구 전용 환경변수 이름으로 참조하고
+  실제 값은 반환·로그에서 가린다. OAuth 대행·SSE·서버 자동 설치는 지원하지 않는다.
+  표준 `mcpServers` JSON 또는 TOML의 `[mcp_servers.연결이름]`으로 설정한다. stdio의
+  `env = { TOOL_TOKEN = "${MY_TOOL_TOKEN}" }`, HTTP의 `bearer_token_env_var = "MY_TOOL_TOKEN"`은
+  도구 전용 환경변수 이름을 참조한다. stdio 인자에는 `{worktree}`·`{project_root}`를 사용할 수 있다.
+  개별 `enabled_tools` 허용 목록은 Codex만 지원하며 Claude에 지정하면 권한을 넓히지 않고 실패한다.
+  CLI에서 앱의 연결 설정을 사용하려면 같은 `--registry`를 명시한다.
+  같은 연결의 오케스트레이터 요청은 OS 잠금으로 직렬화하며 대기 원인을 표시하고 중지 요청을 받는다.
+  사용 중인 연결의 수동 검사는 기다리지 않고 점유 상태를 알린다.
+  외부 앱의 별도 연결이나 다른 주소로 등록한 동일 서버까지 잠그지는 않는다. 실제 에디터의 대상
+  경로 확인은 작업 지침으로 전달하며 범용 MCP로 대상 경로를 강제하지 않는다.
 - React renderer는 화면에 필요한 의미 단위의 typed method만 호출한다. Electron main은
   renderer payload를 shell command나 파일 접근으로 해석하지 않고 Python RPC로 중계한다.
 - `desktop_rpc`는 method allowlist와 입력 schema를 검증하고 선택된 registry 항목의

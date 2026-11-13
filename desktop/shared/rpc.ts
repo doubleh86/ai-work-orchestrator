@@ -36,6 +36,9 @@ export const RPC_METHODS = [
   "projects.codeStyleProfile",
   "projects.previewCodeStylePreference",
   "projects.updateCodeStylePreference",
+  "projects.workerMcp",
+  "projects.updateWorkerMcp",
+  "projects.checkWorkerMcp",
   "planning.inspectRepositoryMaturity",
   "planning.previewBootstrap",
   "planning.generateFeaturePlan",
@@ -126,6 +129,7 @@ export type RpcMethod = (typeof RPC_METHODS)[number];
 export type RpcParams = Readonly<Record<string, unknown>>;
 
 export const APPROVED_RPC_METHODS = [
+  "projects.updateWorkerMcp",
   "projects.initializeGit",
   "projects.createInitialCommit",
   "runs.applyRecovery",

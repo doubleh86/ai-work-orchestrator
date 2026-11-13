@@ -3,6 +3,7 @@ import { FolderOpen, Plus } from "lucide-react";
 import { WorkDialog } from "./WorkDialog";
 import { MainChangesDialog } from "./MainChangesDialog";
 import { CodeStyleProfilePanel } from "./CodeStyleProfilePanel";
+import { ProjectToolConnections } from "./ProjectToolConnections";
 import type { GitInitialCommitPreview, GitRepositoryReadiness, ProjectCodeStylePreference, ProjectCodeStyleProfile, ProjectWorkspaceLocation, RegisteredProject } from "./types";
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : "설정을 변경하지 못했습니다.";
@@ -100,6 +101,7 @@ function ProjectSettings({ project, active, onChanged }: { project: RegisteredPr
         {preference ? <CodeStyleProfilePanel profile={profile} draft={preference} loading={loading} busy={busy} error="" message="" onChange={setPreference}
           onPreview={() => void styleAction(false)} onSave={() => void styleAction(true)} /> : <p>코드 스타일 설정을 확인하고 있습니다.</p>}
       </div></details></div></section>
+    <ProjectToolConnections projectName={project.name} active={active} onChanged={onChanged} />
     {changesOpen ? <MainChangesDialog projectName={project.name} onClose={() => setChangesOpen(false)} onChanged={value => { setNotice(value); void onChanged().catch(cause => setError(errorText(cause))); }} onError={setError} /> : null}
   </div>;
 }

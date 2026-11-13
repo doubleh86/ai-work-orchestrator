@@ -11,6 +11,7 @@ export const progressPhaseLabels: Record<string, string> = {
   running_command: "명령 실행 중",
   applying_changes: "코드 수정 중",
   calling_tool: "도구 실행 중",
+  waiting_for_tool: "다른 도구 작업 완료 대기",
   searching_web: "웹 검색 중",
   inspecting_image: "이미지 확인 중",
   compacting_context: "대화 맥락 정리 중",

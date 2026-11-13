@@ -41,6 +41,7 @@ export class PythonBridgeRequestError extends Error {
 const REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
 const QUICK_REQUEST_TIMEOUT_MS = 15 * 1000;
 const BOUNDED_REQUEST_TIMEOUT_MS: Partial<Record<RpcMethod, number>> = {
+  "projects.checkWorkerMcp": 25 * 1000,
   "providers.accountUsage": 22 * 1000,
   "runs.recoveryPlan": 60 * 1000,
   "projects.checkDotnet": 75 * 1000,
@@ -59,6 +60,8 @@ const BOUNDED_REQUEST_TIMEOUT_MS: Partial<Record<RpcMethod, number>> = {
   "projects.updateCodeStylePreference": 45 * 1000,
 };
 const QUICK_REQUEST_METHODS = new Set<RpcMethod>([
+  "projects.workerMcp",
+  "projects.updateWorkerMcp",
   "system.hello",
   "connections.externalGuide",
   "runs.resultArtifact",

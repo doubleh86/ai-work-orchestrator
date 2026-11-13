@@ -52,6 +52,18 @@ test('old attempts, other invocations, local phases and future events cannot cla
   assert.equal(makerProgress(run, now, now).elapsed, undefined);
 });
 
+test('shared tool waiting remains explicit without claiming fresh AI activity', () => {
+  const run = fixture();
+  run.tasks[0].progress_observation = observation({ phase: 'waiting_for_tool', evidence_kind: 'resource_wait',
+    last_event_received_at: at(200), last_activity_changed_at: at(200) });
+  const view = makerProgress(run, now, now);
+  assert.equal(view.label, '다른 도구 작업 완료 대기');
+  assert.match(view.detail, /순서가 오면/); assert.equal(view.activityAge, 200);
+  assert.equal(view.tone, 'active');
+  run.tasks[0].progress_observation = observation({ phase: 'preparing_task', evidence_kind: 'local_phase' });
+  assert.notEqual(makerProgress(run, now, now).label, '다른 도구 작업 완료 대기');
+});
+
 test('unknown, stale and stopping states are distinct from a confirmed stop and user checks', () => {
   const run = fixture();
   assert.equal(makerProgress(run, now, now - 15_000).label, '상태 확인 지연');

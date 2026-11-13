@@ -56,16 +56,18 @@ export function makerProgress(run: RunState, now: number, checkedAt: number, rea
     const observation = task?.progress_observation;
     const observed = currentTask && observation && attempt && observation.attempt_id === attempt
       && (!invocation || observation.invocation_id === invocation)
-      && ["provider_event", "activity_change", "retry_wait"].includes(observation.evidence_kind)
+      && ["provider_event", "activity_change", "retry_wait", "resource_wait"].includes(observation.evidence_kind)
       && age(observation.last_event_received_at, now) !== undefined ? observation : undefined;
     const elapsed = currentTask ? age(task?.last_attempt_started_at, now) : undefined;
     const activityAge = observed ? age(observed.last_activity_changed_at, now) : undefined;
     const eventAge = observed ? age(observed.last_event_received_at, now) : undefined;
     const quiet = activityAge ?? elapsed;
-    const delayed = quiet !== undefined && quiet >= 90;
+    const waitingForTool = observed?.evidence_kind === "resource_wait" && observed.phase === "waiting_for_tool";
+    const delayed = !waitingForTool && quiet !== undefined && quiet >= 90;
     const label = observed?.evidence_kind === "retry_wait" ? "AI 응답 재시도 대기" : delayed ? "새 활동 대기 중" : observed ? progressPhaseLabels[observed.phase] || "작업 중"
       : control.situation === "preparing" ? "다음 작업 준비 중" : "작업 중";
-    return { label, detail: delayed ? "실행은 확인됐어요. 중단으로 확정된 상태는 아니에요."
+    return { label, detail: waitingForTool ? "다른 작업이 도구를 사용하고 있어요. 순서가 오면 이어서 진행해요."
+      : delayed ? "실행은 확인됐어요. 중단으로 확정된 상태는 아니에요."
       : control.active_task_title || task?.title || "활동 정보를 확인하고 있어요.",
       tone: delayed ? "warning" : "active", elapsed, activityAge, eventAge };
   }

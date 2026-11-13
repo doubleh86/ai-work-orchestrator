@@ -5,7 +5,7 @@ import json
 import sys
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, TextIO
@@ -28,6 +28,7 @@ from .pipeline import Pipeline, PipelineError
 from .nvidia_agent import current_nvidia_model_keys, nvidia_credential_scope, redact_nvidia_output
 from .repository_maturity import inspect_repository_maturity
 from .registry import ProjectRegistry, RegisteredProject, RegistryError
+from .worker_mcp import WorkerMcpError, check_mcp_connection, parse_mcp_servers, worker_mcp_lease
 
 RPC_VERSION = 1
 
@@ -48,6 +49,7 @@ _LONG_RUNNING_RPC_METHODS = frozenset(
         "projects.commitAndPushMainChanges",
         "projects.pushMainCommits",
         "projects.checkDotnet",
+        "projects.checkWorkerMcp",
         "planning.refreshIndex",
         "runs.preparePlanning",
         "runs.proposeResultRevision",
@@ -103,6 +105,7 @@ _STATUS_RPC_METHODS = frozenset(
         "runs.attentionItems",
         "projects.capabilities",
         "projects.codeStyleProfile",
+        "projects.workerMcp",
         "projects.inspectGitReadiness",
         "projects.previewGitInitialization",
         "projects.previewInitialCommit",
@@ -336,6 +339,48 @@ class DesktopApplication:
 
     def update_dotnet(self, project_name: str, executable: str) -> object:
         return self.registry.update_dotnet(project_name, executable)
+
+    def worker_mcp_connections(self, project_name: str) -> dict[str, object]:
+        project = self.registry.get(project_name)
+        pipeline = self._pipeline(project_name, expected_project=project)
+        return {"revision": project.worker_mcp_revision, "servers": [server.to_dict() for server in pipeline.config.worker_mcp_servers]}
+
+    def update_worker_mcp_connections(
+        self, project_name: str, configuration: object, *, expected_revision: int, approved: bool, append: bool = False,
+    ) -> dict[str, object]:
+        if not approved:
+            raise RpcError("approval_required", "도구 연결 권한 변경을 확인해 주세요.")
+        try:
+            servers = parse_mcp_servers(configuration)
+        except WorkerMcpError as exc:
+            raise RpcError("invalid_params", str(exc)) from exc
+        if type(append) is not bool:
+            raise RpcError("invalid_params", "append must be a boolean")
+        if append:
+            project = self.registry.get(project_name)
+            previous = self._pipeline(project_name, expected_project=project).config.worker_mcp_servers
+            merged = {server.id.casefold(): server for server in previous}
+            merged.update((server.id.casefold(), server) for server in servers)
+            servers = tuple(merged.values())
+        project = self.registry.update_worker_mcp_servers(project_name, servers, expected_revision=expected_revision)
+        return {"revision": project.worker_mcp_revision, "servers": [server.to_dict() for server in servers]}
+
+    def check_worker_mcp_connection(self, project_name: str, server_id: str, *, expected_revision: int) -> dict[str, object]:
+        project = self.registry.get(project_name)
+        if project.worker_mcp_revision != expected_revision:
+            raise RpcError("invalid_params", "도구 연결 설정이 변경됐습니다. 새로 확인해 주세요.")
+        pipeline = self._pipeline(project_name, expected_project=project)
+        selected = next((server for server in pipeline.config.worker_mcp_servers if server.id == server_id), None)
+        if selected is None:
+            raise RpcError("invalid_params", "확인할 도구 연결을 찾지 못했습니다.")
+        try:
+            with worker_mcp_lease((selected,), timeout_seconds=0):
+                result = check_mcp_connection(selected, project.repo, project.repo)
+        except WorkerMcpError as exc:
+            result = {"id": server_id, "status": "error", "message": str(exc)}
+        if self.registry.get(project_name).worker_mcp_revision != expected_revision:
+            raise RpcError("invalid_params", "도구 연결 설정이 변경됐습니다. 새로 확인해 주세요.")
+        return result
 
     def workspace_location(self, project_name: str) -> object:
         project = self.registry.get(project_name)
@@ -1039,6 +1084,8 @@ class DesktopApplication:
         config = load_config(project.config_path)
         if config.project.repo != project.repo:
             raise RegistryError(f"registered project config changed repository: {project.name}")
+        if project.worker_mcp_servers is not None:
+            config = replace(config, worker_mcp_servers=project.worker_mcp_servers)
         return Pipeline(
             config,
             codex_sdk=self.codex_sdk,
@@ -1132,6 +1179,9 @@ class RpcService:
                 _optional_string(values, "planningSourceDir") or None,
             )
         allowed_project_methods = {
+            "projects.workerMcp",
+            "projects.updateWorkerMcp",
+            "projects.checkWorkerMcp",
             "runs.decideProjectChat", "runs.performProjectChat",
             "runs.requestChatControl", "runs.advanceChatControl", "runs.cancelChatControl",
             "runs.beginPlanningRequest", "runs.finishPlanningRequest",
@@ -1230,6 +1280,18 @@ class RpcService:
         if method not in allowed_project_methods:
             raise RpcError("method_not_found", f"unsupported RPC method: {method}")
         project_name = _required_string(values, "projectName")
+        if method == "projects.workerMcp":
+            return self.application.worker_mcp_connections(project_name)
+        if method == "projects.updateWorkerMcp":
+            return self.application.update_worker_mcp_connections(
+                project_name, values.get("servers"), expected_revision=_required_integer(values, "expectedRevision"),
+                approved=_required_approval(values),
+                append=values.get("append", False),
+            )
+        if method == "projects.checkWorkerMcp":
+            return self.application.check_worker_mcp_connection(
+                project_name, _required_string(values, "serverId"), expected_revision=_required_integer(values, "expectedRevision"),
+            )
         if method == "projects.updateDotnet":
             return self.application.update_dotnet(project_name, _optional_string(values, "executable"))
         if method == "projects.capabilities":

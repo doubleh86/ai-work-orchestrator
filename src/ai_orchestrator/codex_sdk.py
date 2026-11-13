@@ -21,6 +21,7 @@ from .account_usage import AccountUsage, codex_quota_summary
 from .app_paths import application_config_root
 from .execution_control import CancellationSignal, ExecutionStopped
 from .usage import CodexUsageTracker, TokenCounts, UsageObservation
+from .worker_mcp import WorkerMcpServer, codex_mcp_config, redact_mcp_data, redact_mcp_output, secret_values
 
 if TYPE_CHECKING:
     from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox, Thread as CodexThread, TurnHandle, TurnResult
@@ -203,6 +204,8 @@ class CodexSdkTurnRequest:
     profile_callback: Callable[[CodexSdkExecutionProfile], None] | None = field(default=None, compare=False, repr=False)
     usage_callback: Callable[[UsageObservation], None] | None = field(default=None, compare=False, repr=False)
     retry_callback: Callable[[str | None], None] | None = field(default=None, compare=False, repr=False)
+    mcp_servers: tuple[WorkerMcpServer, ...] = field(default=(), repr=False)
+    project_root: Path | None = None
 
 
 @dataclass(slots=True)
@@ -217,6 +220,7 @@ class _TurnOperation:
     error: CodexSdkError | None = None
     last_activity_at: float = field(default_factory=time.monotonic)
     retry_until: float = 0.0
+    redactions: tuple[str, ...] = field(default=(), repr=False)
 
     def set_client(self, client: Codex) -> None:
         with self.state_lock:
@@ -506,13 +510,17 @@ class CodexSdkManager:
             return self._login_snapshot(operation)
 
     def run_turn(self, request: CodexSdkTurnRequest) -> str:
+        if request.mcp_servers:
+            request = replace(request, mcp_servers=tuple(server for server in request.mcp_servers if server.enabled))
         if request.timeout_seconds <= 0:
             raise ValueError("Codex SDK timeout must be greater than zero")
+        if request.mcp_servers and request.conversation_id:
+            raise CodexSdkError("작업 도구 연결은 새 작업 요청에서 사용할 수 있습니다.")
         if request.conversation_id and (
             request.conversation_id != request.conversation_id.strip() or any(marker in request.conversation_id for marker in ("\x00", "\n", "\r"))
         ):
             raise ValueError("Codex SDK conversation ID must be a single-line value")
-        operation = _TurnOperation()
+        operation = _TurnOperation(redactions=secret_values(request.mcp_servers))
         self._start_log(operation, request)
         worker = threading.Thread(target=self._run_operation, args=(operation, request), name="codex-sdk-turn", daemon=True)
         worker.start()
@@ -738,6 +746,8 @@ class CodexSdkManager:
             else:
                 client = self._acquire_client()
                 execution_profile = _resolve_execution_profile(client, request)
+                tool_options = ({"config": codex_mcp_config(request.mcp_servers, request.cwd, request.project_root or request.cwd)}
+                                if request.mcp_servers else {})
                 thread = client.thread_start(
                     approval_mode=approval,
                     cwd=str(request.cwd.resolve()),
@@ -745,6 +755,7 @@ class CodexSdkManager:
                     model=execution_profile.model,
                     sandbox=sandbox,
                     service_name="ai_work_orchestrator",
+                    **tool_options,
                 )
             operation.set_client(client)
             if operation.cancelled.is_set():
@@ -755,7 +766,7 @@ class CodexSdkManager:
             final_response = result.final_response or ""
             if not final_response.strip():
                 raise CodexSdkError("Codex SDK turn completed without a final agent message")
-            operation.result = final_response
+            operation.result = redact_mcp_output(final_response, operation.redactions)
             healthy = True
             self._append_log(
                 operation,
@@ -776,10 +787,18 @@ class CodexSdkManager:
             )
         except Exception as exc:
             if not operation.cancelled.is_set():
-                error = exc if isinstance(exc, CodexSdkError) else CodexSdkError(
-                    f"Codex SDK turn failed: {exc}", error_info=getattr(exc, "data", None)
-                )
-                if error is not exc:
+                if operation.redactions:
+                    error = CodexSdkError(
+                        redact_mcp_output(f"Codex SDK turn failed: {exc}", operation.redactions),
+                        error_info=redact_mcp_data(getattr(exc, "error_info", getattr(exc, "data", None)), operation.redactions),
+                        additional_details=redact_mcp_output(str(getattr(exc, "additional_details", "") or ""), operation.redactions),
+                    )
+                    error.retry_safe = getattr(exc, "retry_safe", False)
+                else:
+                    error = exc if isinstance(exc, CodexSdkError) else CodexSdkError(
+                        f"Codex SDK turn failed: {exc}", error_info=getattr(exc, "data", None)
+                    )
+                if error is not exc and not operation.redactions:
                     error.__cause__ = exc
                 operation.error = error
                 self._append_log(operation, request.log_path, {
@@ -787,15 +806,18 @@ class CodexSdkManager:
                     "codex_error_info": error.error_info, "additional_details": error.additional_details,
                 })
         finally:
-            operation.completed.set()
+            if not request.mcp_servers:
+                operation.completed.set()
             if client is not None:
                 if request.conversation_id:
                     if not healthy or operation.cancelled.is_set():
                         self._discard_conversation(request.conversation_id, client)
-                elif healthy and not operation.cancelled.is_set():
+                elif healthy and not operation.cancelled.is_set() and not request.mcp_servers:
                     self._release_client(client)
                 else:
                     self._discard_client(client)
+            if request.mcp_servers:
+                operation.completed.set()
 
     def _run_turn_with_backoff(
         self, operation: _TurnOperation, request: CodexSdkTurnRequest, thread: CodexThread,
@@ -939,6 +961,8 @@ class CodexSdkManager:
         self._discard_client(client)
 
     def _record_progress(self, operation: _TurnOperation, request: CodexSdkTurnRequest, progress: CodexSdkProgress) -> None:
+        if operation.redactions:
+            progress = replace(progress, detail=redact_mcp_output(progress.detail, operation.redactions))
         if progress.log_report:
             self._append_log(
                 operation,
@@ -1039,6 +1063,8 @@ class CodexSdkManager:
                         "timeout_seconds": request.timeout_seconds,
                         "conversation_id": request.conversation_id,
                         "prompt_characters": len(request.prompt),
+                        **({"tool_connections": [{"id": server.id, "fingerprint": server.fingerprint()}
+                                                 for server in request.mcp_servers]} if request.mcp_servers else {}),
                     },
                     ensure_ascii=False,
                 )
@@ -1048,9 +1074,11 @@ class CodexSdkManager:
 
     @staticmethod
     def _append_log(operation: _TurnOperation, log_path: Path, payload: dict[str, object]) -> None:
+        safe_payload = redact_mcp_data(payload, operation.redactions) if operation.redactions else payload
+        assert isinstance(safe_payload, dict)
         with operation.log_lock:
             with log_path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **payload}, ensure_ascii=False))
+                stream.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **safe_payload}, ensure_ascii=False))
                 stream.write("\n")
 
 

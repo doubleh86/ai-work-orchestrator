@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .codex_sdk import CodexSdkManager
@@ -313,6 +313,11 @@ def main(argv: list[str] | None = None) -> int:
                   allow_control=args.allow_control, projects_root=args.projects_root, watch_source=args.watch_source)
             return 0
         config = load_config(args.config)
+        if args.registry:
+            registered = next((project for project in ProjectRegistry(args.registry).list()
+                               if project.repo == config.project.repo and project.config_path == config.path), None)
+            if registered is not None and registered.worker_mcp_servers is not None:
+                config = replace(config, worker_mcp_servers=registered.worker_mcp_servers)
         codex_sdk = CodexSdkManager()
         pipeline = Pipeline(
             config, codex_sdk=codex_sdk,

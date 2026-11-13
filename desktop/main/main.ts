@@ -522,6 +522,12 @@ function approvalCopy(
     ApprovedRpcMethod,
     { title: string; message: string; detail: string; confirmLabel: string }
   > = {
+    "projects.updateWorkerMcp": {
+      title: "작업 도구 연결",
+      message: `'${project}'의 작업 AI가 사용할 도구 연결을 저장할까요?`,
+      detail: "등록한 MCP의 실행 명령·서버 주소를 작업 AI에 연결합니다. 로컬 도구는 실행될 수 있으며, 도구를 통해 연결한 앱과 서비스에 작업할 수 있습니다. 현재 실행에는 영향을 주지 않고 다음 실행부터 적용합니다.",
+      confirmLabel: "도구 연결 저장",
+    },
     "projects.initializeGit": {
       title: "로컬 Git 저장소 만들기",
       message: `'${stringParam(params, "repo")}' 폴더를 Git 저장소로 초기화할까요?`,
