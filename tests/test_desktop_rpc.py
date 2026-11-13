@@ -713,7 +713,7 @@ def test_main_change_rpc_rejects_invalid_selection_mode() -> None:
 
 def test_desktop_application_reuses_and_closes_codex_sdk_manager(tmp_path: Path) -> None:
     registry = Mock()
-    project = Mock(repo=tmp_path, config_path=tmp_path / "orchestrator.toml")
+    project = Mock(repo=tmp_path, config_path=tmp_path / "orchestrator.toml", worker_mcp_servers=None)
     registry.get.return_value = project
     config = Mock()
     config.project.repo = tmp_path
@@ -827,7 +827,7 @@ def test_run_status_includes_backend_execution_control() -> None:
 
 def test_desktop_application_reuses_single_codex_sdk_manager(tmp_path: Path) -> None:
     registry = Mock()
-    project = Mock(repo=tmp_path, config_path=tmp_path / "orchestrator.toml")
+    project = Mock(repo=tmp_path, config_path=tmp_path / "orchestrator.toml", worker_mcp_servers=None)
     registry.get.return_value = project
     config = Mock()
     config.project.repo = tmp_path
