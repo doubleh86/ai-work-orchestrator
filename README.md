@@ -13,10 +13,10 @@ Codex·Claude 앱에서 만들 내용을 정하고, 여러 작업 AI로 제작�
 
 ## Windows에서 바로 실행하기
 
-[v0.7.1 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.7.1)에서 앱 ZIP 전체를 받아
+[v0.7.2 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.7.2)에서 앱 ZIP 전체를 받아
 새 폴더에 압축을 풀고 `AI Work Orchestrator.exe`를 실행합니다. MCP만 사용할 때는 MCP 전용 ZIP을 받습니다.
 앱 실행에 Python·Node.js 설치는 필요하지 않습니다. Git과 작업 AI·프로젝트별 개발 도구는 별도로 준비합니다.
-v0.7.1 ZIP에는 Claude 자동 모델 선택·한도 소진 시 AI 전환·간결한 결과 안내를 포함합니다.
+v0.7.2 ZIP에는 프로젝트별 외부 MCP 연결·공유 도구 대기 표시를 포함합니다.
 
 ## 소스로 실행하기
 
@@ -45,9 +45,9 @@ macOS/Linux에서는 `python3 -m venv .venv`와 `.venv/bin/python -m pip install
 4. **제작 준비 완료** 알림에서 계획을 확인한 뒤 제작을 시작합니다.
 5. 진행·최근 활동·대기·중지는 앱에서 확인합니다. 관제 AI는 요청 접수 후 답변을 끝냅니다.
 
-소스 버전에서는 **프로젝트 관리 → 도구 연결**에서 Unity 등 외부 MCP를 연결할 수 있습니다.
+**프로젝트 관리 → 도구 연결**에서 Unity 등 외부 MCP를 연결할 수 있습니다.
 도구가 제공하는 주소나 MCP JSON을 넣고 연결을 확인하면 다음 Codex·Claude 제작부터 사용합니다.
-도구 설치·실행은 별도이며, 이 기능은 기존 v0.7.1 ZIP에는 포함되지 않습니다.
+도구 서버의 설치·실행과 실제 에디터 작업공간 연결은 별도로 준비합니다.
 
 기획 대화는 외부 앱에서 진행합니다. 오케스트레이터에서는 결과 실행·사용자 확인,
 프로젝트 관리·알림과 반영·보관을 처리합니다. Push·Main 반영·배포는 사용자 승인 후 진행합니다.
