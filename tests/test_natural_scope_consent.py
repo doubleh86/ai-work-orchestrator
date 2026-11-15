@@ -58,7 +58,7 @@ def test_questions_still_get_a_normal_answer_without_granting_scope(blocked, mes
     outputs = [json.dumps({"proposal_id": scope_proposal_id(proposal), "intent": "question", "evidence": ""}),
                json.dumps({"action": "reply", "message": f"실제 호출부 {PATHS[0]}에서 승인 정보를 전달해야 합니다.",
                            "authorized": False})]
-    with patch.object(pipeline, "_invoke_planning_agent", side_effect=outputs) as invoke:
+    with patch.object(pipeline._common_runtime.planning.ai, 'invoke', side_effect=outputs) as invoke:
         result = pipeline.decide_project_chat(state.id, parent["request_id"])
     assert invoke.call_count == 2
     assert "Classify scope consent" in invoke.call_args_list[0].args[2]
@@ -126,7 +126,7 @@ def test_late_consent_cannot_be_attached_to_a_cancelled_or_changed_target(blocke
             pipeline.store.save(current)
         return json.dumps({"proposal_id": scope_proposal_id(proposal), "intent": "approve", "evidence": parent["payload"]["message"]})
 
-    with patch.object(pipeline, "_invoke_planning_agent", side_effect=late), pytest.raises(PipelineError):
+    with patch.object(pipeline._common_runtime.planning.ai, 'invoke', side_effect=late), pytest.raises(PipelineError):
         pipeline.decide_project_chat(state.id, parent["request_id"])
     assert "scope_approval" not in pipeline.store.load_operation(state.id, parent["request_id"]).payload
 

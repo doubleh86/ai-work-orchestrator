@@ -26,7 +26,13 @@ def control(tmp_path: Path):
     integration = IntegrationControl(IntegrationStatus.NEEDS_VERIFICATION, "verify", "needs_verification", False, False)
     expected = {"planRevision": state.plan_revision, "conversationRevision": state.planning_conversation_revision,
                 "executionId": "", "scope": "", "taskId": "task", "attemptId": "attempt", "invocationId": ""}
-    with patch.object(pipeline, "status_with_controls", side_effect=lambda _: (pipeline.store.load(state.id), execution, integration)):
+    with (
+        patch.object(
+            type(pipeline._common_runtime.runs),
+            'status_with_controls',
+            side_effect=lambda _: (pipeline.store.load(state.id), execution, integration),
+        ),
+    ):
         yield pipeline, state, expected
 
 
@@ -70,7 +76,7 @@ def test_cancel_after_advance_rejects_the_late_child_before_any_work(control):
     cancelled = pipeline.cancel_chat_control(state.id, parent["request_id"])
     assert cancelled["phase"] == "cancelled"
     params = next_step["params"]
-    with patch.object(pipeline, "_execute") as execute, pytest.raises(PipelineError, match="취소"):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute, pytest.raises(PipelineError, match="취소"):
         pipeline.repair_task_from_chat(state.id, "task", request_id=params["requestId"], message=params["message"],
                                       fingerprint=params["fingerprint"], conversation_revision=params["conversationRevision"],
                                       parent_request_id=parent["request_id"])
@@ -92,7 +98,7 @@ def test_child_repair_claims_once_and_preserves_parent_identity(control):
 
     kwargs = dict(request_id=params["requestId"], message=params["message"], fingerprint=params["fingerprint"],
                   conversation_revision=params["conversationRevision"], parent_request_id=parent["request_id"])
-    with patch.object(pipeline, "_execute", side_effect=execute) as work:
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=execute) as work:
         pipeline.repair_task_from_chat(state.id, "task", **kwargs)
         with pytest.raises(PipelineError):
             pipeline.repair_task_from_chat(state.id, "task", **kwargs)
@@ -144,7 +150,7 @@ def test_stop_and_repair_requires_confirmed_stop_receipt_and_unlock(control, pha
                                  execution_id="execution", stop_scope="task", can_stop=True)
     integration = IntegrationControl(IntegrationStatus.NEEDS_VERIFICATION, "verify", "needs_verification", False, False)
     parent = pipeline.request_chat_control(state.id, request_id=str(uuid.uuid4()), intent="stop_repair", message="멈추고 복구해줘", expected=expected)
-    with patch.object(pipeline, "status_with_controls", return_value=(pipeline.store.load(state.id), active, integration)):
+    with patch.object(type(pipeline._common_runtime.runs), 'status_with_controls', return_value=(pipeline.store.load(state.id), active, integration)):
         first = pipeline.advance_chat_control(state.id, parent["request_id"])
     assert first["next_action"] == "stop"
     stop = OperationRecord(first["params"]["requestId"], state.id, "stop", "digest", phase)
@@ -158,7 +164,9 @@ def test_stop_and_repair_requires_confirmed_stop_receipt_and_unlock(control, pha
     stopped = RunExecutionControl(RunExecutionSituation.RESUMABLE, RunExecutionAction.RESUME, "stopped",
                                   RunLockState.UNLOCKED if phase == "stopped" else RunLockState.ACTIVE,
                                   execution_id="execution", stop_scope="task", stop_phase=phase)
-    with patch.object(pipeline, "status_with_controls", return_value=(pipeline.store.load(state.id), stopped, integration)):
+    with (
+        patch.object(type(pipeline._common_runtime.runs), 'status_with_controls', return_value=(pipeline.store.load(state.id), stopped, integration)),
+    ):
         result = pipeline.advance_chat_control(state.id, parent["request_id"])
     assert result["next_action"] == ("repair" if phase == "stopped" else "none")
     if phase == "confirmation_required":
@@ -170,7 +178,7 @@ def test_execution_change_between_advance_and_child_claim_is_rejected(control):
     parent = accept(pipeline, state, expected)
     params = pipeline.advance_chat_control(state.id, parent["request_id"])["params"]
     pipeline.store.save_execution_control(ExecutionControlRecord(state.id, "another-execution", "task", 1))
-    with patch.object(pipeline, "_execute") as work, pytest.raises(PipelineError, match="대상 실행"):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute') as work, pytest.raises(PipelineError, match="대상 실행"):
         pipeline.repair_task_from_chat(state.id, "task", request_id=params["requestId"], message=params["message"],
                                       fingerprint=params["fingerprint"], conversation_revision=params["conversationRevision"],
                                       parent_request_id=parent["request_id"])

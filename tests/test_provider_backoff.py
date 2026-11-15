@@ -204,7 +204,7 @@ def test_pipeline_records_each_actual_retry_call_and_preserves_failed_usage(tmp_
         if cancel_wait and value.phase == "provider_retry_wait":
             cancelled.set()
     def invoke():
-        return pipeline._invoke_provider_command(
+        return pipeline._common_runtime.provider.invoke(
             agent=agent,command_template=(),replacements={},cwd=tmp_path,prompt="return a plan",prompt_path="",
             log_path=tmp_path / "planning.log",action="planning",task_id="planning",model="gpt-test",reasoning_effort="medium",
             usage_context=UsageContext("group", "planning"),cancel_signal=cancelled,progress_callback=progress,

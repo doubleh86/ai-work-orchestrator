@@ -1,3 +1,5 @@
+
+from ai_orchestrator.planning.conversation import task_plan_draft
 import sys
 import uuid
 from dataclasses import replace
@@ -100,7 +102,7 @@ def test_codex_review_survives_edit_confirmation_and_uses_separate_turn(pipeline
     applied = pipeline.apply_effort_mode_to_plan(
         "run-mode", "focused", expected_policy_revision=1, expected_plan_revision=1, reviewer_agent_ids={"t01": reviewer.id},
     )
-    draft = pipeline._task_plan_draft(applied.tasks[0])
+    draft = task_plan_draft(applied.tasks[0])
     draft["title"] = "Renamed app task"
     edited = pipeline.update_plan("run-mode", [draft])
     assert edited.tasks[0].reviewer_agent_id == reviewer.id and edited.tasks[0].review_policy_added
@@ -116,10 +118,17 @@ def test_codex_review_survives_edit_confirmation_and_uses_separate_turn(pipeline
         task = current.tasks[0]
         task.worktree = current.repo_path
         for action, agent in ((TaskAction.EXECUTE, worker), (TaskAction.REVIEW, reviewer)):
-            pipeline._invoke_agent(current, task, agent, action.value, Path(task.worktree) / f"{action.value}.log", action)
+            pipeline._common_runtime.execution.tasks.invoke_agent(
+                current,
+                task,
+                agent,
+                action.value,
+                Path(task.worktree) / f'{action.value}.log',
+                action,
+            )
         return current
 
-    with patch.object(pipeline, "_execute_with_bound_policy", side_effect=invoke):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=invoke):
         pipeline.execute("run-mode")
     execution, review = [call.args[0] for call in pipeline._codex_sdk.run_turn.call_args_list]
     assert execution.conversation_id == review.conversation_id == ""
@@ -146,7 +155,7 @@ def test_review_candidate_eligibility_matches_apply(
         state.planning_model = state.planning_reasoning_effort = ""
     pipeline.store.save(state)
     pipeline.set_effort_mode("run-mode", "focused", expected_revision=0, request_id=str(uuid.uuid4()))
-    with patch.object(pipeline, "_agent_is_available", return_value=available):
+    with patch.object(type(pipeline._common_runtime.availability), "is_available", return_value=available):
         preview = pipeline.desktop_effort_mode_preview("run-mode", "focused", expected_revision=1)
         eligible = provider == "codex" and capabilities == ("general",) and available
         assert bool(preview["tasks"][0]["reviewer_options"]) == eligible
@@ -163,7 +172,10 @@ def test_review_candidate_eligibility_matches_apply(
 def test_running_reservation_uses_short_lock_and_preserves_snapshot(pipeline: Pipeline) -> None:
     pipeline.set_effort_mode("run-mode", "balanced", expected_revision=0, request_id=str(uuid.uuid4()))
     state = pipeline.store.load("run-mode")
-    snapshot = pipeline._resolved_execution_policy(state, pipeline.preview_effort_mode("run-mode", "balanced", expected_revision=1))
+    snapshot = pipeline._common_runtime.execution.policy.resolved_execution_policy(
+        state,
+        pipeline.preview_effort_mode('run-mode', 'balanced', expected_revision=1),
+    )
     execution_id = str(uuid.uuid4())
     pipeline.store.prepare_effort_execution("run-mode", snapshot, execution_request_id=execution_id, expected_revision=1)
     state.stage = Stage.EXECUTING

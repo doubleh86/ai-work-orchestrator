@@ -5,14 +5,19 @@ AI Work Orchestrator 저장소에 적용할 기본 커밋 메시지 기준이다
 ## 기본 형식
 
 ```text
-[AI Orchestrator, 담당자] - 작업 내용
+[AI Orchestrator, 담당자 공개 닉네임] - 작업 내용
 ```
 
 예시:
 
 ```text
-[AI Orchestrator, 홍길동] - 실행 상태 전이 검증 추가
+[AI Orchestrator, project-maintainer] - 실행 상태 전이 검증 추가
 ```
+
+담당자는 공개용 닉네임으로 표시하고 실명·회사 이메일·내부 식별정보를 새로 기록하지 않는다.
+도구 이름을 담당자처럼 임의 기입하거나 다른 사람의 신원을 추정하지 않는다. Git 작성자·커미터의
+닉네임/noreply 이메일과 공개 전 확인은 [저장소 운영 규칙](RepositoryWorkflow.md#커밋push-전-개인정보내부-정보-제거)을 따른다.
+작업 내용은 변경 결과와 목적이 드러나게 쓰며, 이 형식 자체가 commit·push 승인을 추가하지 않는다.
 
 ## 자동 작업 브랜치
 

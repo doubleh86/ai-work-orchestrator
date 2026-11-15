@@ -1,3 +1,5 @@
+
+from ai_orchestrator.execution import ProviderRunner
 import json
 import os
 import subprocess
@@ -8,12 +10,15 @@ import pytest
 
 from ai_orchestrator import provider_executable
 from ai_orchestrator.config import AgentConfig
+from ai_orchestrator.execution import provider_connection
 from ai_orchestrator.pipeline import Pipeline
 
 
 def test_missing_cli_status_never_launches_authentication() -> None:
-    with patch.object(Pipeline, "_resolve_executable", return_value=None), patch.object(Pipeline, "_claude_auth_status") as auth, patch(
-        "ai_orchestrator.pipeline.selected_claude_executable", return_value=""
+    with (
+        patch.object(provider_connection, 'resolve_provider_executable', return_value=None),
+        patch.object(provider_connection, 'claude_auth_status') as auth,
+        patch('ai_orchestrator.execution.provider_connection.selected_claude_executable', return_value=''),
     ):
         status = Pipeline.claude_connection_status()
     assert status == {"installed": False, "authenticated": False, "auth_method": "none", "message": "Claude CLI 설치 필요",
@@ -31,7 +36,7 @@ def test_user_installed_cli_is_reported_when_desktop_path_omits_it(tmp_path: Pat
         result = subprocess.CompletedProcess([], 0, json.dumps({"loggedIn": True, "authMethod": "claude.ai"}), "")
         with patch("ai_orchestrator.provider_executable.Path.home", return_value=tmp_path), patch(
             "ai_orchestrator.provider_executable.shutil.which", return_value=None
-        ), patch("ai_orchestrator.pipeline.subprocess.run", return_value=result) as execute:
+        ), patch("ai_orchestrator.execution.provider_connection.subprocess.run", return_value=result) as execute:
             status = Pipeline.claude_connection_status()
         assert status["installed"] is True
         assert status["authenticated"] is True
@@ -41,8 +46,8 @@ def test_user_installed_cli_is_reported_when_desktop_path_omits_it(tmp_path: Pat
 
 def test_missing_selected_cli_reports_selected_path_without_falling_back(tmp_path: Path) -> None:
     selected = str(tmp_path / "missing" / "claude")
-    with patch("ai_orchestrator.pipeline.selected_claude_executable", return_value=selected), patch.object(
-        Pipeline, "_resolve_executable", return_value=""
+    with patch("ai_orchestrator.execution.provider_connection.selected_claude_executable", return_value=selected), patch.object(
+        provider_connection, "resolve_provider_executable", return_value=""
     ):
         status = Pipeline.claude_connection_status()
     assert status["installed"] is False
@@ -60,7 +65,10 @@ def test_cli_status_returns_only_sanitized_connection_information(code: int, pay
     if isinstance(payload, dict):
         payload = {**payload, "email": "private@example.test", "token": "private-token", "organization": "private-org"}
     result = subprocess.CompletedProcess([], code, json.dumps(payload), "private-stderr")
-    with patch.object(Pipeline, "_resolve_executable", return_value="claude"), patch("ai_orchestrator.pipeline.subprocess.run", return_value=result) as execute:
+    with (
+        patch.object(provider_connection, 'resolve_provider_executable', return_value='claude'),
+        patch('ai_orchestrator.execution.provider_connection.subprocess.run', return_value=result) as execute,
+    ):
         status = Pipeline.claude_connection_status()
     assert status["installed"] is True
     assert (status["authenticated"], status["auth_method"]) == expected
@@ -83,7 +91,10 @@ def test_cli_status_returns_only_sanitized_connection_information(code: int, pay
 def test_connection_returns_only_supported_account_details(fields: dict, email: str, plan: str) -> None:
     payload = {"loggedIn": True, "authMethod": "claude.ai", **fields, "accessToken": "secret-access", "refreshToken": "secret-refresh"}
     result = subprocess.CompletedProcess([], 0, json.dumps(payload), "secret-stderr")
-    with patch.object(Pipeline, "_resolve_executable", return_value="claude"), patch("ai_orchestrator.pipeline.subprocess.run", return_value=result):
+    with (
+        patch.object(provider_connection, 'resolve_provider_executable', return_value='claude'),
+        patch('ai_orchestrator.execution.provider_connection.subprocess.run', return_value=result),
+    ):
         status = Pipeline.claude_connection_status()
     assert status["authenticated"] is True
     assert status["account_email"] == email
@@ -95,7 +106,10 @@ def test_connection_returns_only_supported_account_details(fields: dict, email: 
 def test_other_authentication_does_not_display_a_previous_subscription_account(method: str) -> None:
     payload = {"loggedIn": True, "authMethod": method, "email": "old@example.test", "subscriptionType": "pro"}
     result = subprocess.CompletedProcess([], 0, json.dumps(payload), "")
-    with patch.object(Pipeline, "_resolve_executable", return_value="claude"), patch("ai_orchestrator.pipeline.subprocess.run", return_value=result):
+    with (
+        patch.object(provider_connection, 'resolve_provider_executable', return_value='claude'),
+        patch('ai_orchestrator.execution.provider_connection.subprocess.run', return_value=result),
+    ):
         status = Pipeline.claude_connection_status()
     assert status["authenticated"] is True
     assert status["account_email"] == ""
@@ -103,7 +117,10 @@ def test_other_authentication_does_not_display_a_previous_subscription_account(m
 
 
 def test_status_timeout_is_unknown_and_does_not_retry_or_login() -> None:
-    with patch.object(Pipeline, "_resolve_executable", return_value="claude"), patch("ai_orchestrator.pipeline.subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 5)) as execute:
+    with (
+        patch.object(provider_connection, 'resolve_provider_executable', return_value='claude'),
+        patch('ai_orchestrator.execution.provider_connection.subprocess.run', side_effect=subprocess.TimeoutExpired('claude', 5)) as execute,
+    ):
         status = Pipeline.claude_connection_status()
     assert status["authenticated"] is None
     assert status["auth_method"] == "error"
@@ -118,7 +135,7 @@ def test_status_timeout_is_unknown_and_does_not_retry_or_login() -> None:
 ])
 def test_logged_out_cli_errors_point_to_login_without_reproducing_provider_output(output: str) -> None:
     agent = AgentConfig("claude-general", ("planning",), ("claude", "-p"), provider_id="claude")
-    message = Pipeline._provider_command_failure_message(agent, 1, output, Path("planning-chat.log"))
+    message = ProviderRunner.failure_message(agent, 1, output, Path("planning-chat.log"))
     assert "Claude 로그인이 필요합니다." in message
     assert "AI 연결" in message
     assert "연결을 다시 확인" in message
@@ -134,5 +151,5 @@ def test_logged_out_cli_errors_point_to_login_without_reproducing_provider_outpu
 ])
 def test_other_exit_errors_do_not_claim_claude_is_logged_out(provider: str, output: str) -> None:
     agent = AgentConfig("example", ("planning",), ("example",), provider_id=provider)
-    message = Pipeline._provider_command_failure_message(agent, 1, output, Path("provider.log"))
+    message = ProviderRunner.failure_message(agent, 1, output, Path("provider.log"))
     assert message == "agent example exited with 1; see provider.log"

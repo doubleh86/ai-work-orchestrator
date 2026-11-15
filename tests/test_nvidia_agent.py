@@ -1,3 +1,10 @@
+
+from ai_orchestrator.execution import ProviderRunner
+from ai_orchestrator.execution.provider_commands import agent_command
+from ai_orchestrator.execution.provider_commands import command_with_model
+from ai_orchestrator.execution.provider_runtime import translate_provider_error
+
+from ai_orchestrator.execution.provider_runner import ProviderRunner
 import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -43,8 +50,8 @@ def finish(reason="stop", **tokens):
 
 def invoke(pipeline, tmp_path, **options):
     agent = pipeline.agents[NVIDIA_AGENT_ID]
-    return pipeline._run_provider_command(
-        agent=agent, command_template=pipeline._agent_command(agent, "execute"), replacements={"{run_id}": "run"},
+    return pipeline._common_runtime.provider.run(
+        agent=agent, command_template=agent_command(agent, "execute"), replacements={"{run_id}": "run"},
         cwd=tmp_path, prompt="공개 예제 수정", prompt_path="prompt.md", log_path=tmp_path / "agent.log",
         action="execute", task_id="task", **options,
     )
@@ -57,7 +64,7 @@ def test_trial_profile_is_available_only_after_setup_and_never_changes_default(t
     assert not original.path.exists()
     assert original.routing.default_provider == "codex"
     assert pipeline.agents[NVIDIA_AGENT_ID].manual_only
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "opencode.exe")
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "opencode.exe")
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     assert [choice.provider_id for choice in pipeline.execution_provider_choices(["general"])] == ["codex"]
     status = pipeline.provider_statuses("nvidia")[0]
@@ -70,7 +77,7 @@ def test_trial_profile_is_available_only_after_setup_and_never_changes_default(t
     assert status.available and status.authenticated is None and "미검증" in status.auth_label
     assert any(profile["provider_id"] == "nvidia" and profile["model"] == NVIDIA_MODEL_PRESETS[0]
                for profile in _expanded_provider_choices(choices))
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "")
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "")
     assert "OpenCode" in pipeline.provider_statuses("nvidia")[0].auth_label
 
 
@@ -88,7 +95,7 @@ def test_trial_profile_does_not_become_automatic_worker_or_reviewer(tmp_path):
 def test_command_uses_explicit_provider_model_and_disables_plugins(tmp_path):
     pipeline = configured_pipeline(tmp_path)
     agent = pipeline.agents[NVIDIA_AGENT_ID]
-    command = pipeline._command_with_model(agent, (), "nvidia/example-model")
+    command = command_with_model(agent, (), "nvidia/example-model")
     assert command == nvidia_command("nvidia/example-model")
     assert command[-1] == "nvidia/nvidia/example-model"
     assert "--pure" in command and "--attach" not in command
@@ -190,11 +197,11 @@ def test_stop_after_file_tools_without_a_final_answer_stays_an_explicit_failure(
 def test_runtime_preserves_the_completion_failure_reason_without_replaying_tools(tmp_path, monkeypatch, output, message):
     pipeline = configured_pipeline(tmp_path)
     monkeypatch.setenv("NVIDIA_API_KEY", "test-key-not-real")
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "opencode.exe")
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "opencode.exe")
     process = Mock(returncode=0)
     process.communicate.return_value = (output, None)
     popen = Mock(return_value=process)
-    monkeypatch.setattr("ai_orchestrator.pipeline.subprocess.Popen", popen)
+    monkeypatch.setattr("ai_orchestrator.execution.provider_runner.subprocess.Popen", popen)
     with pytest.raises(PipelineError, match=message) as caught:
         invoke(pipeline, tmp_path)
     assert type(caught.value) is PipelineError
@@ -207,11 +214,11 @@ def test_runtime_preserves_the_completion_failure_reason_without_replaying_tools
 def test_runtime_feeds_prompt_via_stdin_records_usage_and_redacts_output(tmp_path, monkeypatch):
     pipeline = configured_pipeline(tmp_path)
     monkeypatch.setenv("NVIDIA_API_KEY", "test-key-not-real")
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "opencode.exe")
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "opencode.exe")
     process = Mock(returncode=0)
     process.communicate.return_value = (stream(text("완료 test-key-not-real"), finish(input=6, output=3)), None)
     popen = Mock(return_value=process)
-    monkeypatch.setattr("ai_orchestrator.pipeline.subprocess.Popen", popen)
+    monkeypatch.setattr("ai_orchestrator.execution.provider_runner.subprocess.Popen", popen)
     observations = []
     assert invoke(pipeline, tmp_path, usage_callback=observations.append) == "완료 [REDACTED]"
     process.communicate.assert_called_once_with(input="공개 예제 수정", timeout=1800)
@@ -227,10 +234,10 @@ def test_runtime_feeds_prompt_via_stdin_records_usage_and_redacts_output(tmp_pat
 def test_zero_exit_error_events_are_failures(tmp_path, monkeypatch, message, expected):
     pipeline = configured_pipeline(tmp_path)
     monkeypatch.setenv("NVIDIA_API_KEY", "test-key-not-real")
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "opencode.exe")
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "opencode.exe")
     process = Mock(returncode=0)
     process.communicate.return_value = (stream({"type": "error", "error": {"data": {"message": message}}}), None)
-    monkeypatch.setattr("ai_orchestrator.pipeline.subprocess.Popen", Mock(return_value=process))
+    monkeypatch.setattr("ai_orchestrator.execution.provider_runner.subprocess.Popen", Mock(return_value=process))
     with pytest.raises(expected):
         invoke(pipeline, tmp_path)
     assert message in (tmp_path / "agent.log").read_text(encoding="utf-8")
@@ -239,12 +246,12 @@ def test_zero_exit_error_events_are_failures(tmp_path, monkeypatch, message, exp
 def test_runtime_keeps_stop_and_timeout_boundaries(tmp_path, monkeypatch):
     pipeline = configured_pipeline(tmp_path)
     monkeypatch.setenv("NVIDIA_API_KEY", "test-key-not-real")
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "opencode.exe")
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "opencode.exe")
     process = Mock(returncode=0)
     process.communicate.return_value = ("test-key-not-real", None)
-    monkeypatch.setattr("ai_orchestrator.pipeline.subprocess.Popen", Mock(return_value=process))
+    monkeypatch.setattr("ai_orchestrator.execution.provider_runner.subprocess.Popen", Mock(return_value=process))
     terminate = Mock()
-    monkeypatch.setattr(pipeline, "_terminate_agent_process", terminate)
+    monkeypatch.setattr(ProviderRunner, 'terminate_process', terminate)
     signal = Mock(request_id="request")
     signal.is_set.return_value = True
     with pytest.raises(ExecutionStopped):
@@ -261,7 +268,7 @@ def test_structured_http_status_is_not_lost_when_message_has_no_status_number(tm
     output = stream({"type": "error", "error": {"data": {"message": "Request failed", "statusCode": 429}}})
     with pytest.raises(NvidiaAgentError, match="HTTP 429") as caught:
         parse_nvidia_output(output)
-    assert isinstance(Pipeline._nvidia_command_failure(str(caught.value), tmp_path / "agent.log"), ProviderRequestLimitError)
+    assert isinstance(translate_provider_error(ProviderRunner.nvidia_failure(str(caught.value), tmp_path / "agent.log")), ProviderRequestLimitError)
 
 
 def test_request_credentials_are_isolated_and_pipelines_keep_their_snapshot(tmp_path, monkeypatch):
@@ -273,7 +280,7 @@ def test_request_credentials_are_isolated_and_pipelines_keep_their_snapshot(tmp_
         pipeline = configured_pipeline(tmp_path / params["name"])
         pipelines[params["name"]] = pipeline
         barrier.wait(timeout=5)
-        monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "opencode.exe")
+        monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "opencode.exe")
         return pipeline.provider_statuses("nvidia")
 
     service = Mock(dispatch=dispatch)
@@ -314,17 +321,17 @@ def test_app_key_is_injected_only_into_nvidia_process_and_redacted(tmp_path, mon
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     with nvidia_credential_scope("app-fixture-key"):
         pipeline = configured_pipeline(tmp_path)
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "mock.exe")
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "mock.exe")
     process = Mock(returncode=0)
     process.communicate.return_value = (stream(text("done app-fixture-key"), finish()), None)
     popen = Mock(return_value=process)
-    monkeypatch.setattr("ai_orchestrator.pipeline.subprocess.Popen", popen)
+    monkeypatch.setattr("ai_orchestrator.execution.provider_runner.subprocess.Popen", popen)
     with ThreadPoolExecutor(max_workers=1) as executor:
         assert executor.submit(invoke, pipeline, tmp_path).result() == "done [REDACTED]"
     assert popen.call_args.kwargs["env"]["NVIDIA_API_KEY"] == "app-fixture-key"
     assert "app-fixture-key" not in (tmp_path / "agent.log").read_text(encoding="utf-8")
     process.communicate.return_value = ("other output", None)
-    pipeline._run_provider_command(
+    pipeline._common_runtime.provider.run(
         agent=AgentConfig("other", ("general",), ("other",), provider_id="custom"), command_template=("other",),
         replacements={"{run_id}": "run"}, cwd=tmp_path, prompt="example", prompt_path="prompt.md", log_path=tmp_path / "other.log",
         action="execute", task_id="other",
@@ -341,10 +348,10 @@ def test_model_keys_override_default_and_remain_fixed_across_worker_threads(tmp_
     bindings = {"vendor/model-a": "model-a-fixture", "vendor/model-b": "model-b-fixture"}
     with nvidia_credential_scope("default-fixture", bindings):
         pipeline = configured_pipeline(tmp_path)
-        monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "mock.exe")
+        monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "mock.exe")
         choices = _expanded_provider_choices(pipeline.execution_provider_choices(["general"]))
         assert {item["model"] for item in choices if item["provider_id"] == "nvidia"} >= set(bindings)
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda _value: "mock.exe")
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _value: "mock.exe")
     observed = []
 
     def start(*args, **kwargs):
@@ -354,7 +361,7 @@ def test_model_keys_override_default_and_remain_fixed_across_worker_threads(tmp_
         process.communicate.return_value = (stream(text(f"done {selected}"), finish()), None)
         return process
 
-    monkeypatch.setattr("ai_orchestrator.pipeline.subprocess.Popen", start)
+    monkeypatch.setattr("ai_orchestrator.execution.provider_runner.subprocess.Popen", start)
     with nvidia_credential_scope("new-default", {"vendor/model-a": "new-model-key"}):
         with ThreadPoolExecutor(max_workers=1) as executor:
             for model in ("vendor/model-a", "vendor/model-b", "vendor/unbound", ""):
@@ -401,6 +408,6 @@ def test_registered_model_is_valid_for_manual_override_but_unregistered_models_a
         pipeline = configured_pipeline(tmp_path)
     task = WorkTask(id="task", title="example", capabilities=["general"], agent_id=NVIDIA_AGENT_ID, provider_id="nvidia")
     state = RunState(id="run", spec_path="", spec_digest="", repo_path=str(tmp_path), main_branch="main", stage=Stage.PLANNED, tasks=[task])
-    pipeline._validate_task_model_overrides(state, {"task": "vendor/registered"}, {})
+    pipeline._common_runtime.execution.profiles.validate_task_model_overrides(state, {"task": "vendor/registered"}, {})
     with pytest.raises(PipelineError, match="unsupported execution model"):
-        pipeline._validate_task_model_overrides(state, {"task": "vendor/unregistered"}, {})
+        pipeline._common_runtime.execution.profiles.validate_task_model_overrides(state, {"task": "vendor/unregistered"}, {})

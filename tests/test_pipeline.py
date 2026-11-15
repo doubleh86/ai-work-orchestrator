@@ -1,3 +1,31 @@
+
+from ai_orchestrator.execution import ProviderRunner
+from ai_orchestrator.execution import scope_path_matches
+from ai_orchestrator.execution.provider_commands import command_with_claude_session
+from ai_orchestrator.execution.provider_commands import command_with_model
+from ai_orchestrator.execution.results import record_group_result
+from ai_orchestrator.execution.task_prompts import task_prompt_from_state
+from ai_orchestrator.integration import MainChangeService
+from ai_orchestrator.integration import integration_branch_name
+from ai_orchestrator.integration.archive_views import archive_summary
+from ai_orchestrator.planning import planning_preview_task_fields
+from ai_orchestrator.planning.conversation import clarification_context
+from ai_orchestrator.planning.conversation import planning_materialization_prompt
+from ai_orchestrator.planning.conversation import planning_message_is_apply_control
+from ai_orchestrator.planning.conversation import planning_message_requests_initial_tasks
+from ai_orchestrator.run_queries import summary_attention_reasons
+
+from ai_orchestrator.execution import VerificationRunner
+from ai_orchestrator.execution import commit_queue_tasks
+from ai_orchestrator.execution import flow as execution_flow
+from ai_orchestrator.execution import task_execution_profile_snapshot
+from ai_orchestrator.execution import with_task_worktree_contract
+from ai_orchestrator.planning.conversation import planning_message_requests_apply
+from ai_orchestrator.planning.conversation import task_plan_draft
+
+from ai_orchestrator.execution.task_workflows import TaskWorkflows
+
+from ai_orchestrator.execution.provider_runner import ProviderRunner
 import hashlib
 import json
 import os
@@ -58,6 +86,7 @@ from ai_orchestrator.models import (
     WorkspaceLocationSource,
     WorkspaceState,
 )
+from ai_orchestrator.execution import provider_connection
 from ai_orchestrator.pipeline import (
     AGENT_OUTPUT_DRAIN_TIMEOUT_SECONDS,
     AGENT_TERMINATION_TIMEOUT_SECONDS,
@@ -112,7 +141,7 @@ class PipelineTest(unittest.TestCase):
             )
             pipeline.store.save(source)
             output = 'AI_RESULT_REVISION_PROPOSAL: {"summary":"설정 저장 오류 수정","reason":"broken Task의 실패 기록","task_ids":["broken"],"paths":["settings.py"],"question":""}'
-            with patch.object(pipeline, "_invoke_provider_command", return_value=output) as provider:
+            with patch.object(pipeline._common_runtime.provider, 'invoke', return_value=output) as provider:
                 proposal = pipeline.propose_result_revision(source.id, proposal_id=str(uuid.uuid4()), text="", focus_task_id="broken")
                 reused = pipeline.propose_result_revision(source.id, proposal_id=str(uuid.uuid4()), text="", focus_task_id="broken")
             self.assertEqual(proposal["status"], "ready")
@@ -121,7 +150,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(provider.call_count, 1)
             self.assertEqual(provider.call_args.kwargs["agent"].review_sandbox_mode, "read-only")
             self.assertEqual(provider.call_args.kwargs["agent"].review_approval_mode, "deny-all")
-            self.assertEqual(pipeline._result_revision_retry_instruction(source.id, "broken"), "")
+            self.assertEqual(pipeline._common_runtime.execution.tasks.result_revision_retry_instruction(source.id, "broken"), "")
             saved = pipeline.create_result_revision_request(
                 source.id, request_id=str(uuid.uuid4()), text="", task_ids=["broken"], paths=["settings.py"],
                 proposal_id=str(proposal["proposal_id"]),
@@ -133,9 +162,9 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(saved["retry_fingerprint"], context["fingerprint"])
             self.assertTrue(saved["task_contract_digest"])
             restored = pipeline.store.load(source.id)
-            prompt = pipeline.waiting_prompt(restored, pipeline._summary_execution_control(restored))
+            prompt = pipeline.waiting_prompt(restored, pipeline._common_runtime.runs.controls.summary_control(restored))
             self.assertEqual((prompt["action"], prompt["task_id"]), ("retry", "broken"))
-            self.assertIn(saved["request_id"], pipeline._result_revision_retry_instruction(source.id, "broken"))
+            self.assertIn(saved["request_id"], pipeline._common_runtime.execution.tasks.result_revision_retry_instruction(source.id, "broken"))
             self.assertEqual(len(pipeline.store.list_runs()), 1)
             self.assertEqual(pipeline.store.load(source.id).tasks[0].status, TaskStatus.FAILED)
             self.assertEqual(pipeline.create_result_revision_request(
@@ -144,11 +173,11 @@ class PipelineTest(unittest.TestCase):
             ), saved)
             task.prompt_path = str(root / "original-task.md")
             Path(task.prompt_path).write_text("원래 작업 지시", encoding="utf-8")
-            with (patch.object(pipeline, "_run_executor") as execute,
-                  patch.object(pipeline, "_run_task_verification"),
-                  patch.object(pipeline, "_record_task_result"),
+            with (patch.object(pipeline._common_runtime.execution.tasks, 'run_executor') as execute,
+                  patch.object(pipeline._common_runtime.execution.tasks, 'run_task_verification'),
+                  patch.object(pipeline._common_runtime.execution.tasks, 'record_task_result'),
                   patch.object(pipeline.git, "head", return_value="c" * 40)):
-                pipeline._run_task(source, task)
+                pipeline._common_runtime.execution.tasks.run_task(source, task)
             self.assertIn(saved["request_id"], execute.call_args.args[2])
             self.assertIn("원래 작업 지시", execute.call_args.args[2])
             source.stage = Stage.PUSHED
@@ -181,7 +210,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(question["task_ids"], [])
             invalid = 'AI_RESULT_REVISION_PROPOSAL: {"summary":"수정","reason":"근거","task_ids":["missing"],"paths":[],"question":""}'
             valid = 'AI_RESULT_REVISION_PROPOSAL: {"summary":"완료 수정","reason":"done Task","task_ids":["done"],"paths":[],"question":""}'
-            with patch.object(pipeline, "_invoke_provider_command", side_effect=[invalid, valid]):
+            with patch.object(pipeline._common_runtime.provider, 'invoke', side_effect=[invalid, valid]):
                 rejected = pipeline.propose_result_revision(source.id, proposal_id=str(uuid.uuid4()), text="문구 수정")
                 proposal = pipeline.propose_result_revision(source.id, proposal_id=str(uuid.uuid4()), text="문구 수정")
             self.assertEqual(rejected["status"], "failed")
@@ -338,15 +367,15 @@ class PipelineTest(unittest.TestCase):
                     TaskActionResult("verify", status="succeeded", passed_commands=[["python", "-m", "pytest"]]),
                 ],
             )
-            pipeline._record_task_result(task)
-            pipeline._record_task_result(task)
+            pipeline._common_runtime.execution.tasks.record_task_result(task)
+            pipeline._common_runtime.execution.tasks.record_task_result(task)
             state = RunState(
                 id="final-record", spec_path="", spec_digest="digest", repo_path=str(repo), main_branch="main",
                 stage=Stage.VERIFIED, tasks=[task], verified_main_head=baseline,
                 verified_integration_head=committed,
                 verification_attempts=[VerificationAttempt(id="verify-one", status="succeeded")],
             )
-            pipeline._record_group_result(state)
+            record_group_result(state, read_commit_files=pipeline._common_runtime.execution.tasks.committed_result_files)
             pipeline.store.save(state)
             restored = pipeline.store.load(state.id)
             self.assertEqual(len(restored.tasks[0].result_history), 1)
@@ -355,7 +384,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(restored.tasks[0].result_history[0].self_report, "실제 작업 설명\n두 번째 줄")
             self.assertEqual(restored.tasks[0].result_history[0].passed_commands, [["python", "-m", "pytest"]])
             self.assertEqual(restored.group_result_history[0].files_state, "confirmed")
-            summary = pipeline._archive_summary(restored, "2026-09-29T02:00:00+00:00", [])
+            summary = archive_summary(restored, "2026-09-29T02:00:00+00:00", [])
             self.assertIn("A final.txt", summary)
             self.assertIn("AI 자체 보고: 실제 작업 설명 / 두 번째 줄", summary)
             self.assertNotIn("transient.txt", summary)
@@ -369,7 +398,7 @@ class PipelineTest(unittest.TestCase):
                 "finished", "완료", ["general"], status=TaskStatus.COMPLETED,
                 action_results=[TaskActionResult("verify", status="succeeded", passed_commands=[])],
             )
-            pipeline._record_task_result(task)
+            pipeline._common_runtime.execution.tasks.record_task_result(task)
             self.assertEqual(task.result_history[0].files_state, "unavailable")
             self.assertIn("commit", task.result_history[0].error)
             self.assertEqual(task.result_history[0].verification_status, "unverified")
@@ -386,7 +415,7 @@ class PipelineTest(unittest.TestCase):
             committed = pipeline.git.head(repo)
             failed = RunState("failed-finalization", "", "digest", str(repo), "main", Stage.READY_TO_MERGE)
             with self.assertRaisesRegex(PipelineError, "finalization failed"):
-                with pipeline._step(failed, RunStep.VERIFY):
+                with pipeline._common_runtime.steps.step(failed, RunStep.VERIFY):
                     failed.verified_main_head = baseline
                     failed.verified_integration_head = committed
                     raise PipelineError("finalization failed")
@@ -396,10 +425,10 @@ class PipelineTest(unittest.TestCase):
                 failed.verification_attempts[-1].id, baseline, committed, "2026-09-29T00:00:00+00:00",
                 files_state="confirmed", files=[ResultFileChange("final.txt", "A")],
             ))
-            self.assertIn("통합 검증 실패 · 최종 변경 파일 확인 불가", pipeline._archive_summary(failed, "2026-09-29T01:00:00+00:00", []))
+            self.assertIn("통합 검증 실패 · 최종 변경 파일 확인 불가", archive_summary(failed, "2026-09-29T01:00:00+00:00", []))
 
             succeeded = RunState("successful-finalization", "", "digest", str(repo), "main", Stage.READY_TO_MERGE)
-            with pipeline._step(succeeded, RunStep.VERIFY):
+            with pipeline._common_runtime.steps.step(succeeded, RunStep.VERIFY):
                 succeeded.verified_main_head = baseline
                 succeeded.verified_integration_head = committed
                 succeeded.transition(Stage.VERIFIED, "verification passed")
@@ -408,7 +437,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(succeeded.group_result_history[0].verification_attempt_id, succeeded.verification_attempts[-1].id)
             self.assertEqual([(item.change, item.path) for item in succeeded.group_result_history[0].files], [("A", "final.txt")])
             succeeded.group_result_history.clear()
-            self.assertIn("통합 검증 완료 · 최종 변경 파일 확인 불가", pipeline._archive_summary(
+            self.assertIn("통합 검증 완료 · 최종 변경 파일 확인 불가", archive_summary(
                 succeeded, "2026-09-29T02:00:00+00:00", []
             ))
 
@@ -428,7 +457,7 @@ class PipelineTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            [task.id for task in Pipeline._commit_queue_tasks(state)],
+            [task.id for task in commit_queue_tasks(state)],
             ["independent", "base", "dependent"],
         )
 
@@ -459,7 +488,7 @@ class PipelineTest(unittest.TestCase):
             )
             pipeline.store.save(state)
 
-            pipeline._record_verification_failure(
+            pipeline._common_runtime.execution.verification.record_verification_failure(
                 state,
                 tuple(command),
                 "verification_command",
@@ -499,7 +528,7 @@ class PipelineTest(unittest.TestCase):
             lock_state=RunLockState.UNLOCKED,
         )
         self.assertEqual(
-            Pipeline._summary_attention_reasons(resumable, resume_control, deployment_configured=False, remote_configured=True),
+            summary_attention_reasons(resumable, resume_control, deployment_configured=False, remote_configured=True),
             ("resume",),
         )
 
@@ -510,17 +539,17 @@ class PipelineTest(unittest.TestCase):
             action=RunExecutionAction.NONE,
         )
         self.assertEqual(
-            Pipeline._summary_attention_reasons(integration, complete_control, deployment_configured=False, remote_configured=True),
+            summary_attention_reasons(integration, complete_control, deployment_configured=False, remote_configured=True),
             ("integration",),
         )
 
         pushed = replace(resumable, stage=Stage.PUSHED)
         self.assertEqual(
-            Pipeline._summary_attention_reasons(pushed, complete_control, deployment_configured=True, remote_configured=True),
+            summary_attention_reasons(pushed, complete_control, deployment_configured=True, remote_configured=True),
             ("deployment",),
         )
         self.assertEqual(
-            Pipeline._summary_attention_reasons(pushed, complete_control, deployment_configured=False, remote_configured=True),
+            summary_attention_reasons(pushed, complete_control, deployment_configured=False, remote_configured=True),
             (),
         )
 
@@ -745,7 +774,7 @@ class PipelineTest(unittest.TestCase):
             state = pipeline.execute(state.id, manual=True)
             worktree = Path(state.execution_worktree)
             completed_head = pipeline.git.head(worktree)
-            candidate_path = pipeline._run_worktree_root(state) / ".conflict-resolution" / str(uuid.uuid4())
+            candidate_path = pipeline._common_runtime.execution.workspace.run_worktree_root(state) / ".conflict-resolution" / str(uuid.uuid4())
             candidate_path.mkdir(parents=True)
             (candidate_path / "unowned.txt").write_text("preserve\n", encoding="utf-8")
             state.stage = Stage.PUSHED
@@ -947,7 +976,7 @@ class PipelineTest(unittest.TestCase):
                 return "허용 범위 밖 파일도 변경했습니다."
 
             with (
-                patch.object(pipeline, "_invoke_provider_command", side_effect=change_outside_conflict),
+                patch.object(pipeline._common_runtime.provider, 'invoke', side_effect=change_outside_conflict),
                 self.assertRaisesRegex(PipelineError, "허용된 충돌 파일 밖"),
             ):
                 pipeline.prepare_conflict_resolution(
@@ -959,7 +988,7 @@ class PipelineTest(unittest.TestCase):
                 )
 
             first_request = "e99be4e1-a900-45cb-84fc-c9a0f03f0455"
-            residue = (pipeline._run_worktree_root(failed) / ".conflict-resolution" / first_request).resolve()
+            residue = (pipeline._common_runtime.execution.workspace.run_worktree_root(failed) / ".conflict-resolution" / first_request).resolve()
             residue.mkdir(parents=True, exist_ok=True)
             failed_state = pipeline.store.load(failed.id)
             assert failed_state.integration_conflict is not None and failed_state.integration_conflict.candidate is not None
@@ -969,7 +998,7 @@ class PipelineTest(unittest.TestCase):
             generation_request = "914772ee-2868-4b09-9241-ea0eb733effc"
             pipeline.agents["codex_worker"] = AgentConfig("codex_worker", ("general",), (), 1, provider_id="codex")
             pipeline._codex_sdk = connected_codex_sdk()
-            with patch.object(pipeline, "_invoke_provider_command", side_effect=resolve_candidate) as invoke:
+            with patch.object(pipeline._common_runtime.provider, 'invoke', side_effect=resolve_candidate) as invoke:
                 prepared = pipeline.prepare_conflict_resolution(
                     failed.id,
                     conflict_id=conflict.id,
@@ -1049,13 +1078,13 @@ class PipelineTest(unittest.TestCase):
             pipeline = Pipeline(Config(path=root / "orchestrator.toml", project=ProjectConfig(repo=repo), execution=ExecutionConfig(), agents=()))
             state = RunState(id="nonempty-candidate", spec_path="", spec_digest="digest", repo_path=str(repo), main_branch="main", stage=Stage.FAILED)
             request_id = "4a5be6f5-777d-422d-b310-e5ca09b3f423"
-            candidate_path = pipeline._run_worktree_root(state) / ".conflict-resolution" / request_id
+            candidate_path = pipeline._common_runtime.execution.workspace.run_worktree_root(state) / ".conflict-resolution" / request_id
             candidate_path.mkdir(parents=True)
             (candidate_path / "keep.txt").write_text("user data\n", encoding="utf-8")
             candidate = ConflictResolutionCandidate(id=f"candidate-{request_id}", request_id=request_id, worktree=str(candidate_path))
 
             with self.assertRaisesRegex(PipelineError, "비어 있지 않거나 사용 중"):
-                pipeline._discard_conflict_candidate_worktree(state, candidate)
+                pipeline._common_runtime.integration.conflicts.discard_conflict_candidate_worktree(state, candidate)
             self.assertEqual((candidate_path / "keep.txt").read_text(encoding="utf-8"), "user data\n")
 
     def test_execution_control_uses_lock_and_state_as_one_backend_decision(self) -> None:
@@ -1137,7 +1166,7 @@ class PipelineTest(unittest.TestCase):
             pipeline.store.save(state)
             original = pipeline.store.load(state.id).to_dict()
             with (
-                patch("ai_orchestrator.pipeline.time") as clock,
+                patch("ai_orchestrator.integration.recovery.time") as clock,
                 patch.object(pipeline.git, "ensure_worktree_clean", wraps=pipeline.git.ensure_worktree_clean) as clean,
                 patch.object(pipeline.git, "head") as head,
             ):
@@ -1199,7 +1228,13 @@ class PipelineTest(unittest.TestCase):
                 expected_paths=["recovered.txt"],
             )
             proposals.append(new_task)
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary="recovered", server_work=False, tasks=proposals)):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary='recovered', server_work=False, tasks=proposals),
+                ),
+            ):
                 updated = pipeline.apply_recovery(state.id, plan["fingerprint"], [source.id], approved=True)
             self.assertEqual(updated.id, state.id)
             self.assertEqual(updated.stage, Stage.FAILED)
@@ -1215,7 +1250,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(pipeline.recovery_plan(state.id)["sources"], [])
             plan = pipeline.recovery_plan(state.id)
             partial_request_id = "987879ed-9b8b-468e-b0fb-bd77a6479a80"
-            with patch.object(pipeline, "_build_plan", side_effect=PlanningError("planner unavailable")):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PlanningError("planner unavailable")):
                 with self.assertRaisesRegex(PipelineError, "Task 재계획에 실패"):
                     pipeline.apply_recovery(
                         state.id,
@@ -1231,7 +1266,13 @@ class PipelineTest(unittest.TestCase):
             integrated = partial["result_commit"]
             retry_proposals = deepcopy(pipeline.store.load(state.id).tasks)
             retry_request_id = "5b42fcb7-41eb-4b6f-bf75-14caab17e30c"
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary="recovered again", server_work=False, tasks=retry_proposals)):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary='recovered again', server_work=False, tasks=retry_proposals),
+                ),
+            ):
                 resumed = pipeline.apply_recovery(
                     state.id,
                     plan["fingerprint"],
@@ -1265,7 +1306,7 @@ class PipelineTest(unittest.TestCase):
             pipeline.store.save(state)
             plan = pipeline.recovery_plan(state.id)
             request_id = str(uuid.uuid4())
-            with patch.object(pipeline, "_build_plan", side_effect=PlanningError("선택한 AI 모델이 혼잡합니다. upstream overloaded")):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PlanningError("선택한 AI 모델이 혼잡합니다. upstream overloaded")):
                 with self.assertRaisesRegex(PipelineError, "Task 재계획에 실패"):
                     pipeline.apply_recovery(state.id, plan["fingerprint"], [], approved=True, request_id=request_id)
             partial = pipeline.recovery_operation(state.id, request_id)
@@ -1278,9 +1319,13 @@ class PipelineTest(unittest.TestCase):
             pending[0].description = "same failed task; keep completion contract"
             resumed_id = str(uuid.uuid4())
             with (
-                patch.object(pipeline.git, "recover_commits", side_effect=AssertionError("must not reintegrate")),
-                patch.object(pipeline, "_build_plan", return_value=Plan(summary="recovered", server_work=False, tasks=pending)),
-                patch.object(pipeline, "_run_task", side_effect=AssertionError("must not execute any task")),
+                patch.object(pipeline.git, 'recover_commits', side_effect=AssertionError('must not reintegrate')),
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary='recovered', server_work=False, tasks=pending),
+                ),
+                patch.object(pipeline._common_runtime.execution.tasks, 'run_task', side_effect=AssertionError('must not execute any task')),
             ):
                 resumed = pipeline.apply_recovery(state.id, plan["fingerprint"], [], approved=True,
                                                   request_id=resumed_id, resume_request_id=request_id)
@@ -1387,14 +1432,20 @@ class PipelineTest(unittest.TestCase):
             state.tasks.insert(0, done)
             state.fail_step(RunStep.AGENT_EXECUTION, "verification failed")
             state.refresh_task_readiness()
-            pipeline._append_planning_user_message(state, "실패한 Task 요구사항을 수정해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "실패한 Task 요구사항을 수정해 주세요.")
             pipeline.store.save(state)
             original_done = deepcopy(state.to_dict()["tasks"][0])
             proposals = deepcopy(state.tasks)
             proposals[0].description = "must not overwrite completed task"
             proposals[1].description = "수정된 요구사항"
             proposals[1].status = TaskStatus.PENDING
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary="updated", server_work=False, tasks=proposals)):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary='updated', server_work=False, tasks=proposals),
+                ),
+            ):
                 updated = pipeline.send_planning_message(state.id, "지금까지 내용을 Task에 적용해줘")
             self.assertEqual(updated.id, state.id)
             self.assertEqual(updated.stage, Stage.FAILED)
@@ -1405,7 +1456,13 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(blocked["changes"][0]["kind"], "review_required")
             proposals[0].description = state.tasks[0].description
             proposals[0].status = TaskStatus.PENDING
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary="updated", server_work=False, tasks=proposals)):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary='updated', server_work=False, tasks=proposals),
+                ),
+            ):
                 preview = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             self.assertTrue(preview["can_apply"])
             applied = pipeline.apply_planning_preview(
@@ -1428,10 +1485,10 @@ class PipelineTest(unittest.TestCase):
             pipeline, state = self._scope_test_run(Path(directory))
             state.planning_agent_id = "worker"
             state.stage = Stage.EXECUTING
-            pipeline._append_planning_user_message(state, "현재 Task 계획을 다시 정리해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "현재 Task 계획을 다시 정리해 주세요.")
             pipeline.store.save(state)
             original = state.to_dict()["tasks"]
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary="bad", server_work=False, tasks=[])):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', return_value=Plan(summary="bad", server_work=False, tasks=[])):
                 with self.assertRaisesRegex(PlanningError, "task plan must not be empty"):
                     pipeline.send_planning_message(state.id, "지금까지 내용을 Task에 적용해줘")
             restored = pipeline.status(state.id)
@@ -1443,23 +1500,27 @@ class PipelineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
             state.planning_agent_id = "worker"
-            pipeline._append_planning_user_message(state, "실패 뒤 적용할 요구사항을 보존해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "실패 뒤 적용할 요구사항을 보존해 주세요.")
             pipeline.store.save(state)
 
             def fail(current, *_args):
                 pipeline.send_planning_message(current.id, "지금까지 내용을 Task에 적용해줘")
                 raise PipelineError("worker failed")
 
-            apply_after_batch = pipeline._apply_queued_changes_after_batch
+            apply_after_batch = pipeline._common_runtime.execution.flow.apply_queued_changes_after_batch
 
             def busy(current):
                 with pipeline.store.planning_chat_lock(current.id):
                     return apply_after_batch(current)
 
             with (
-                patch.object(pipeline, "_invoke_agent", side_effect=fail),
-                patch.object(pipeline, "_apply_queued_changes_after_batch", side_effect=busy),
-                patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=deepcopy(state.tasks))),
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=fail),
+                patch.object(pipeline._common_runtime.execution.flow, 'apply_queued_changes_after_batch', side_effect=busy),
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=deepcopy(state.tasks)),
+                ),
             ):
                 failed = pipeline.execute(state.id)
             self.assertEqual(failed.stage, Stage.FAILED)
@@ -1476,11 +1537,17 @@ class PipelineTest(unittest.TestCase):
             state.planning_agent_id = "worker"
             state.stage = Stage.EXECUTING
             state.tasks[0].status = TaskStatus.COMPLETED
-            pipeline._append_planning_user_message(state, "완료 결과 뒤에 후속 작업을 추가해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "완료 결과 뒤에 후속 작업을 추가해 주세요.")
             pipeline.store.save(state)
             proposal = deepcopy(state.tasks)
             proposal[0].status = TaskStatus.PENDING
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=proposal)):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=proposal),
+                ),
+            ):
                 previewed = pipeline.send_planning_message(state.id, "지금까지 내용을 Task에 적용해줘")
             self.assertEqual(previewed.stage, Stage.EXECUTING)
             self.assertFalse(previewed.planning_follow_up_requests)
@@ -1494,8 +1561,12 @@ class PipelineTest(unittest.TestCase):
             completed.fail_step(RunStep.VERIFY, "integration failed")
             pipeline.store.save(completed)
             extra = WorkTask(id="extra", title="추가 작업", capabilities=["general"], agent_id="worker", expected_paths=["extra.txt"])
-            with patch.object(
-                pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=[*deepcopy(completed.tasks), extra])
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=[*deepcopy(completed.tasks), extra]),
+                ),
             ):
                 updated = pipeline.apply_planning_conversation(state.id)
             self.assertEqual(updated.stage, Stage.FAILED)
@@ -1537,7 +1608,7 @@ class PipelineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
             state.planning_agent_id = "worker"
-            pipeline._append_planning_user_message(state, "현재 결과에 후속 Task를 추가해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "현재 결과에 후속 Task를 추가해 주세요.")
             pipeline.store.save(state)
 
             def implement(current, task, *_args):
@@ -1555,7 +1626,10 @@ class PipelineTest(unittest.TestCase):
                 proposal.action_results = []
                 return Plan(summary=current.summary, server_work=False, tasks=[proposal, extra])
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=implement) as worker, patch.object(pipeline, "_build_plan", side_effect=replan):
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement) as worker,
+                patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=replan),
+            ):
                 updated = pipeline.execute(state.id)
             self.assertEqual(worker.call_count, 1)
             self.assertEqual(updated.id, state.id)
@@ -1564,7 +1638,7 @@ class PipelineTest(unittest.TestCase):
             self.assertFalse(updated.planning_follow_up_requests)
             self.assertIsNone(updated.active_step)
             self.assertTrue(pipeline.planning_apply_preview(state.id)["stale"])
-            with patch.object(pipeline, "_build_plan", side_effect=replan):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=replan):
                 preview = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             self.assertTrue(preview["can_apply"])
             applied = pipeline.apply_planning_preview(
@@ -1609,7 +1683,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertTrue(current.progress_updated_at)
                 return subprocess.CompletedProcess(command, 0 if len(observations) == 1 else 1, "test output")
 
-            with patch("ai_orchestrator.pipeline.run_command", side_effect=run_verification):
+            with patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=run_verification):
                 with self.assertRaisesRegex(PipelineError, "verification command failed"):
                     pipeline.complete_task(state.id, task.id)
             self.assertEqual([item[0] for item in observations], ["verifying_command", "verifying_command"])
@@ -1631,13 +1705,13 @@ class PipelineTest(unittest.TestCase):
             task.update_progress("running_command", "dotnet test")
             task.progress_updated_at = "2000-01-01T00:00:00+00:00"
             pipeline.store.save(state)
-            pipeline._record_task_progress(state, task, CodexSdkProgress("running_command", "dotnet test"))
+            pipeline._common_runtime.execution.tasks.record_task_progress(state, task, CodexSdkProgress("running_command", "dotnet test"))
             restored = pipeline.store.load(state.id).tasks[0]
             self.assertNotEqual(restored.progress_updated_at, "2000-01-01T00:00:00+00:00")
             self.assertEqual(restored.progress_detail, "dotnet test")
             self.assertIsNotNone(restored.progress_observation)
             first_activity = restored.progress_observation.last_activity_changed_at
-            pipeline._record_task_progress(
+            pipeline._common_runtime.execution.tasks.record_task_progress(
                 state,
                 task,
                 CodexSdkProgress(
@@ -1668,8 +1742,8 @@ class PipelineTest(unittest.TestCase):
                 pipeline.dotnet_executable = "C:/SDK/dotnet.exe"
                 diagnostic = DotnetDiagnostic(pipeline.dotnet_executable, "No compatible SDK", "SDK 환경 오류")
                 with (
-                    patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=diagnostic) as diagnose,
-                    patch.object(pipeline, "_run_task") as worker,
+                    patch("ai_orchestrator.git.diagnose_dotnet", return_value=diagnostic) as diagnose,
+                    patch.object(pipeline._common_runtime.execution.tasks, 'run_task') as worker,
                 ):
                     failed = pipeline.retry_task(state.id, task.id)
                 worker.assert_not_called()
@@ -1691,22 +1765,25 @@ class PipelineTest(unittest.TestCase):
 
             with (
                 patch(
-                    "ai_orchestrator.pipeline.diagnose_dotnet",
+                    "ai_orchestrator.git.diagnose_dotnet",
                     side_effect=[
                         DotnetDiagnostic("dotnet", "SDK selected"),
                         DotnetDiagnostic("dotnet", "missing SDK", "SDK error"),
                     ],
                 ),
-                patch.object(pipeline, "_invoke_agent", side_effect=implement),
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement),
             ):
                 failed = pipeline.execute(state.id)
             task = failed.tasks[0]
             self.assertEqual(failed.tasks[0].failed_action, TaskAction.VERIFY)
             pipeline.dotnet_executable = "C:/SDK/dotnet.exe"
             with (
-                patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=DotnetDiagnostic(pipeline.dotnet_executable, "SDK selected")),
-                patch("ai_orchestrator.pipeline.run_command", return_value=subprocess.CompletedProcess([], 0, "tests passed")) as run,
-                patch.object(pipeline, "_run_executor") as worker,
+                patch('ai_orchestrator.git.diagnose_dotnet', return_value=DotnetDiagnostic(pipeline.dotnet_executable, 'SDK selected')),
+                patch(
+                    'ai_orchestrator.execution.verification_commands.run_command',
+                    return_value=subprocess.CompletedProcess([], 0, 'tests passed'),
+                ) as run,
+                patch.object(pipeline._common_runtime.execution.tasks, 'run_executor') as worker,
             ):
                 retried = pipeline.retry_task(state.id, task.id)
             worker.assert_not_called()
@@ -1723,8 +1800,12 @@ class PipelineTest(unittest.TestCase):
             diagnostic = DotnetDiagnostic(pipeline.dotnet_executable, "SDK selected")
             diagnostics: list[str] = []
 
-            with patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=diagnostic) as diagnose:
-                selected = pipeline._prepare_verification_command(command, Path(task.worktree), diagnostics.append)
+            with patch("ai_orchestrator.git.diagnose_dotnet", return_value=diagnostic) as diagnose:
+                selected = pipeline._common_runtime.execution.verification_commands.prepare_verification_command(
+                    command,
+                    Path(task.worktree),
+                    diagnostics.append,
+                )
 
             diagnose.assert_called_once_with(pipeline.dotnet_executable, Path(task.worktree))
             self.assertEqual(selected, (pipeline.dotnet_executable, "build-server", "shutdown"))
@@ -1744,8 +1825,12 @@ class PipelineTest(unittest.TestCase):
             pipeline.store.save(state)
             original = pipeline.store.state_path(state.id).read_text(encoding="utf-8")
             with (
-                patch.object(pipeline, "_invoke_planning_agent", return_value="SDK 경로를 확인하세요."),
-                patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=state.tasks)),
+                patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value='SDK 경로를 확인하세요.'),
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=state.tasks),
+                ),
             ):
                 chatted = pipeline.send_planning_message(state.id, "실패 원인을 알려줘", planning_agent_id="worker")
                 followed = pipeline.send_planning_message(state.id, "후속 Task에 적용해줘", planning_agent_id="worker")
@@ -1770,7 +1855,10 @@ class PipelineTest(unittest.TestCase):
                 diagnostic = DotnetDiagnostic(
                     "C:/runtime/dotnet.exe", "Requested SDK version: 10.0.301\nNo .NET SDKs were found.", ".NET SDK 환경 오류: SDK를 찾지 못했습니다."
                 )
-                with patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=diagnostic), patch("ai_orchestrator.pipeline.run_command") as run:
+                with (
+                    patch('ai_orchestrator.git.diagnose_dotnet', return_value=diagnostic),
+                    patch('ai_orchestrator.execution.verification_commands.run_command') as run,
+                ):
                     with self.assertRaisesRegex(PipelineError, ".NET SDK 환경 오류"):
                         if integration:
                             pipeline.verify(state.id)
@@ -1791,11 +1879,14 @@ class PipelineTest(unittest.TestCase):
             pipeline, state = self._scope_test_run(Path(directory))
             diagnostic = DotnetDiagnostic("C:/sdk/dotnet.exe", "SDK selected: 10.0.301")
             with (
-                patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=diagnostic),
-                patch("ai_orchestrator.pipeline.run_command", return_value=subprocess.CompletedProcess([], 1, "test assertion failed")) as run,
+                patch('ai_orchestrator.git.diagnose_dotnet', return_value=diagnostic),
+                patch(
+                    'ai_orchestrator.execution.verification_commands.run_command',
+                    return_value=subprocess.CompletedProcess([], 1, 'test assertion failed'),
+                ) as run,
             ):
                 with self.assertRaisesRegex(PipelineError, "통합 검증 명령이 실패"):
-                    pipeline._run_verification_commands(state, pipeline.repo, (("dotnet", "test"),))
+                    pipeline._common_runtime.execution.verification.run_verification_commands(state, pipeline.repo, (("dotnet", "test"),))
             self.assertEqual(run.call_args.args[0], (diagnostic.executable, "test"))
             log = (pipeline.store.run_dir(state.id) / "logs" / "verify.log").read_text(encoding="utf-8")
             self.assertIn(diagnostic.log, log)
@@ -1810,10 +1901,13 @@ class PipelineTest(unittest.TestCase):
             pipeline, state = self._scope_test_run(Path(directory))
             diagnostic = DotnetDiagnostic("C:/sdk/dotnet.exe", "SDK selected: 10.0.301")
             with (
-                patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=diagnostic),
-                patch("ai_orchestrator.pipeline.run_command", return_value=subprocess.CompletedProcess([], 0, "passed")) as run,
+                patch('ai_orchestrator.git.diagnose_dotnet', return_value=diagnostic),
+                patch(
+                    'ai_orchestrator.execution.verification_commands.run_command',
+                    return_value=subprocess.CompletedProcess([], 0, 'passed'),
+                ) as run,
             ):
-                pipeline._run_verification_commands(state, pipeline.repo, commands)
+                pipeline._common_runtime.execution.verification.run_verification_commands(state, pipeline.repo, commands)
             self.assertEqual(run.call_count, len(commands))
             for command, call in zip(commands, run.call_args_list, strict=True):
                 expected = (diagnostic.executable, *command[1:]) if command[0] == "dotnet" else command
@@ -1836,7 +1930,7 @@ class PipelineTest(unittest.TestCase):
             sdk.account_status.return_value = CodexSdkAccountStatus(True, "chatgpt", "로그인됨")
             tasks = []
             for index in range(6):
-                task = pipeline._task_plan_draft(state.tasks[0])
+                task = task_plan_draft(state.tasks[0])
                 task.update(id=f"task-{index}", provider_id="codex", verify_commands=[[sys.executable, "-c", "pass"]])
                 tasks.append(task)
             sdk.run_turn.return_value = "AI_PLAN_RESULT: " + json.dumps(
@@ -1861,7 +1955,7 @@ class PipelineTest(unittest.TestCase):
             pipeline, state = self._scope_test_run(Path(directory))
             drafts = []
             for index in range(6):
-                draft = pipeline._task_plan_draft(state.tasks[0])
+                draft = task_plan_draft(state.tasks[0])
                 draft.update(id=f"task-{index}", verify_commands=[[sys.executable, "-c", "pass"]])
                 drafts.append(draft)
             updated = pipeline.update_plan(state.id, drafts)
@@ -1887,10 +1981,10 @@ class PipelineTest(unittest.TestCase):
                 nvidia_credential_scope("default-fixture", {"vendor/registered-model": "model-fixture"}),
             ):
                 pipeline, state = self._scope_test_run(Path(directory))
-                draft = pipeline._task_plan_draft(state.tasks[0])
+                draft = task_plan_draft(state.tasks[0])
                 draft.update(provider_id="nvidia", model=model, reasoning_effort="",
                              verify_commands=[[sys.executable, "-c", "from pathlib import Path; assert Path('result.txt').read_text() == 'done'"]])
-                resolve = pipeline._resolve_executable
+                resolve = pipeline._common_runtime.provider_probes.resolve_executable
                 calls = []
 
                 def invoke(**request):
@@ -1899,8 +1993,12 @@ class PipelineTest(unittest.TestCase):
                     return "공개 예제 수정 완료"
 
                 with (
-                    patch.object(pipeline, "_resolve_executable", side_effect=lambda value: "opencode.exe" if value == "opencode" else resolve(value)),
-                    patch.object(pipeline, "_run_provider_command", side_effect=invoke),
+                    patch.object(
+                        pipeline._common_runtime.provider_probes,
+                        'resolve_executable',
+                        side_effect=lambda value: 'opencode.exe' if value == 'opencode' else resolve(value),
+                    ),
+                    patch.object(pipeline._common_runtime.provider, 'run', side_effect=invoke),
                 ):
                     pipeline.update_plan(state.id, [draft])
                     pipeline.confirm_plan(state.id)
@@ -1924,11 +2022,15 @@ class PipelineTest(unittest.TestCase):
                     codex = AgentConfig("codex-worker", ("general",), (), 2, provider_id="codex", model="gpt-6.1-sol")
                     pipeline = Pipeline(replace(pipeline.config, agents=(*pipeline.config.agents, codex),
                                                 planning=PlanningConfig(agent_id="worker", max_attempts=1)), codex_sdk=connected_codex_sdk())
-                    resolve = pipeline._resolve_executable
-                    with patch.object(
-                        pipeline, "_resolve_executable", side_effect=lambda value: "opencode.exe" if value == "opencode" else resolve(value)
+                    resolve = pipeline._common_runtime.provider_probes.resolve_executable
+                    with (
+                        patch.object(
+                            pipeline._common_runtime.provider_probes,
+                            'resolve_executable',
+                            side_effect=lambda value: 'opencode.exe' if value == 'opencode' else resolve(value),
+                        ),
                     ):
-                        draft = pipeline._task_plan_draft(state.tasks[0])
+                        draft = task_plan_draft(state.tasks[0])
                         verify = [sys.executable, "-c", "from pathlib import Path; assert Path('result.txt').read_text() == 'done'"]
                         draft.update(provider_id="nvidia", model=model, reasoning_effort="",
                                      verify_commands=[verify])
@@ -1940,23 +2042,23 @@ class PipelineTest(unittest.TestCase):
                             state.tasks[0].failed_action = TaskAction.EXECUTE
                             state.fail_step(RunStep.AGENT_EXECUTION, "previous execution failed")
                         state.planning_agent_id = "worker"
-                        pipeline._append_planning_user_message(state, "설명을 보강하고 기존 실행 AI 선택은 유지해 주세요.")
+                        pipeline._common_runtime.planning.messages.append_user(state, "설명을 보강하고 기존 실행 AI 선택은 유지해 주세요.")
                         pipeline.store.save(state)
                         original = deepcopy(state.tasks[0])
-                        proposal = pipeline._task_plan_draft(original)
+                        proposal = task_plan_draft(original)
                         proposal.update(description="보강한 작업 설명", provider_id="codex", model="gpt-6.1-sol", reasoning_effort="medium")
                         output = "AI_PLAN_RESULT: " + json.dumps({"summary": state.summary, "server_work": False,
                                                                  "tasks": [proposal], "questions": []}, ensure_ascii=False)
                         with (
                             patch.object(pipeline.git, "has_uncommitted_changes", return_value=False),
                             patch.object(pipeline.store, "load_planning_result", return_value=output),
-                            patch.object(pipeline, "_invoke_planning_agent") as invoke,
+                            patch.object(pipeline._common_runtime.planning.ai, 'invoke') as invoke,
                         ):
-                            cached = pipeline._build_plan(deepcopy(state), "요구사항")
+                            cached = pipeline._common_runtime.planning.ai.build_plan(deepcopy(state), "요구사항")
                         invoke.assert_not_called()
                         self.assertEqual(cached.tasks[0].provider_id, "nvidia")
                         self.assertEqual(cached.tasks[0].model, model)
-                        with patch.object(pipeline, "_invoke_planning_agent", return_value=output):
+                        with patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=output):
                             preview = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
                         self.assertTrue(preview["can_apply"])
                         self.assertEqual(preview["changes"][0]["fields"], ["description"])
@@ -1977,7 +2079,7 @@ class PipelineTest(unittest.TestCase):
                             (request["cwd"] / "result.txt").write_text("done", encoding="utf-8")
                             return "모의 NVIDIA 수정 완료"
 
-                        with patch.object(pipeline, "_run_provider_command", side_effect=execute):
+                        with patch.object(pipeline._common_runtime.provider, 'run', side_effect=execute):
                             completed = pipeline.retry_task(state.id, task.id) if failed else pipeline.execute(state.id)
                         self.assertEqual(calls, [("nvidia", model)])
                         self.assertIn(completed.tasks[0].status, {TaskStatus.COMPLETED, TaskStatus.MERGED})
@@ -1996,7 +2098,7 @@ class PipelineTest(unittest.TestCase):
             state.fail_step(RunStep.AGENT_EXECUTION, task.error)
             pipeline.store.save(state)
             selected = next(agent for agent in pipeline.config.agents if agent.provider_id == "nvidia")
-            resolve = pipeline._resolve_executable
+            resolve = pipeline._common_runtime.provider_probes.resolve_executable
             calls = []
 
             def implement(**request):
@@ -2005,8 +2107,12 @@ class PipelineTest(unittest.TestCase):
                 return "모의 NVIDIA 수정 완료"
 
             with (
-                patch.object(pipeline, "_resolve_executable", side_effect=lambda value: sys.executable if value == "opencode" else resolve(value)),
-                patch.object(pipeline, "_run_provider_command", side_effect=implement),
+                patch.object(
+                    pipeline._common_runtime.provider_probes,
+                    'resolve_executable',
+                    side_effect=lambda value: sys.executable if value == 'opencode' else resolve(value),
+                ),
+                patch.object(pipeline._common_runtime.provider, 'run', side_effect=implement),
             ):
                 saved = pipeline.update_task_execution_profile(
                     state.id, task.id, agent_id=selected.id, model=selected.model, reasoning_effort="",
@@ -2035,7 +2141,7 @@ class PipelineTest(unittest.TestCase):
                 pipeline.store.save(state)
                 state = pipeline.confirm_plan(state.id)
                 remote = Pipeline(pipeline.config)
-                resolve = pipeline._resolve_executable
+                resolve = pipeline._common_runtime.provider_probes.resolve_executable
                 calls = []
 
                 def implement(current, task, agent, *_args):
@@ -2046,7 +2152,7 @@ class PipelineTest(unittest.TestCase):
                         selected = next(item for item in remote.config.agents if item.provider_id == "nvidia")
                         saved = remote.update_task_execution_profile(
                             current.id, target.id, agent_id=selected.id, model=selected.model, reasoning_effort="",
-                            expected_profile=remote._task_execution_profile_snapshot(target),
+                            expected_profile=task_execution_profile_snapshot(target),
                         )
                         self.assertEqual(saved.tasks[-1].provider_id, "nvidia")
                         self.assertEqual(remote.store.load(current.id).tasks[-1].agent_id, "worker")
@@ -2055,10 +2161,10 @@ class PipelineTest(unittest.TestCase):
                     return "모의 구현 완료"
 
                 with (
-                    patch.object(pipeline, "_resolve_executable",
+                    patch.object(pipeline._common_runtime.provider_probes, "resolve_executable",
                                  side_effect=lambda value: sys.executable if value == "opencode" else resolve(value)),
-                    patch.object(remote, "_resolve_executable", return_value=sys.executable),
-                    patch.object(pipeline, "_invoke_agent", side_effect=implement),
+                    patch.object(remote._common_runtime.provider_probes, "resolve_executable", return_value=sys.executable),
+                    patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement),
                 ):
                     completed = pipeline.execute(state.id)
                 self.assertEqual(completed.stage, Stage.READY_TO_MERGE)
@@ -2104,10 +2210,10 @@ class PipelineTest(unittest.TestCase):
             task.action_results.append(TaskActionResult("execute", worker_response="partial"))
             state.verification_attempts.append(VerificationAttempt(integration_head="old-head"))
             with self.assertRaisesRegex(PipelineError, "new failure"):
-                with pipeline._task_action(state, task, TaskAction.EXECUTE):
+                with pipeline._common_runtime.execution.tasks.task_action(state, task, TaskAction.EXECUTE):
                     raise PipelineError("new failure")
             with self.assertRaisesRegex(PipelineError, "verification failure"):
-                with pipeline._step(state, RunStep.VERIFY):
+                with pipeline._common_runtime.steps.step(state, RunStep.VERIFY):
                     raise PipelineError("verification failure")
             restored = pipeline.store.load(state.id)
             self.assertEqual([item.status for item in restored.tasks[0].action_results], ["interrupted", "failed"])
@@ -2146,7 +2252,7 @@ class PipelineTest(unittest.TestCase):
                 (Path(task.worktree) / "result.txt").write_text(response, encoding="utf-8")
                 return response
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=implement):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement):
                 with patch.object(pipeline.git, "commit_all", side_effect=GitError("commit failed")):
                     failed = pipeline.execute(state.id)
                 first = failed.tasks[0].action_results[0]
@@ -2177,7 +2283,7 @@ class PipelineTest(unittest.TestCase):
                 (Path(task.worktree) / "result.txt").write_text("done", encoding="utf-8")
                 return "implemented"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=implement):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement):
                 failed = pipeline.execute(state.id)
             self.assertEqual(failed.stage, Stage.FAILED)
             self.assertEqual(failed.tasks[0].failed_action, TaskAction.VERIFY)
@@ -2277,7 +2383,7 @@ class PipelineTest(unittest.TestCase):
                     path.write_text(task.id if task.id == "consumer" else "schema", encoding="utf-8")
                     return "done"
 
-                with patch.object(pipeline, "_invoke_agent", side_effect=implement):
+                with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement):
                     completed = pipeline.execute(state.id)
                 self.assertEqual(completed.stage, Stage.READY_TO_MERGE)
                 self.assertEqual(observed, [foundation.id, "consumer"])
@@ -2359,7 +2465,7 @@ class PipelineTest(unittest.TestCase):
             ("Src/a.py", "src/**", False),
         ):
             with self.subTest(path=path, rule=rule):
-                self.assertEqual(Pipeline._task_path_matches(path, rule), expected)
+                self.assertEqual(scope_path_matches(path, rule), expected)
 
     def test_scope_violation_blocks_auto_commit_and_can_retry_pending_fix(self) -> None:
         for mode in ExecutionWorkspaceMode:
@@ -2373,7 +2479,7 @@ class PipelineTest(unittest.TestCase):
                     (worktree / "outside.txt").write_text("outside", encoding="utf-8")
                     return "done"
 
-                with patch.object(pipeline, "_invoke_agent", side_effect=violate):
+                with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=violate):
                     failed = pipeline.execute(state.id)
                 task = failed.tasks[0]
                 worktree = Path(task.worktree)
@@ -2388,7 +2494,7 @@ class PipelineTest(unittest.TestCase):
                     (worktree / "outside.txt").unlink()
                     return "fixed"
 
-                with patch.object(pipeline, "_invoke_agent", side_effect=repair):
+                with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=repair):
                     completed = pipeline.retry_task(state.id, task.id)
                 self.assertEqual(completed.stage, Stage.READY_TO_MERGE)
                 self.assertEqual(completed.tasks[0].started_commit, baseline)
@@ -2408,7 +2514,7 @@ class PipelineTest(unittest.TestCase):
                 git(worktree, "commit", "-m", "agent commit")
                 return "done"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=commit_violation):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=commit_violation):
                 failed = pipeline.execute(state.id)
             task = failed.tasks[0]
             baseline = task.started_commit
@@ -2416,7 +2522,7 @@ class PipelineTest(unittest.TestCase):
             committed_head = pipeline.git.head(worktree)
             self.assertNotEqual(committed_head, baseline)
             self.assertIn("forbidden path", task.error)
-            with patch.object(pipeline, "_invoke_agent", return_value="done"):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', return_value="done"):
                 retried = pipeline.retry_task(state.id, task.id)
             self.assertEqual(retried.stage, Stage.FAILED)
             self.assertEqual(retried.tasks[0].started_commit, baseline)
@@ -2462,17 +2568,17 @@ class PipelineTest(unittest.TestCase):
             state.fail_step(RunStep.AGENT_EXECUTION, "previous task failure")
 
             task.expected_paths = ["result.txt"]
-            pipeline._record_task_start_commit(task)
+            pipeline._common_runtime.execution.tasks.record_task_start_commit(task)
             self.assertEqual(task.started_commit, completed_head)
             with self.assertRaisesRegex(PipelineError, "scope violation") as caught:
-                pipeline._validate_task_change_scope(task)
+                pipeline._common_runtime.execution.tasks.validate_task_change_scope(task)
             self.assertIn(f"baseline={completed_head}", str(caught.exception))
             self.assertIn(f"checked_paths=['{test_path}']", str(caught.exception))
             self.assertNotIn(other_path, str(caught.exception))
 
             task.expected_paths = [test_path]
             pipeline.store.save(state)
-            with patch.object(pipeline, "_invoke_agent", return_value="done"):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', return_value="done"):
                 completed = pipeline.retry_task(state.id, task.id)
             self.assertEqual(completed.stage, Stage.READY_TO_MERGE)
             self.assertEqual(completed.tasks[0].started_commit, completed_head)
@@ -2527,7 +2633,7 @@ class PipelineTest(unittest.TestCase):
             baseline = task.started_commit
             preserved = deepcopy(state.tasks[1])
             (Path(task.worktree) / "result.txt").write_text("UI change\n", encoding="utf-8")
-            with patch.object(pipeline, "_invoke_agent", return_value="done"):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', return_value="done"):
                 completed = pipeline.retry_task(state.id, task.id)
             self.assertEqual(completed.stage, Stage.READY_TO_MERGE)
             self.assertEqual(completed.tasks[0].started_commit, baseline)
@@ -2548,13 +2654,13 @@ class PipelineTest(unittest.TestCase):
             task = state.tasks[0]
             baseline = task.started_commit
             with self.assertRaisesRegex(PipelineError, "change scope violation") as caught:
-                pipeline._validate_task_change_scope(task, state)
+                pipeline._common_runtime.execution.tasks.validate_task_change_scope(task, state)
             self.assertIn("outside expected_paths: 'src/Contracts.cs'", str(caught.exception))
             self.assertIn(f"excluded_completed_commits=['{prerequisite_commit}']", str(caught.exception))
             self.assertIn("expected_paths=['result.txt']", str(caught.exception))
             self.assertEqual(task.started_commit, baseline)
             task.expected_paths.append("src/Contracts.cs")
-            self.assertEqual(pipeline._validate_task_change_scope(task, state), ["src/Contracts.cs"])
+            self.assertEqual(pipeline._common_runtime.execution.tasks.validate_task_change_scope(task, state), ["src/Contracts.cs"])
 
     def test_scope_unproven_or_failed_or_foreign_completion_never_exempts_paths(self) -> None:
         for mode in ("failed_task", "failed_action", "missing_baseline", "foreign_worktree", "owned_overlap", "unknown_commit"):
@@ -2579,7 +2685,7 @@ class PipelineTest(unittest.TestCase):
                     git(Path(task.worktree), "add", file.name)
                     git(Path(task.worktree), "commit", "-m", "unrecorded change")
                 with self.assertRaisesRegex(PipelineError, "change scope violation") as caught:
-                    pipeline._validate_task_change_scope(task, state)
+                    pipeline._common_runtime.execution.tasks.validate_task_change_scope(task, state)
                 self.assertIn("unknown.txt" if mode == "unknown_commit" else "outside expected_paths: 'src/Contracts.cs'", str(caught.exception))
 
     def test_replanned_scope_matches_saved_paths_prepared_prompt_and_checker(self) -> None:
@@ -2590,11 +2696,17 @@ class PipelineTest(unittest.TestCase):
             browser_file.parent.mkdir(parents=True)
             browser_file.write_text("mock browser regression\n", encoding="utf-8")
             with self.assertRaisesRegex(PipelineError, "outside expected_paths"):
-                pipeline._validate_task_change_scope(task, state)
+                pipeline._common_runtime.execution.tasks.validate_task_change_scope(task, state)
             proposals = deepcopy(state.tasks)
             proposals[0].expected_paths.append("tests/browser/**")
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary="updated", server_work=False, tasks=proposals)):
-                pipeline._apply_pending_task_changes(state)
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary='updated', server_work=False, tasks=proposals),
+                ),
+            ):
+                pipeline._common_runtime.planning.lifecycle.apply_pending(state)
             saved = pipeline.store.load(state.id)
             self.assertEqual(saved.tasks[0].expected_paths, ["result.txt", "tests/browser/**"])
             self.assertIn("- tests/browser/**", Path(saved.tasks[0].prompt_path).read_text(encoding="utf-8"))
@@ -2604,7 +2716,7 @@ class PipelineTest(unittest.TestCase):
                 observed.append((list(current.expected_paths), prompt))
                 return "done"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
                 completed = pipeline.retry_task(state.id, task.id)
             self.assertEqual(completed.stage, Stage.READY_TO_MERGE)
             self.assertEqual(observed[0][0], saved.tasks[0].expected_paths)
@@ -2624,7 +2736,7 @@ class PipelineTest(unittest.TestCase):
             git(worktree, "commit", "-m", "complete prerequisite range")
             other.completed_commit = pipeline.git.head(worktree)
             other.action_results[0].result_commit = other.completed_commit
-            self.assertEqual(pipeline._validate_task_change_scope(task, state), [])
+            self.assertEqual(pipeline._common_runtime.execution.tasks.validate_task_change_scope(task, state), [])
             own_baseline = other.completed_commit
             (worktree / "src/Contracts.cs").write_text("current task later change\n", encoding="utf-8")
             git(worktree, "add", "src/Contracts.cs")
@@ -2633,14 +2745,14 @@ class PipelineTest(unittest.TestCase):
                 action="revise", status="failed", baseline_commit=own_baseline, result_commit=pipeline.git.head(worktree)
             ))
             with self.assertRaisesRegex(PipelineError, "outside expected_paths: 'src/Contracts.cs'"):
-                pipeline._validate_task_change_scope(task, state)
+                pipeline._common_runtime.execution.tasks.validate_task_change_scope(task, state)
             log = pipeline.store.run_dir(state.id) / "logs" / f"{task.id}-scope.jsonl"
             failed = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
             self.assertEqual(failed["checked_paths"], ["src/Contracts.cs"])
             self.assertEqual(set(failed["excluded_completed_commits"]), {prerequisite_commit, other.completed_commit})
             with patch.object(pipeline.git, "commit_ids_between", side_effect=GitError("cannot inspect history")):
                 with self.assertRaisesRegex(GitError, "cannot inspect history"):
-                    pipeline._validate_task_change_scope(task, state)
+                    pipeline._common_runtime.execution.tasks.validate_task_change_scope(task, state)
             unavailable = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
             self.assertEqual(unavailable["status"], "lookup_failed")
             self.assertEqual(unavailable["expected_paths"], task.expected_paths)
@@ -2693,7 +2805,7 @@ class PipelineTest(unittest.TestCase):
                 result.write_text((result.read_text(encoding="utf-8") if result.exists() else "") + "allowed", encoding="utf-8")
                 return "done"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=implement) as worker:
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement) as worker:
                 failed = pipeline.execute(state.id)
                 task = failed.tasks[0]
                 baseline = task.started_commit
@@ -2728,7 +2840,7 @@ class PipelineTest(unittest.TestCase):
                 (Path(task.worktree) / name).write_text("content", encoding="utf-8")
                 return "done"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=agent):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=agent):
                 failed = pipeline.execute(state.id)
             task = failed.tasks[0]
             self.assertEqual(task.failed_action, TaskAction.REVISE)
@@ -2763,7 +2875,7 @@ class PipelineTest(unittest.TestCase):
                     (worktree / name).write_text("done", encoding="utf-8")
                     return "done"
 
-                with patch.object(pipeline, "_invoke_agent", side_effect=implement):
+                with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement):
                     complete = pipeline.execute(state.id)
                 self.assertEqual(complete.stage, Stage.READY_TO_MERGE, [(task.id, task.error) for task in complete.tasks])
                 self.assertTrue(all(task.status == TaskStatus.COMPLETED for task in complete.tasks))
@@ -2802,7 +2914,7 @@ class PipelineTest(unittest.TestCase):
                 pipeline, state = self._scope_test_run(Path(directory), mode=mode)
                 task = state.tasks[0]
                 task.verify_commands = [self._automatic_repair_check()]
-                contract = deepcopy(pipeline._planning_preview_task_fields(task))
+                contract = deepcopy(planning_preview_task_fields(task))
                 pipeline.store.save(state)
                 prompts = []
                 baselines = []
@@ -2814,7 +2926,7 @@ class PipelineTest(unittest.TestCase):
                     (Path(current.worktree) / "result.txt").write_text(value, encoding="utf-8")
                     return value
 
-                with patch.object(pipeline, "_invoke_agent", side_effect=implement):
+                with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement):
                     completed = pipeline.execute(state.id)
                 task = completed.tasks[0]
                 self.assertEqual(completed.stage, Stage.READY_TO_MERGE)
@@ -2823,7 +2935,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertIn("broken", prompts[1])
                 self.assertIn("untrusted diagnostic data", prompts[1])
                 self.assertEqual(baselines[0], baselines[1])
-                self.assertEqual(pipeline._planning_preview_task_fields(task), contract)
+                self.assertEqual(planning_preview_task_fields(task), contract)
                 self.assertEqual([item.status for item in task.action_results], ["succeeded", "failed", "succeeded", "succeeded"])
                 failed = task.action_results[1]
                 log = pipeline.store.run_dir(state.id) / "logs" / f"{task.id}-verify-{failed.attempt_id}.log"
@@ -2855,7 +2967,7 @@ class PipelineTest(unittest.TestCase):
                 (Path(current.worktree) / "result.txt").write_text(value, encoding="utf-8")
                 return value
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
                 completed = pipeline.execute(state.id)
             self.assertEqual(completed.stage, Stage.READY_TO_MERGE, completed.tasks[0].error)
             self.assertEqual(actions, [TaskAction.EXECUTE, TaskAction.REVIEW, TaskAction.EXECUTE, TaskAction.REVIEW])
@@ -2900,7 +3012,7 @@ class PipelineTest(unittest.TestCase):
                         self.assertEqual(receipt.phase, "stopping")
                         raise ExecutionStopped("user stopped", request_id=receipt.request_id)
 
-                    with patch.object(pipeline, "_invoke_agent", side_effect=interrupt):
+                    with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=interrupt):
                         state = pipeline.execute(state.id)
                     first, second = state.tasks
                     self.assertEqual(first.status, TaskStatus.STOPPED)
@@ -2914,7 +3026,7 @@ class PipelineTest(unittest.TestCase):
                     first.error = "test timed out"
                     first.active_action = None
                     state.fail_step(RunStep.AGENT_EXECUTION, "test timed out")
-                pipeline._append_planning_assistant_message(state, "멈춘 테스트의 원인을 찾아 수정하고 전체 검증을 유지합니다.")
+                pipeline._common_runtime.planning.messages.append_assistant(state, "멈춘 테스트의 원인을 찾아 수정하고 전체 검증을 유지합니다.")
                 pipeline.store.save(state)
                 calls = []
 
@@ -2934,7 +3046,7 @@ class PipelineTest(unittest.TestCase):
                     return "implemented"
 
                 context = pipeline.task_retry_context(state.id, first.id)
-                with patch.object(pipeline, "_invoke_agent", side_effect=invoke):
+                with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
                     result = pipeline.repair_task_from_chat(
                         state.id, first.id, request_id=str(uuid.uuid4()), message="고쳐서 계속해줘",
                         fingerprint=context["fingerprint"], conversation_revision=state.planning_conversation_revision,
@@ -2980,7 +3092,7 @@ class PipelineTest(unittest.TestCase):
                     (Path(current.worktree) / "next.txt").write_text("done", encoding="utf-8")
                 return "implemented"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
                 completed = pipeline.execute(state.id)
             self.assertEqual(completed.stage, Stage.READY_TO_MERGE, [task.error for task in completed.tasks])
             self.assertEqual(calls, [first.id] * 4 + [second.id])
@@ -3001,7 +3113,7 @@ class PipelineTest(unittest.TestCase):
                     (Path(current.worktree) / "result.txt").write_text(f"broken-{len(calls)}", encoding="utf-8")
                     return "attempted correction"
 
-                with patch.object(pipeline, "_invoke_agent", side_effect=invoke):
+                with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
                     failed = pipeline.execute(state.id)
                 self.assertEqual(failed.stage, Stage.FAILED)
                 self.assertEqual(len(calls), 4)
@@ -3029,7 +3141,7 @@ class PipelineTest(unittest.TestCase):
                 (Path(current.worktree) / "result.txt").write_text("broken" if len(calls) == 1 else "fixed", encoding="utf-8")
                 return "corrected"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
                 completed = pipeline.retry_task(state.id, state.tasks[0].id)
             self.assertEqual(completed.stage, Stage.READY_TO_MERGE)
             self.assertEqual(completed.tasks[1], preserved)
@@ -3051,7 +3163,7 @@ class PipelineTest(unittest.TestCase):
                         (Path(current.worktree) / "outside.txt").write_text("not approved", encoding="utf-8")
                     return "scope change or human decision is required"
 
-                with patch.object(pipeline, "_invoke_agent", side_effect=invoke):
+                with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
                     failed = pipeline.execute(state.id)
                 self.assertEqual(failed.stage, Stage.FAILED)
                 self.assertEqual(len(calls), 2)
@@ -3082,8 +3194,8 @@ class PipelineTest(unittest.TestCase):
                 output = f"[xUnit.net 00:00:0{elapsed}.0] Test [FAIL]\nExpected: 1\nActual: 2\nTime Elapsed: 00:00:0{elapsed}"
                 return subprocess.CompletedProcess(command, 1, output)
 
-            with (patch.object(pipeline, "_invoke_agent", side_effect=invoke),
-                  patch("ai_orchestrator.pipeline.run_command", side_effect=check)):
+            with (patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke),
+                  patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=check)):
                 failed = pipeline.execute(state.id)
             self.assertEqual(calls, [state.tasks[0].id] * 2)
             self.assertEqual(failed.stage, Stage.FAILED)
@@ -3102,9 +3214,20 @@ class PipelineTest(unittest.TestCase):
 
             diagnostic = "error MSB3027: Could not copy output. The file is locked by: Example (1234)"
             diagnostic += "\n" + "additional build output\n" * 1000
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke) as agent:
-                with patch.object(pipeline, "_prepare_verification_command", side_effect=lambda command, *_args: command):
-                    with patch("ai_orchestrator.pipeline.run_command", return_value=subprocess.CompletedProcess([], 1, diagnostic)):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as agent:
+                with (
+                    patch.object(
+                        pipeline._common_runtime.execution.verification_commands,
+                        'prepare_verification_command',
+                        side_effect=lambda command, *_args: command,
+                    ),
+                ):
+                    with (
+                        patch(
+                            'ai_orchestrator.execution.verification_commands.run_command',
+                            return_value=subprocess.CompletedProcess([], 1, diagnostic),
+                        ),
+                    ):
                         failed = pipeline.execute(state.id)
             self.assertEqual(agent.call_count, 1)
             self.assertEqual(failed.stage, Stage.FAILED)
@@ -3122,14 +3245,14 @@ class PipelineTest(unittest.TestCase):
         )
         for executable, output, expected in cases:
             with self.subTest(executable=executable, output=output):
-                self.assertEqual(Pipeline._verification_build_output_access_denied((executable, "build"), output), expected)
+                self.assertEqual(VerificationRunner.build_output_access_denied((executable, "build"), output), expected)
 
     def test_msbuild_output_access_failure_preserves_commit_and_retries_verification_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
             task = state.tasks[0]
             task.verify_commands = [["dotnet", "build", "Example.sln"], ["dotnet", "test", "Example.sln"]]
-            contract = deepcopy(pipeline._planning_preview_task_fields(task))
+            contract = deepcopy(planning_preview_task_fields(task))
             pipeline.store.save(state)
             diagnostic = "error MSB4018: System.UnauthorizedAccessException: Access to the path 'C:/work/obj/Manifest.json' is denied."
             diagnostic += "\n" + "additional build output\n" * 1000
@@ -3139,9 +3262,9 @@ class PipelineTest(unittest.TestCase):
                 return "existing implementation"
 
             with (
-                patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
-                patch("ai_orchestrator.pipeline.run_command", return_value=subprocess.CompletedProcess([], 1, diagnostic)),
-                patch.object(pipeline, "_invoke_agent", side_effect=invoke) as worker,
+                patch("ai_orchestrator.git.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
+                patch("ai_orchestrator.execution.verification_commands.run_command", return_value=subprocess.CompletedProcess([], 1, diagnostic)),
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as worker,
             ):
                 failed = pipeline.execute(state.id)
             task = failed.tasks[0]
@@ -3154,14 +3277,17 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual([item.action for item in task.action_results], ["execute", "verify", "verify"])
             self.assertIn("동일 환경의 검증을 반복하지 않고", task.error)
             self.assertEqual(pipeline.git.head(Path(task.worktree)), implementation)
-            self.assertEqual(pipeline._planning_preview_task_fields(task), contract)
+            self.assertEqual(planning_preview_task_fields(task), contract)
             archive = pipeline.store.run_dir(state.id) / "logs" / f"{task.id}-verify-{task.last_attempt_id}.log"
             self.assertIn("MSB4018", archive.read_text(encoding="utf-8"))
 
             with (
-                patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
-                patch("ai_orchestrator.pipeline.run_command", return_value=subprocess.CompletedProcess([], 0, "verified")) as verification,
-                patch.object(pipeline, "_invoke_agent") as worker,
+                patch('ai_orchestrator.git.diagnose_dotnet', return_value=DotnetDiagnostic('dotnet', 'SDK selected')),
+                patch(
+                    'ai_orchestrator.execution.verification_commands.run_command',
+                    return_value=subprocess.CompletedProcess([], 0, 'verified'),
+                ) as verification,
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent') as worker,
             ):
                 complete = pipeline.retry_task(state.id, task.id)
             worker.assert_not_called()
@@ -3169,7 +3295,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(complete.stage, Stage.READY_TO_MERGE)
             self.assertEqual(complete.tasks[0].completed_commit, implementation)
             self.assertEqual(complete.tasks[0].started_commit, task.started_commit)
-            self.assertEqual(pipeline._planning_preview_task_fields(complete.tasks[0]), contract)
+            self.assertEqual(planning_preview_task_fields(complete.tasks[0]), contract)
 
     def test_task_environment_recovery_automatically_verifies_without_another_worker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3179,7 +3305,7 @@ class PipelineTest(unittest.TestCase):
                 ["dotnet", "build", "Example.sln"],
                 [sys.executable, "-c", "import os; assert os.environ['MSBUILDUSESERVER']=='1'; print('checked')"],
             ]
-            contract = deepcopy(pipeline._planning_preview_task_fields(task))
+            contract = deepcopy(planning_preview_task_fields(task))
             pipeline.store.save(state)
             diagnostic = "error MSB4018: Access to the path 'obj/Debug/Manifest.json' is denied."
             parent_environment = {"DOTNET_CLI_USE_MSBUILD_SERVER": "1", "MSBUILDUSESERVER": "1", "MSBUILDDISABLENODEREUSE": "0"}
@@ -3201,13 +3327,13 @@ class PipelineTest(unittest.TestCase):
                 return "implemented"
 
             def prepare(command, *_args):
-                return (sys.executable, str(fake_dotnet), *command[1:]) if pipeline._is_dotnet_command(command) else command
+                return (sys.executable, str(fake_dotnet), *command[1:]) if VerificationRunner.is_dotnet_command(command) else command
 
             with (
                 patch.dict(os.environ, parent_environment),
-                patch.object(pipeline, "_prepare_verification_command", side_effect=prepare),
-                patch("ai_orchestrator.pipeline.run_command", wraps=run_command) as verification,
-                patch.object(pipeline, "_invoke_agent", side_effect=invoke) as worker,
+                patch.object(pipeline._common_runtime.execution.verification_commands, 'prepare_verification_command', side_effect=prepare),
+                patch("ai_orchestrator.execution.verification_commands.run_command", wraps=run_command) as verification,
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as worker,
             ):
                 completed = pipeline.execute(state.id)
                 self.assertEqual({key: os.environ[key] for key in parent_environment}, parent_environment)
@@ -3225,7 +3351,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(child_records[1]["env"], calls[1][1]["environment_overrides"])
             self.assertIsNone(calls[2][1].get("environment_overrides"))
             task = completed.tasks[0]
-            self.assertEqual(pipeline._planning_preview_task_fields(task), contract)
+            self.assertEqual(planning_preview_task_fields(task), contract)
             self.assertEqual([item.status for item in task.action_results], ["succeeded", "failed", "succeeded"])
             self.assertEqual(task.completed_commit, task.action_results[0].result_commit)
             archive = pipeline.store.run_dir(state.id) / "logs" / f"{task.id}-verify-{task.action_results[1].attempt_id}.log"
@@ -3257,9 +3383,9 @@ class PipelineTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 1, diagnostic)
 
                 with (
-                    patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
-                    patch("ai_orchestrator.pipeline.run_command", side_effect=verify),
-                    patch.object(pipeline, "_invoke_agent", side_effect=invoke) as worker,
+                    patch("ai_orchestrator.git.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
+                    patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=verify),
+                    patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as worker,
                 ):
                     result = pipeline.execute(state.id)
                 self.assertEqual(worker.call_count, 1)
@@ -3287,8 +3413,11 @@ class PipelineTest(unittest.TestCase):
                 (Path(task.worktree) / "result.txt").write_text("partial", encoding="utf-8")
                 return response
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke) as worker, \
-                    patch.object(pipeline.git, "commit_all") as commit, patch.object(pipeline, "_run_task_verification") as verify:
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as worker,
+                patch.object(pipeline.git, 'commit_all') as commit,
+                patch.object(pipeline._common_runtime.execution.tasks, 'run_task_verification') as verify,
+            ):
                 failed = pipeline.execute(state.id)
             task = failed.tasks[0]
             self.assertEqual(failed.stage, Stage.FAILED)
@@ -3300,7 +3429,7 @@ class PipelineTest(unittest.TestCase):
             worker.assert_called_once()
             commit.assert_not_called()
             verify.assert_not_called()
-            with patch.object(pipeline, "_invoke_agent") as repeated:
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent') as repeated:
                 with self.assertRaisesRegex(PipelineError, ERROR_MARKER):
                     pipeline.retry_task(state.id, task.id)
             repeated.assert_not_called()
@@ -3316,7 +3445,10 @@ class PipelineTest(unittest.TestCase):
                 (Path(current.worktree) / "adapter.txt").write_text("fixed", encoding="utf-8")
                 return "수정 완료"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=fixed), patch.object(pipeline, "_run_task_verification") as verify:
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=fixed),
+                patch.object(pipeline._common_runtime.execution.tasks, 'run_task_verification') as verify,
+            ):
                 recovered = pipeline.retry_task(state.id, task.id)
             self.assertEqual(recovered.stage, Stage.READY_TO_MERGE, recovered.tasks[0].error)
             verify.assert_called_once()
@@ -3337,7 +3469,7 @@ class PipelineTest(unittest.TestCase):
                     return "구현 완료"
                 return 'AI_TASK_SCOPE_REVIEW: {"reason":"추가 경로가 필요합니다.","paths":["adapter.txt"]}'
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke), \
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke), \
                     patch.object(pipeline.git, "commit_all", wraps=pipeline.git.commit_all) as commit:
                 failed = pipeline.execute(state.id)
             task = failed.tasks[0]
@@ -3360,7 +3492,10 @@ class PipelineTest(unittest.TestCase):
                         (Path(task.worktree) / "outside.txt").write_text("forbidden", encoding="utf-8")
                     return "src/Adapter.cs가 허용 경로에 빠져 있습니다. 추가해도 될까요?"
 
-                with patch.object(pipeline, "_invoke_agent", side_effect=invoke), patch.object(pipeline.git, "commit_all") as commit:
+                with (
+                    patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke),
+                    patch.object(pipeline.git, 'commit_all') as commit,
+                ):
                     failed = pipeline.execute(state.id)
                 expected = "task_scope_review_required:" if outcome == "question" else "change scope violation"
                 self.assertIn(expected, failed.tasks[0].error)
@@ -3397,7 +3532,7 @@ class PipelineTest(unittest.TestCase):
                     (Path(current.worktree) / "result.txt").write_text("implemented", encoding="utf-8")
                 return "existing implementation is unchanged"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
                 completed = pipeline.execute(state.id)
             self.assertEqual(completed.stage, Stage.READY_TO_MERGE, completed.tasks[0].error)
             self.assertEqual(actions, [TaskAction.EXECUTE, TaskAction.REVIEW, TaskAction.EXECUTE, TaskAction.REVIEW])
@@ -3425,28 +3560,31 @@ class PipelineTest(unittest.TestCase):
             task.verify_commands = [[sys.executable, "-c", "pass"]]
             record = TaskActionResult("execute", status="succeeded", baseline_commit=baseline, result_commit=implementation)
             task.action_results = [record]
-            self.assertTrue(pipeline._task_has_recorded_implementation(task, implementation))
-            self.assertFalse(pipeline._task_has_recorded_implementation(task, implementation, action_start=1))
-            self.assertFalse(pipeline._task_has_recorded_implementation(task, baseline))
+            self.assertTrue(pipeline._common_runtime.execution.tasks.task_has_recorded_implementation(task, implementation))
+            self.assertFalse(pipeline._common_runtime.execution.tasks.task_has_recorded_implementation(task, implementation, action_start=1))
+            self.assertFalse(pipeline._common_runtime.execution.tasks.task_has_recorded_implementation(task, baseline))
             (repo / "later.txt").write_text("later task", encoding="utf-8")
             git(repo, "add", "later.txt")
             git(repo, "commit", "-m", "later task")
-            self.assertTrue(pipeline._task_has_recorded_implementation(task, pipeline.git.head(repo)))
+            self.assertTrue(pipeline._common_runtime.execution.tasks.task_has_recorded_implementation(task, pipeline.git.head(repo)))
             task.verify_commands = []
-            self.assertFalse(pipeline._task_has_recorded_implementation(task, implementation))
+            self.assertFalse(pipeline._common_runtime.execution.tasks.task_has_recorded_implementation(task, implementation))
             task.verify_commands = [[sys.executable, "-c", "pass"]]
             record.status = "failed"
-            self.assertFalse(pipeline._task_has_recorded_implementation(task, implementation))
+            self.assertFalse(pipeline._common_runtime.execution.tasks.task_has_recorded_implementation(task, implementation))
             record.status = "succeeded"
             record.baseline_commit = implementation
-            self.assertFalse(pipeline._task_has_recorded_implementation(task, implementation))
+            self.assertFalse(pipeline._common_runtime.execution.tasks.task_has_recorded_implementation(task, implementation))
 
     def test_task_unproven_no_commit_does_not_skip_to_successful_verification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
             state.tasks[0].verify_commands = [[sys.executable, "-c", "pass"]]
             pipeline.store.save(state)
-            with patch.object(pipeline, "_invoke_agent", return_value="already complete"), patch.object(pipeline, "_run_task_verification") as verify:
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', return_value='already complete'),
+                patch.object(pipeline._common_runtime.execution.tasks, 'run_task_verification') as verify,
+            ):
                 result = pipeline.execute(state.id)
             self.assertEqual(result.stage, Stage.FAILED)
             self.assertEqual(result.tasks[0].failed_action, TaskAction.EXECUTE)
@@ -3461,21 +3599,21 @@ class PipelineTest(unittest.TestCase):
                 (Path(current.worktree) / "result.txt").write_text("implemented", encoding="utf-8")
                 return "implemented"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
                 completed = pipeline.execute(state.id)
             pipeline.config = replace(pipeline.config, execution=replace(
                 pipeline.config.execution, verify_commands=(("dotnet", "build", "Example.sln"),),
             ))
             diagnostic = "error MSB4018: System.UnauthorizedAccessException: Access to the path 'obj/Debug/Manifest.json' is denied."
             with (
-                patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
-                patch("ai_orchestrator.pipeline.run_command", return_value=subprocess.CompletedProcess([], 1, diagnostic)),
-                patch.object(pipeline, "_repair_verification_failure") as repair,
+                patch("ai_orchestrator.git.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
+                patch("ai_orchestrator.execution.verification_commands.run_command", return_value=subprocess.CompletedProcess([], 1, diagnostic)),
+                patch.object(pipeline._common_runtime.execution.verification, 'repair_verification_failure') as repair,
             ):
                 with self.assertRaisesRegex(PipelineError, "산출물 쓰기 접근이 거부") as caught:
                     pipeline.verify_and_repair(state.id, request_id=str(uuid.uuid4()))
             repair.assert_not_called()
-            self.assertFalse(pipeline._verification_failure_is_repairable(caught.exception))
+            self.assertFalse(pipeline._common_runtime.execution.verification.verification_failure_is_repairable(caught.exception))
             failed = pipeline.store.load(state.id)
             self.assertEqual(failed.stage, Stage.FAILED)
             self.assertEqual(failed.verification_repair_count, 0)
@@ -3489,7 +3627,7 @@ class PipelineTest(unittest.TestCase):
         for error in (ProviderCapacityError("model overloaded"), ProviderRequestLimitError("usage limit"), ProviderTimeoutError("timeout")):
             with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as directory:
                 pipeline, state = self._scope_test_run(Path(directory))
-                with patch.object(pipeline, "_invoke_agent", side_effect=error) as agent:
+                with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=error) as agent:
                     failed = pipeline.execute(state.id)
                 self.assertEqual(failed.stage, Stage.FAILED)
                 self.assertEqual(agent.call_count, 1)
@@ -3503,8 +3641,10 @@ class PipelineTest(unittest.TestCase):
                 (Path(current.worktree) / "result.txt").write_text("preserved work", encoding="utf-8")
                 return "implemented"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke) as agent:
-                with patch.object(pipeline, "_perform_task_verification", side_effect=ExecutionStopped("user stopped")):
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as agent:
+                with (
+                    patch.object(pipeline._common_runtime.execution.tasks, 'perform_task_verification', side_effect=ExecutionStopped('user stopped')),
+                ):
                     stopped = pipeline.execute(state.id)
             self.assertEqual(agent.call_count, 1)
             self.assertEqual(stopped.tasks[0].status, TaskStatus.STOPPED)
@@ -3522,7 +3662,7 @@ class PipelineTest(unittest.TestCase):
                 (Path(current.worktree) / "result.txt").write_text("implemented", encoding="utf-8")
                 return "implemented"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=invoke) as agent:
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as agent:
                 failed = pipeline.execute(state.id)
             self.assertEqual(agent.call_count, 1)
             self.assertEqual(failed.tasks[0].failed_action, TaskAction.VERIFY)
@@ -3731,7 +3871,7 @@ class PipelineTest(unittest.TestCase):
                     "questions": [],
                 }
             )
-            with patch.object(pipeline, "_invoke_planning_agent", return_value=output) as provider:
+            with patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=output) as provider:
                 first = pipeline.start(source, planning_mode=PlanningMode.DIRECTED, planning_request="Ranking 구현")
                 second = pipeline.start(source, planning_mode=PlanningMode.DIRECTED, planning_request="Ranking 구현")
             self.assertEqual(provider.call_count, 1)
@@ -3744,9 +3884,9 @@ class PipelineTest(unittest.TestCase):
             cache_prompt = (pipeline.store.run_dir(second.id) / "prompts" / "planning-cache-0.md").read_text(encoding="utf-8")
             self.assertEqual(prompt, cache_prompt)
             with (
-                patch.object(pipeline, "_invoke_planning_agent", return_value=output),
+                patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=output),
                 patch(
-                    "ai_orchestrator.pipeline.render_planning_request_context",
+                    "ai_orchestrator.planning.runner.render_planning_request_context",
                     side_effect=AssertionError("clarification must reuse conversation context"),
                 ),
             ):
@@ -3764,7 +3904,7 @@ class PipelineTest(unittest.TestCase):
             pipeline, _ = self._counting_planning_pipeline(root, repo)
             prepared = pipeline.prepare_planning(source, planning_mode=PlanningMode.DIRECTED, planning_request="Ranking 구현")
             document.write_text("# Ranking\nchanged", encoding="utf-8")
-            with patch.object(pipeline, "_invoke_planning_agent") as provider:
+            with patch.object(pipeline._common_runtime.planning.ai, 'invoke') as provider:
                 with self.assertRaisesRegex(PlanningError, "changed since indexing"):
                     pipeline.run_planning(prepared.id)
             provider.assert_not_called()
@@ -3868,13 +4008,13 @@ class PipelineTest(unittest.TestCase):
                 planning_reasoning_effort="high",
             )
 
-            original = pipeline._planning_cache_key(state, agent, "prompt")
+            original = pipeline._common_runtime.planning.ai.cache_key(state, agent, "prompt")
             state.base_commit = "commit-b"
-            changed_commit = pipeline._planning_cache_key(state, agent, "prompt")
+            changed_commit = pipeline._common_runtime.planning.ai.cache_key(state, agent, "prompt")
             state.base_commit = "commit-a"
             state.planning_model = "model-b"
-            changed_model = pipeline._planning_cache_key(state, agent, "prompt")
-            changed_prompt = pipeline._planning_cache_key(state, agent, "updated prompt")
+            changed_model = pipeline._common_runtime.planning.ai.cache_key(state, agent, "prompt")
+            changed_prompt = pipeline._common_runtime.planning.ai.cache_key(state, agent, "updated prompt")
 
             self.assertNotEqual(original, changed_commit)
             self.assertNotEqual(original, changed_model)
@@ -3987,7 +4127,7 @@ class PipelineTest(unittest.TestCase):
             state = pipeline.start(spec)
 
             with (
-                patch("ai_orchestrator.pipeline.time.monotonic", side_effect=[100, 100, 101, 102, 103, 104, 105]),
+                patch("time.monotonic", side_effect=[100, 100, 101, 102, 103, 104, 105]),
                 patch.object(pipeline.git, "ensure_repository") as ensure_repo,
                 patch.object(pipeline.git, "list_worktrees", return_value=[]) as list_worktrees,
                 patch.object(pipeline.git, "branch_exists", return_value=False) as branch_exists,
@@ -4005,7 +4145,7 @@ class PipelineTest(unittest.TestCase):
             repo = self._repository(root)
             pipeline, state = self._ready_manual_run(root, repo)
             verified = pipeline.verify(state.id)
-            integration_branch = pipeline._integration_branch_name(state.id)
+            integration_branch = integration_branch_name(state.id)
             self.assertTrue(pipeline.git.branch_exists(integration_branch))
             main_head = pipeline.git.head(repo)
 
@@ -4022,7 +4162,7 @@ class PipelineTest(unittest.TestCase):
             root = Path(directory)
             repo = self._repository(root)
             pipeline, state = self._ready_manual_run(root, repo)
-            verification_worktree = pipeline._verification_worktree_path(state.id)
+            verification_worktree = pipeline._common_runtime.execution.workspace.verification_worktree_path(state.id)
             pipeline.git.prepare_detached_worktree(verification_worktree, pipeline.git.head(repo))
 
             result = pipeline.delete_run(state.id, approved=True)
@@ -4137,7 +4277,7 @@ class PipelineTest(unittest.TestCase):
             root = Path(directory)
             repo = self._repository(root)
             pipeline, state = self._ready_manual_run(root, repo)
-            verification_worktree = pipeline._verification_worktree_path(state.id)
+            verification_worktree = pipeline._common_runtime.execution.workspace.verification_worktree_path(state.id)
             verification_worktree.mkdir(parents=True)
             marker = verification_worktree / "keep.txt"
             marker.write_text("keep\n", encoding="utf-8")
@@ -4486,9 +4626,9 @@ class PipelineTest(unittest.TestCase):
 
             with (
                 patch.object(pipeline.git, "path_has_changes", return_value=False) as path_has_changes,
-                patch.object(pipeline, "refresh_planning_index") as refresh_index,
+                patch.object(type(pipeline._common_runtime.planning.source_indexes()), "refresh") as refresh_index,
             ):
-                reused, was_reused = pipeline._planning_index_for_start(docs, base_commit=base_commit)
+                reused, was_reused = pipeline._common_runtime.planning.source_indexes().for_start(docs, base_commit=base_commit)
 
             self.assertTrue(was_reused)
             self.assertEqual(reused.content_digest, original.content_digest)
@@ -4499,15 +4639,15 @@ class PipelineTest(unittest.TestCase):
             refreshed = Mock()
             with (
                 patch.object(pipeline.git, "path_has_changes", return_value=True),
-                patch.object(pipeline, "refresh_planning_index", return_value=refreshed) as refresh_index,
+                patch.object(type(pipeline._common_runtime.planning.source_indexes()), "refresh", return_value=refreshed) as refresh_index,
             ):
-                selected, was_reused = pipeline._planning_index_for_start(docs, base_commit=base_commit)
+                selected, was_reused = pipeline._common_runtime.planning.source_indexes().for_start(docs, base_commit=base_commit)
 
             self.assertFalse(was_reused)
             self.assertIs(selected, refreshed)
             refresh_index.assert_called_once_with(docs.resolve(), base_commit=base_commit)
 
-    @patch("ai_orchestrator.pipeline.time.monotonic", return_value=100)
+    @patch("ai_orchestrator.planning.source_indexes.time.monotonic", return_value=100)
     def test_refresh_planning_index_bounds_git_preflight(self, _monotonic) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4523,8 +4663,8 @@ class PipelineTest(unittest.TestCase):
                 patch.object(pipeline.git, "ensure_repository") as ensure_repository,
                 patch.object(pipeline.git, "list_project_files", return_value=[document]) as list_project_files,
                 patch.object(pipeline.git, "head", return_value="a" * 40) as head,
-                patch("ai_orchestrator.pipeline.inspect_git_readiness", return_value=Mock(kind="ready")),
-                patch("ai_orchestrator.pipeline.refresh_planning_source_index", return_value=expected) as refresh_index,
+                patch("ai_orchestrator.planning.source_indexes.inspect_git_readiness", return_value=Mock(kind="ready")),
+                patch("ai_orchestrator.pipeline_planning_bootstrap.refresh_planning_source_index", return_value=expected) as refresh_index,
             ):
                 result = pipeline.refresh_planning_index(docs)
 
@@ -4727,7 +4867,7 @@ class PipelineTest(unittest.TestCase):
             sdk.account_status.return_value = CodexSdkAccountStatus(True, "chatgpt", "ChatGPT 구독 로그인")
             pipeline = Pipeline(config, codex_sdk=sdk)
 
-            with patch.object(pipeline, "_claude_auth_status", return_value=(True, "claude_subscription", "로그인됨")):
+            with patch.object(pipeline._common_runtime.provider_probes, "claude_auth", return_value=(True, "claude_subscription", "로그인됨")):
                 planning = pipeline.planning_provider_choices()
                 execution = pipeline.execution_provider_choices(["backend"])
 
@@ -4752,7 +4892,7 @@ class PipelineTest(unittest.TestCase):
         snapshot = Mock(changes=(), sync=Mock())
         with (
             patch.object(pipeline.git, "update_main_ff_only", return_value=("a" * 40, "b" * 40)) as update_main,
-            patch.object(pipeline, "_main_changes_locked", return_value=snapshot),
+            patch.object(MainChangeService, 'snapshot', return_value=snapshot),
         ):
             with self.assertRaisesRegex(ApprovalRequired, "explicit approval"):
                 pipeline.update_main()
@@ -4827,8 +4967,8 @@ class PipelineTest(unittest.TestCase):
             )
 
             with (
-                patch.object(pipeline, "_invoke_planning_agent", return_value=response) as invoke,
-                patch.object(pipeline, "_claude_auth_status", return_value=(True, "claude_subscription", "Claude 구독 로그인")),
+                patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=response) as invoke,
+                patch.object(pipeline._common_runtime.provider_probes, "claude_auth", return_value=(True, "claude_subscription", "Claude 구독 로그인")),
             ):
                 state = pipeline.start(spec, planning_agent_id="claude-planner", planning_reasoning_effort="max")
                 first_agent = invoke.call_args.args[1]
@@ -4880,11 +5020,11 @@ class PipelineTest(unittest.TestCase):
             )
             pipeline.store.save(state)
 
-            pipeline._apply_task_agent_overrides(state, {"backend": "claude-ai"})
-            pipeline._validate_task_model_overrides(state, {"backend": "claude-opus-5"}, {})
-            pipeline._validate_task_reasoning_overrides(state, {"backend": "max"}, {}, {"backend": "claude-opus-5"})
-            pipeline._apply_task_model_overrides(state, {"backend": "claude-opus-5"})
-            pipeline._apply_task_reasoning_overrides(state, {"backend": "max"})
+            pipeline._common_runtime.execution.profiles.apply_task_agent_overrides(state, {"backend": "claude-ai"})
+            pipeline._common_runtime.execution.profiles.validate_task_model_overrides(state, {"backend": "claude-opus-5"}, {})
+            pipeline._common_runtime.execution.profiles.validate_task_reasoning_overrides(state, {"backend": "max"}, {}, {"backend": "claude-opus-5"})
+            pipeline._common_runtime.execution.profiles.apply_task_model_overrides(state, {"backend": "claude-opus-5"})
+            pipeline._common_runtime.execution.profiles.apply_task_reasoning_overrides(state, {"backend": "max"})
 
         task = state.tasks[0]
         self.assertEqual(task.agent_id, "claude-ai")
@@ -5079,7 +5219,7 @@ class PipelineTest(unittest.TestCase):
             with (
                 patch.object(pipeline.git, "ensure_repository") as ensure,
                 patch.object(pipeline.git, "list_worktrees", return_value=[]) as list_worktrees,
-                patch.object(pipeline, "_workspace_status", side_effect=status_result) as workspace_status,
+                patch.object(pipeline._common_runtime.integration.workspaces, 'workspace_status', side_effect=status_result) as workspace_status,
             ):
                 statuses = pipeline.workspace_statuses(state.id)
 
@@ -5129,7 +5269,7 @@ class PipelineTest(unittest.TestCase):
             state = pipeline.confirm_plan(state.id)
             task = state.tasks[0]
             branch = f"ai/{state.id}/{task.id}"
-            worktree = pipeline._run_worktree_root(state) / task.id
+            worktree = pipeline._common_runtime.execution.workspace.run_worktree_root(state) / task.id
             pipeline.git.ensure_managed_workspace_excluded(worktree.parent.parent)
             pipeline.git.create_worktree(worktree, branch)
 
@@ -5176,7 +5316,7 @@ class PipelineTest(unittest.TestCase):
         pipeline = Pipeline(config)
 
         with patch.object(pipeline.git, "ensure_clean") as ensure_clean, patch.object(pipeline.git, "ensure_main_branch") as ensure_main:
-            pipeline._ensure_main_worktree_ready()
+            pipeline._common_runtime.integration.workspaces.ensure_main_worktree_ready()
 
         ensure_clean.assert_called_once_with(
             ignored_untracked_roots=(pipeline.store.root,), non_interactive=True, timeout_seconds=LOCAL_GIT_TIMEOUT_SECONDS
@@ -5202,16 +5342,23 @@ class PipelineTest(unittest.TestCase):
             id="bounded-git-run", spec_path="", spec_digest="digest", repo_path=str(root), main_branch="main", stage=Stage.EXECUTING, tasks=[task]
         )
         pipeline.dotnet_executable = "C:/SDK/dotnet.exe"
-        legacy_prompt = pipeline._with_task_worktree_contract("Implement the task.")
+        legacy_prompt = with_task_worktree_contract("Implement the task.")
 
         with (
             patch.object(pipeline.store, "save"),
             patch.object(pipeline.git, "head", side_effect=["before", "before", "after"]) as head,
-            patch.object(pipeline, "_invoke_agent", return_value="implemented") as invoke_agent,
+            patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', return_value="implemented") as invoke_agent,
             patch.object(pipeline.git, "task_changed_paths", return_value=["result.txt"]) as changed_paths,
             patch.object(pipeline.git, "commit_all") as commit_all,
         ):
-            pipeline._run_executor(state, task, legacy_prompt, root / "task.log", "feat(bounded-git): result", TaskAction.EXECUTE)
+            pipeline._common_runtime.execution.tasks.run_executor(
+                state,
+                task,
+                legacy_prompt,
+                root / 'task.log',
+                'feat(bounded-git): result',
+                TaskAction.EXECUTE,
+            )
 
         self.assertEqual(head.call_count, 3)
         for call in head.call_args_list:
@@ -5252,7 +5399,7 @@ class PipelineTest(unittest.TestCase):
             tasks=[task],
         )
 
-        prompt = pipeline._prompt(state, task, "중요: C:/Repo-example worktree를 먼저 생성한다.")
+        prompt = task_prompt_from_state(state, task, "중요: C:/Repo-example worktree를 먼저 생성한다.")
 
         contract_position = prompt.rfind("## Orchestrator worktree contract")
         self.assertGreater(contract_position, prompt.index("## Full planning document"))
@@ -5283,7 +5430,7 @@ class PipelineTest(unittest.TestCase):
                 for task in tasks:
                     task.status = TaskStatus.COMPLETED
 
-            with patch.object(pipeline, "_run_task_batch", side_effect=complete_batch) as run_batch:
+            with patch.object(pipeline._common_runtime.execution.flow, 'run_task_batch', side_effect=complete_batch) as run_batch:
                 executed = pipeline.execute(state.id)
 
             self.assertEqual(executed.stage, Stage.READY_TO_MERGE)
@@ -5336,8 +5483,8 @@ class PipelineTest(unittest.TestCase):
                 pipeline.store.save(current)
 
             with (
-                patch.object(pipeline, "_preflight_task_environment", side_effect=inspect_preflight),
-                patch.object(pipeline, "_run_task_batch", side_effect=complete_batch),
+                patch.object(pipeline._common_runtime.execution.verification_commands, 'preflight_task_environment', side_effect=inspect_preflight),
+                patch.object(pipeline._common_runtime.execution.flow, 'run_task_batch', side_effect=complete_batch),
             ):
                 executed = pipeline.execute(state.id)
 
@@ -5361,7 +5508,7 @@ class PipelineTest(unittest.TestCase):
                 codex_sdk=connected_codex_sdk(),
             )
             state = pipeline.confirm_plan(pipeline.start(spec).id)
-            pipeline._prepare_tasks(state)
+            pipeline._common_runtime.task_preparation().prepare(state)
             state.fail_step(RunStep.AGENT_EXECUTION, "agents unavailable for execution: codex-general")
             pipeline.store.save(state)
 
@@ -5369,7 +5516,7 @@ class PipelineTest(unittest.TestCase):
                 for task in tasks:
                     task.status = TaskStatus.COMPLETED
 
-            with patch.object(pipeline, "_run_task_batch", side_effect=complete_batch):
+            with patch.object(pipeline._common_runtime.execution.flow, 'run_task_batch', side_effect=complete_batch):
                 resumed = pipeline.resume(state.id)
 
             self.assertEqual(resumed.stage, Stage.READY_TO_MERGE)
@@ -5396,7 +5543,7 @@ class PipelineTest(unittest.TestCase):
             state = pipeline.confirm_plan(state.id)
             task = state.tasks[0]
             branch = f"ai/{state.id}/{task.id}"
-            worktree = pipeline._run_worktree_root(state) / task.id
+            worktree = pipeline._common_runtime.execution.workspace.run_worktree_root(state) / task.id
             pipeline.git.ensure_managed_workspace_excluded(worktree.parent.parent)
             pipeline.git.create_worktree(worktree, branch)
             Path(worktree, "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
@@ -5553,7 +5700,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(len(state.clarification_paths), 2)
             self.assertEqual(len(state.planning_messages), 5)
             self.assertEqual(state.planning_messages[-2].text, "권한 검증을 완료 조건에서 특히 강조해 주세요.")
-            conversation_context = pipeline._clarification_context(state)
+            conversation_context = clarification_context(state)
             self.assertIn("### Previous structured plan", conversation_context)
             self.assertIn("### Saved Planning conversation", conversation_context)
             self.assertIn('"notification-api"', conversation_context)
@@ -5564,7 +5711,13 @@ class PipelineTest(unittest.TestCase):
             pipeline.store.save(state)
             with pipeline.store.lock(state.id, "execute"):
                 pipeline.send_planning_message(state.id, "후속 Task에는 감사 로그도 포함해 주세요.")
-                with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=deepcopy(state.tasks))):
+                with (
+                    patch.object(
+                        pipeline._common_runtime.planning.ai,
+                        'build_plan',
+                        return_value=Plan(summary=state.summary, server_work=False, tasks=deepcopy(state.tasks)),
+                    ),
+                ):
                     executing = pipeline.send_planning_message(state.id, "지금까지 내용을 Task에 적용해줘.")
             self.assertEqual(executing.stage, Stage.EXECUTING)
             self.assertEqual(executing.planning_follow_up_requests, [])
@@ -5590,7 +5743,7 @@ class PipelineTest(unittest.TestCase):
                     state.refresh_task_readiness()
                     pipeline.store.save(state)
                     original = state.to_dict()
-                    with patch.object(pipeline, "_invoke_planning_agent", return_value="결과를 보존하며 개선 방법을 논의합니다.") as invoked:
+                    with patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value="결과를 보존하며 개선 방법을 논의합니다.") as invoked:
                         chatted = pipeline.send_planning_message(state.id, "버튼이 작아 보이는데 어떻게 하면 좋을까?")
                     invoked.assert_called_once()
                     for name in ("stage", "tasks", "plan_revision", "plan_approved_revision", "base_commit"):
@@ -5615,8 +5768,8 @@ class PipelineTest(unittest.TestCase):
             state.tasks[0].active_action = None
             state.tasks[0].completed_commit = pipeline.git.head(worktree)
             state.planning_agent_id = "worker"
-            pipeline._append_planning_user_message(state, "처음 요청")
-            pipeline._append_planning_assistant_message(state, "완료했습니다.")
+            pipeline._common_runtime.planning.messages.append_user(state, "처음 요청")
+            pipeline._common_runtime.planning.messages.append_assistant(state, "완료했습니다.")
             pipeline.store.save_planning_chat(state)
             pipeline.store.save(state)
             policy = pipeline.store.load_effort_policy(state.id)
@@ -5634,7 +5787,7 @@ class PipelineTest(unittest.TestCase):
             original = archived.to_dict()
             head = pipeline.git.head(pipeline.repo)
             for message in ("완료한 내용을 설명해줘", "지금까지 내용을 Task에 적용해줘"):
-                with patch.object(pipeline, "_invoke_provider_command", return_value="기록을 보존하며 다음 작업을 논의합니다.") as invoked:
+                with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="기록을 보존하며 다음 작업을 논의합니다.") as invoked:
                     chatted = pipeline.send_planning_message(state.id, message)
                 invoked.assert_called_once()
                 agent = invoked.call_args.kwargs["agent"]
@@ -5644,7 +5797,7 @@ class PipelineTest(unittest.TestCase):
                 for name in ("stage", "tasks", "archive", "plan_revision", "plan_approved_revision", "base_commit"):
                     self.assertEqual(chatted.to_dict()[name], original[name], name)
                 self.assertEqual(pipeline.store.load(state.id).planning_messages[-1].text, chatted.planning_messages[-1].text)
-            with patch.object(pipeline, "_invoke_provider_command", side_effect=PipelineError("mock provider unavailable")):
+            with patch.object(pipeline._common_runtime.provider, 'invoke', side_effect=PipelineError("mock provider unavailable")):
                 with self.assertRaisesRegex(PipelineError, "mock provider unavailable"):
                     pipeline.send_planning_message(state.id, "실패도 숨기지 마세요")
             self.assertEqual(pipeline.store.load(state.id).planning_messages[-1].text, "실패도 숨기지 마세요")
@@ -5702,9 +5855,13 @@ class PipelineTest(unittest.TestCase):
             original_tasks = state.to_dict()["tasks"]
 
             with (
-                pipeline.store.lock(state.id, "execute"),
-                patch.object(pipeline, "_invoke_planning_agent", return_value="현재 문서 Task를 실행하고 있습니다."),
-                patch.object(pipeline, "_build_plan", return_value=Plan(summary="문서 수정", server_work=False, tasks=deepcopy(state.tasks))),
+                pipeline.store.lock(state.id, 'execute'),
+                patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value='현재 문서 Task를 실행하고 있습니다.'),
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary='문서 수정', server_work=False, tasks=deepcopy(state.tasks)),
+                ),
             ):
                 chatted = pipeline.send_planning_message(state.id, "지금 어떤 작업을 하고 있어?")
                 follow_up = pipeline.send_planning_message(state.id, "지금까지 이야기한 내용을 후속 Task에 적용해줘.")
@@ -5764,7 +5921,7 @@ class PipelineTest(unittest.TestCase):
 
             with (
                 pipeline.store.lock(state.id, "execute"),
-                patch.object(pipeline, "_invoke_planning_agent", return_value="Task 실행을 시작하고 있습니다."),
+                patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value="Task 실행을 시작하고 있습니다."),
             ):
                 chatted = pipeline.send_planning_message(state.id, "지금 시작된 거야?")
 
@@ -5803,7 +5960,7 @@ class PipelineTest(unittest.TestCase):
             pipeline.store.save(state)
             follow_up = Plan(summary="추가 확인 필요", server_work=False, tasks=[], questions=["푸시 알림도 포함할까요?"])
 
-            with patch.object(pipeline, "_build_plan", return_value=follow_up):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', return_value=follow_up):
                 updated = pipeline.clarify_text(state.id, "인앱 알림입니다.", planning_model="gpt-5.6-terra", planning_reasoning_effort="ultra")
                 preserved = pipeline.clarify_text(state.id, "푸시 알림은 제외합니다.")
                 preserved.stage = Stage.FAILED
@@ -5823,24 +5980,24 @@ class PipelineTest(unittest.TestCase):
 
     def test_planning_model_override_normalizes_provider_commands(self) -> None:
         codex = AgentConfig("planner", ("planning",), (), provider_id="codex")
-        self.assertEqual(Pipeline._planning_command_with_model(codex, codex.command, "gpt-5.6-terra"), ())
+        self.assertEqual(command_with_model(codex, codex.command, "gpt-5.6-terra"), ())
 
         claude = AgentConfig("planner", ("planning",), ("claude", "-p", "prompt", "--model", "sonnet"), provider_id="claude")
         for model in ("opus", "claude-opus-5", "claude-opus-5-5", "fable", "claude-fable-5"):
             with self.subTest(model=model):
-                self.assertEqual(Pipeline._planning_command_with_model(claude, claude.command, model), ("claude", "--model", model, "-p", "prompt"))
+                self.assertEqual(command_with_model(claude, claude.command, model), ("claude", "--model", model, "-p", "prompt"))
 
     def test_reasoning_override_normalizes_provider_commands(self) -> None:
         codex = AgentConfig("planner", ("planning",), (), provider_id="codex")
-        self.assertEqual(Pipeline._command_with_reasoning_effort(codex, codex.command, "ultra", "gpt-5.6-sol"), ())
+        self.assertEqual(TaskWorkflows.command_with_reasoning_effort(codex, codex.command, "ultra", "gpt-5.6-sol"), ())
 
         claude = AgentConfig("planner", ("planning",), ("claude", "--effort=low", "-p", "prompt"), provider_id="claude")
         self.assertEqual(
-            Pipeline._command_with_reasoning_effort(claude, claude.command, "max", "sonnet"), ("claude", "--effort", "max", "-p", "prompt")
+            TaskWorkflows.command_with_reasoning_effort(claude, claude.command, "max", "sonnet"), ("claude", "--effort", "max", "-p", "prompt")
         )
 
         with self.assertRaisesRegex(PipelineError, "unsupported reasoning"):
-            Pipeline._command_with_reasoning_effort(codex, codex.command, "ultra", "gpt-5.6-luna")
+            TaskWorkflows.command_with_reasoning_effort(codex, codex.command, "ultra", "gpt-5.6-luna")
 
         pipeline = Pipeline(
             Config(path=Path("orchestrator.toml"), project=ProjectConfig(repo=Path.cwd()), execution=ExecutionConfig(), agents=(codex,))
@@ -5857,10 +6014,10 @@ class PipelineTest(unittest.TestCase):
             worktree=str(Path.cwd()),
             prompt_path="prompt.md",
         )
-        with patch.object(pipeline, "_invoke_provider_command", return_value="done") as invoke:
-            pipeline._invoke_agent(state, task, codex, "prompt", Path("task.log"), TaskAction.EXECUTE)
+        with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="done") as invoke:
+            pipeline._common_runtime.execution.tasks.invoke_agent(state, task, codex, "prompt", Path("task.log"), TaskAction.EXECUTE)
             execute_call = invoke.call_args
-            pipeline._invoke_agent(state, task, codex, "prompt", Path("review.log"), TaskAction.REVIEW)
+            pipeline._common_runtime.execution.tasks.invoke_agent(state, task, codex, "prompt", Path("review.log"), TaskAction.REVIEW)
             review_call = invoke.call_args
 
         self.assertEqual(execute_call.kwargs["command_template"], ())
@@ -5873,16 +6030,16 @@ class PipelineTest(unittest.TestCase):
         session_id = "3b79eb26-4234-48b8-bb8c-f9d0b0c731b1"
 
         self.assertEqual(
-            Pipeline._command_with_claude_session(claude, claude.command, session_id, resume=False),
+            command_with_claude_session(claude, claude.command, session_id, resume=False),
             ("claude", "--session-id", session_id, "-p", "prompt"),
         )
         self.assertEqual(
-            Pipeline._command_with_claude_session(claude, claude.command, session_id, resume=True), ("claude", "--resume", session_id, "-p", "prompt")
+            command_with_claude_session(claude, claude.command, session_id, resume=True), ("claude", "--resume", session_id, "-p", "prompt")
         )
         with self.assertRaisesRegex(PipelineError, "must not define session"):
-            Pipeline._command_with_claude_session(claude, ("claude", "--continue", "-p", "prompt"), session_id, resume=True)
+            command_with_claude_session(claude, ("claude", "--continue", "-p", "prompt"), session_id, resume=True)
         with self.assertRaisesRegex(PipelineError, "valid UUID"):
-            Pipeline._command_with_claude_session(claude, claude.command, "not-a-session", resume=False)
+            command_with_claude_session(claude, claude.command, "not-a-session", resume=False)
 
         pipeline = Pipeline(
             Config(
@@ -5903,8 +6060,8 @@ class PipelineTest(unittest.TestCase):
             planning_agent_id=claude.id,
             planning_provider_id=claude.provider_id,
         )
-        with patch.object(pipeline, "_invoke_provider_command", return_value="답변") as invoke:
-            result = pipeline._invoke_planning_agent(
+        with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="답변") as invoke:
+            result = pipeline._common_runtime.planning.ai.invoke(
                 state, claude, "질문", Path("planning-chat.md"), Path("planning-chat.log"), claude_session_id=session_id, resume_claude_session=True
             )
 
@@ -5917,8 +6074,8 @@ class PipelineTest(unittest.TestCase):
         log_path = Path("planning-chat.log")
         output = "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
 
-        claude_message = Pipeline._provider_command_failure_message(claude, 1, output, log_path)
-        custom_message = Pipeline._provider_command_failure_message(custom, 1, output, log_path)
+        claude_message = ProviderRunner.failure_message(claude, 1, output, log_path)
+        custom_message = ProviderRunner.failure_message(custom, 1, output, log_path)
 
         self.assertIn("Claude 로그인이 만료", claude_message)
         self.assertIn("claude auth login", claude_message)
@@ -6221,7 +6378,7 @@ class PipelineTest(unittest.TestCase):
             )
             pipeline.store.save(state)
 
-            with patch.object(pipeline, "_invoke_planning_agent", side_effect=["첫 답변", "두 번째 답변", "모델 변경 답변"]) as invoke:
+            with patch.object(pipeline._common_runtime.planning.ai, 'invoke', side_effect=["첫 답변", "두 번째 답변", "모델 변경 답변"]) as invoke:
                 first = pipeline.send_planning_message(state.id, "검증 조건을 같이 정리해줘.")
                 second = pipeline.send_planning_message(state.id, "그중 첫 번째 조건을 자세히 설명해줘.")
                 changed = pipeline.send_planning_message(state.id, "opus 관점에서 다시 검토해줘.", planning_model="opus")
@@ -6268,7 +6425,7 @@ class PipelineTest(unittest.TestCase):
             )
             pipeline.store.save(state)
 
-            with patch.object(pipeline, "_invoke_planning_agent", side_effect=PipelineError("Claude failed")):
+            with patch.object(pipeline._common_runtime.planning.ai, 'invoke', side_effect=PipelineError("Claude failed")):
                 with self.assertRaisesRegex(PipelineError, "Claude failed"):
                     pipeline.send_planning_message(state.id, "답변해줘.")
 
@@ -6307,8 +6464,8 @@ class PipelineTest(unittest.TestCase):
             pipeline = Pipeline(config)
 
             with (
-                patch.object(pipeline, "_invoke_planning_agent", side_effect=["invalid", result, "첫 채팅 답변"]) as invoke,
-                patch.object(pipeline, "_claude_auth_status", return_value=(True, "claude_subscription", "Claude 구독 로그인")),
+                patch.object(pipeline._common_runtime.planning.ai, 'invoke', side_effect=["invalid", result, "첫 채팅 답변"]) as invoke,
+                patch.object(pipeline._common_runtime.provider_probes, "claude_auth", return_value=(True, "claude_subscription", "Claude 구독 로그인")),
             ):
                 planned = pipeline.start(spec)
                 chatted = pipeline.send_planning_message(planned.id, "완료 조건을 설명해줘.")
@@ -6351,10 +6508,10 @@ class PipelineTest(unittest.TestCase):
 
         for message in apply_messages:
             with self.subTest(message=message):
-                self.assertTrue(Pipeline._planning_message_requests_apply(message))
+                self.assertTrue(planning_message_requests_apply(message))
         for message in chat_messages:
             with self.subTest(message=message):
-                self.assertFalse(Pipeline._planning_message_requests_apply(message))
+                self.assertFalse(planning_message_requests_apply(message))
 
     def test_initial_task_creation_materializes_agreed_discussion_in_same_run_without_execution(self) -> None:
         for message in ("계획 생성이 안 되는 문제 고치고, 합의한 6개 작업으로 이어서 진행해줘", "논의한 내용으로 Task 만들어줘"):
@@ -6369,14 +6526,21 @@ class PipelineTest(unittest.TestCase):
                 state.stage = Stage.NEEDS_CLARIFICATION
                 state.plan_approved_revision = 0
                 state.planning_agent_id = "worker"
-                pipeline._append_planning_user_message(state, "작업 여섯 개의 범위를 정하자.")
-                pipeline._append_planning_assistant_message(state, "합의한 작업은 여섯 개입니다.")
+                pipeline._common_runtime.planning.messages.append_user(state, "작업 여섯 개의 범위를 정하자.")
+                pipeline._common_runtime.planning.messages.append_assistant(state, "합의한 작업은 여섯 개입니다.")
                 # Restored discussions may already be marked applied even though no Tasks survived.
                 state.planning_applied_conversation_revision = state.planning_conversation_revision
                 pipeline.store.save(state)
                 original_revision = state.plan_revision
-                with patch.object(pipeline, "_build_plan", return_value=Plan(summary="합의한 계획", server_work=False, tasks=proposals)) as build, \
-                        patch.object(pipeline, "_run_planning_chat_turn") as chat, patch.object(pipeline, "_execute") as execute:
+                with (
+                    patch.object(
+                        pipeline._common_runtime.planning.ai,
+                        'build_plan',
+                        return_value=Plan(summary='합의한 계획', server_work=False, tasks=proposals),
+                    ) as build,
+                    patch.object(pipeline._common_runtime.planning.ai, 'chat_turn') as chat,
+                    patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute,
+                ):
                     updated = pipeline.send_planning_message(state.id, message)
                     receipt = updated.planning_apply_requests[-1]
                     replayed = pipeline.request_planning_conversation_apply(
@@ -6387,7 +6551,7 @@ class PipelineTest(unittest.TestCase):
                 chat.assert_not_called()
                 execute.assert_not_called()
                 self.assertIn("합의한 작업은 여섯 개", build.call_args.kwargs["clarification_context"])
-                if not pipeline._planning_message_is_apply_control(message):
+                if not planning_message_is_apply_control(message):
                     self.assertIn(message, build.call_args.kwargs["clarification_context"])
                 self.assertEqual(updated.id, state.id)
                 self.assertEqual(updated.stage, Stage.PLANNED)
@@ -6409,15 +6573,15 @@ class PipelineTest(unittest.TestCase):
             for message in ("왜 Task가 비어 있어?", "합의한 6개 작업으로 진행해도 되나요?", "합의한 작업으로 진행하지 마",
                             "합의한 작업으로 내일 진행해줘", "합의한 작업을 설명해줘", "‘합의한 작업으로 진행해줘’라고 말하면 돼?"):
                 with self.subTest(message=message):
-                    self.assertFalse(pipeline._planning_message_requests_initial_tasks(state, message))
+                    self.assertFalse(planning_message_requests_initial_tasks(state, message))
             message = "합의한 6개 작업으로 이어서 진행해줘"
-            self.assertTrue(pipeline._planning_message_requests_initial_tasks(state, message))
+            self.assertTrue(planning_message_requests_initial_tasks(state, message))
             for stage in (Stage.EXECUTING, Stage.READY_TO_MERGE, Stage.PUSHED):
                 state.stage = stage
-                self.assertFalse(pipeline._planning_message_requests_initial_tasks(state, message))
+                self.assertFalse(planning_message_requests_initial_tasks(state, message))
             state.stage = Stage.NEEDS_CLARIFICATION
             state.repository_intent = "new_project"
-            self.assertFalse(pipeline._planning_message_requests_initial_tasks(state, message))
+            self.assertFalse(planning_message_requests_initial_tasks(state, message))
 
     def test_initial_task_creation_failure_keeps_discussion_and_reports_planning_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -6427,7 +6591,7 @@ class PipelineTest(unittest.TestCase):
             state.planning_agent_id = "worker"
             pipeline.store.save(state)
             message = "논의한 내용으로 Task 만들어줘"
-            with patch.object(pipeline, "_build_plan", side_effect=PlanningError("자료 확인 실패")):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PlanningError("자료 확인 실패")):
                 with self.assertRaisesRegex(PlanningError, "자료 확인 실패"):
                     pipeline.send_planning_message(state.id, message)
             restored = pipeline.store.load(state.id)
@@ -6444,14 +6608,14 @@ class PipelineTest(unittest.TestCase):
             "정리한 검증 조건을 계획에 반영해 주세요.", "논의한 요구사항을 Task에 반영해줘",
         ):
             with self.subTest(control=message):
-                self.assertTrue(Pipeline._planning_message_is_apply_control(message))
+                self.assertTrue(planning_message_is_apply_control(message))
         for message in (
             "코덱스만 쓰는 걸로 태스크를 변경 해줘", "코덱스만 쓰는 걸로 테스크를 변경 해줘",
             "Claude만 쓰도록 Task를 변경해줘", "검증 조건을 추가해서 계획을 수정해줘",
             "Update the tasks to use Codex only.", "태스크를 변경하지 마", "태스크 변경하는 방법 알려줘", "‘계획을 수정해줘’라고 하면 돼?",
         ):
             with self.subTest(instruction=message):
-                self.assertFalse(Pipeline._planning_message_is_apply_control(message))
+                self.assertFalse(planning_message_is_apply_control(message))
 
     def test_inline_codex_request_reaches_preview_and_changes_profiles_only_after_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -6465,12 +6629,12 @@ class PipelineTest(unittest.TestCase):
             pipeline.store.save(state)
             original = deepcopy(state.tasks)
             instruction = "코덱스만 쓰는 걸로 테스크를 변경 해줘"
-            proposal = pipeline._task_plan_draft(state.tasks[0])
+            proposal = task_plan_draft(state.tasks[0])
             proposal.update(provider_id="codex", model="gpt-6.1-sol", reasoning_effort="medium",
                             verify_commands=[[sys.executable, "-c", "pass"]])
             output = "AI_PLAN_RESULT: " + json.dumps({"summary": state.summary, "server_work": False,
                                                        "tasks": [proposal], "questions": []}, ensure_ascii=False)
-            with patch.object(pipeline, "_invoke_planning_agent", return_value=output) as invoke:
+            with patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=output) as invoke:
                 updated = pipeline.send_planning_message(state.id, instruction)
             self.assertIn(instruction, str(invoke.call_args))
             self.assertGreater(updated.planning_conversation_revision, state.planning_conversation_revision)
@@ -6496,7 +6660,7 @@ class PipelineTest(unittest.TestCase):
             state.planning_applied_conversation_revision = state.planning_conversation_revision
             pipeline.store.save(state)
             before_revision = state.planning_conversation_revision
-            with patch.object(pipeline, "_build_plan") as build:
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan') as build:
                 with self.assertRaisesRegex(PipelineError, "반영할 새 Planning 대화"):
                     pipeline.send_planning_message(state.id, "지금까지 내용을 Task에 적용해줘")
             build.assert_not_called()
@@ -6510,15 +6674,15 @@ class PipelineTest(unittest.TestCase):
             state.planning_applied_conversation_revision = state.planning_conversation_revision
             pipeline.store.save(state)
             instruction = "검증 조건을 추가해서 계획을 수정해줘"
-            with patch.object(pipeline, "_build_plan", side_effect=PipelineError("모의 제공자 오류")):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PipelineError("모의 제공자 오류")):
                 with self.assertRaisesRegex(PipelineError, "모의 제공자 오류"):
                     pipeline.send_planning_message(state.id, instruction)
             saved = pipeline.store.load(state.id)
-            self.assertIn(instruction, pipeline._clarification_context(saved))
-            self.assertIn(instruction, pipeline._execution_follow_up_request(saved))
+            self.assertIn(instruction, clarification_context(saved))
+            self.assertIn(instruction, pipeline._common_runtime.planning.messages.follow_up(saved))
             self.assertEqual(saved.tasks, state.tasks)
             candidate = Plan(summary=state.summary, server_work=False, tasks=deepcopy(state.tasks))
-            with patch.object(pipeline, "_build_plan", return_value=candidate) as build:
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', return_value=candidate) as build:
                 replayed = pipeline.send_planning_message(state.id, "지금까지 내용을 Task에 적용해줘")
             self.assertIn(instruction, build.call_args.kwargs["clarification_context"])
             self.assertEqual(replayed.planning_conversation_revision, saved.planning_conversation_revision)
@@ -6537,7 +6701,13 @@ class PipelineTest(unittest.TestCase):
             proposal = deepcopy(state.tasks)
             proposal[1].description = "새 검증 조건"
             instruction = "남은 태스크에 검증 조건을 추가해줘"
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=proposal)) as build:
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=proposal),
+                ) as build,
+            ):
                 updated = pipeline.send_planning_message(state.id, instruction)
             self.assertIn(instruction, build.call_args.kwargs["clarification_context"])
             self.assertIn(instruction, build.call_args.args[0].planning_follow_up_requests[-1])
@@ -6554,9 +6724,13 @@ class PipelineTest(unittest.TestCase):
             state.planning_applied_conversation_revision = state.planning_conversation_revision
             pipeline.store.save(state)
             instruction = "코덱스만 쓰는 걸로 태스크를 변경 해줘"
-            with patch.object(
-                pipeline, "request_planning_conversation_apply", side_effect=lambda *_args, **_kwargs: pipeline.store.load(state.id)
-            ) as apply:
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning,
+                    'request_planning_conversation_apply',
+                    side_effect=lambda *_args, **_kwargs: pipeline.store.load(state.id),
+                ) as apply,
+            ):
                 updated = pipeline.send_planning_message(state.id, instruction)
             self.assertEqual(apply.call_args.kwargs["conversation_revision"], updated.planning_conversation_revision)
             self.assertGreater(updated.planning_conversation_revision, state.planning_conversation_revision)
@@ -6567,7 +6741,7 @@ class PipelineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
             state.planning_agent_id = "worker"
-            pipeline._append_planning_user_message(state, "검증 조건을 한 개 추가해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "검증 조건을 한 개 추가해 주세요.")
             pipeline.store.save(state)
             expected_revision = state.plan_revision
             conversation_revision = state.planning_conversation_revision
@@ -6581,8 +6755,8 @@ class PipelineTest(unittest.TestCase):
                     conversation_revision=conversation_revision - 1,
                 )
             with patch.object(
-                pipeline,
-                "_build_plan",
+                pipeline._common_runtime.planning.ai,
+                'build_plan',
                 return_value=Plan(summary=state.summary, server_work=False, tasks=proposal),
             ) as build:
                 updated = pipeline.request_planning_conversation_apply(
@@ -6616,14 +6790,20 @@ class PipelineTest(unittest.TestCase):
     def test_planning_preview_preserves_run_and_applies_saved_candidate_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
-            pipeline._append_planning_user_message(state, "완료 조건을 보강해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "완료 조건을 보강해 주세요.")
             pipeline.store.save(state)
             before = pipeline.store.load(state.id).to_dict()
             plan_before = Path(state.structured_plan_path).read_bytes()
             proposal = deepcopy(state.tasks)
             proposal[0].description = "완료 조건을 보강했습니다."
             request_id = str(uuid.uuid4())
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=proposal)) as build:
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=proposal),
+                ) as build,
+            ):
                 preview = pipeline.preview_planning_apply(state.id, request_id=request_id)
                 replay = pipeline.preview_planning_apply(state.id, request_id=request_id)
             self.assertEqual(build.call_count, 1)
@@ -6686,7 +6866,7 @@ class PipelineTest(unittest.TestCase):
             finished.tasks[0].active_action = None
             pipeline.store.save(finished)
 
-            paused = pipeline._apply_queued_changes_after_batch(finished)
+            paused = pipeline._common_runtime.execution.flow.apply_queued_changes_after_batch(finished)
 
             self.assertIsNotNone(paused)
             self.assertEqual(paused.tasks[1].status, TaskStatus.PENDING)
@@ -6707,10 +6887,10 @@ class PipelineTest(unittest.TestCase):
                 return candidates
 
             with (
-                patch.object(pipeline, "_ready_tasks", side_effect=receive_while_selecting),
-                patch.object(pipeline, "_run_task_batch") as batch,
+                patch.object(execution_flow, 'ready_tasks', side_effect=receive_while_selecting),
+                patch.object(pipeline._common_runtime.execution.flow, 'run_task_batch') as batch,
             ):
-                paused = pipeline._execute(pipeline.store.load(state.id), manual=False)
+                paused = pipeline._common_runtime.execution.flow.execute(pipeline.store.load(state.id), manual=False)
 
             batch.assert_not_called()
             self.assertEqual(paused.stage, Stage.EXECUTING)
@@ -6731,7 +6911,7 @@ class PipelineTest(unittest.TestCase):
             pipeline.store.save(state)
             pipeline.request_direction_change(state.id, request_id=str(uuid.uuid4()), text="실패 결과를 반영해 조정해 주세요")
 
-            paused = pipeline._apply_queued_changes_after_batch(state)
+            paused = pipeline._common_runtime.execution.flow.apply_queued_changes_after_batch(state)
 
             self.assertEqual(paused.stage, Stage.FAILED)
             self.assertEqual(paused.failed_step, RunStep.AGENT_EXECUTION)
@@ -6748,14 +6928,20 @@ class PipelineTest(unittest.TestCase):
             proposal = deepcopy(state.tasks)
             proposal[0].description = "보강한 완료 조건"
 
-            with patch.object(pipeline, "_build_plan", side_effect=PlanningError("계획 생성 실패")):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PlanningError("계획 생성 실패")):
                 with self.assertRaisesRegex(PlanningError, "계획 생성 실패"):
                     pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             failed = pipeline.store.load(state.id).direction_change_requests[0]
             self.assertEqual(failed.status, DirectionChangeStatus.QUEUED)
             self.assertIn("계획 생성 실패", failed.error)
 
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=proposal)):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=proposal),
+                ),
+            ):
                 preview = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             self.assertTrue(preview["can_apply"])
             self.assertEqual(preview["direction_request_ids"], [direction_id])
@@ -6777,7 +6963,13 @@ class PipelineTest(unittest.TestCase):
             state.stage = Stage.EXECUTING
             pipeline.store.save(state)
             pipeline.request_direction_change(state.id, request_id=str(uuid.uuid4()), text="첫 요청")
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=deepcopy(state.tasks))):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=deepcopy(state.tasks)),
+                ),
+            ):
                 preview = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             pipeline.request_direction_change(state.id, request_id=str(uuid.uuid4()), text="두 번째 요청")
             self.assertEqual(
@@ -6793,14 +6985,20 @@ class PipelineTest(unittest.TestCase):
     def test_planning_preview_rejects_stale_and_protected_task_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
-            pipeline._append_planning_user_message(state, "설명을 바꿔 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "설명을 바꿔 주세요.")
             pipeline.store.save(state)
             proposal = deepcopy(state.tasks)
             proposal[0].description = "변경된 설명"
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=proposal)):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=proposal),
+                ),
+            ):
                 preview = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             changed = pipeline.store.load(state.id)
-            pipeline._append_planning_user_message(changed, "검증 조건도 보강해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(changed, "검증 조건도 보강해 주세요.")
             pipeline.store.save(changed)
             with self.assertRaisesRegex(PipelineError, "다시 생성"):
                 pipeline.apply_planning_preview(
@@ -6811,7 +7009,13 @@ class PipelineTest(unittest.TestCase):
             changed.stage = Stage.EXECUTING
             changed.tasks[0].status = TaskStatus.COMPLETED
             pipeline.store.save(changed)
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=proposal)):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=proposal),
+                ),
+            ):
                 protected = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             self.assertEqual(protected["changes"][0]["kind"], "review_required")
             self.assertFalse(protected["can_apply"])
@@ -6821,13 +7025,19 @@ class PipelineTest(unittest.TestCase):
             pipeline, state = self._scope_test_run(Path(directory))
             state.stage = Stage.EXECUTING
             state.active_step = RunStep.TASK_PREPARATION
-            pipeline._append_planning_user_message(state, "후속 Task를 추가해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "후속 Task를 추가해 주세요.")
             pipeline.store.save(state)
             proposal = [*deepcopy(state.tasks), WorkTask(
                 id="follow-up", title="후속 Task", capabilities=["general"], agent_id="worker",
                 expected_paths=["follow-up.txt"],
             )]
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=proposal)):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=proposal),
+                ),
+            ):
                 preview = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             self.assertFalse(preview["can_apply"])
             self.assertIn("Task 종료 후", preview["apply_after"])
@@ -6845,15 +7055,27 @@ class PipelineTest(unittest.TestCase):
                 dependencies=[state.tasks[0].id], expected_paths=["follow-up.txt"],
             )
             state.tasks.append(dependent)
-            pipeline._append_planning_user_message(state, "필요 없는 Task를 제외해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "필요 없는 Task를 제외해 주세요.")
             pipeline.store.save(state)
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=[deepcopy(dependent)])):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=[deepcopy(dependent)]),
+                ),
+            ):
                 blocked = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             removed = next(item for item in blocked["changes"] if item["task_id"] == state.tasks[0].id)
             self.assertEqual(removed["kind"], "review_required")
             self.assertIn(dependent.id, removed["reason"])
             self.assertFalse(blocked["can_apply"])
-            with patch.object(pipeline, "_build_plan", return_value=Plan(summary=state.summary, server_work=False, tasks=[deepcopy(state.tasks[0])])):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan(summary=state.summary, server_work=False, tasks=[deepcopy(state.tasks[0])]),
+                ),
+            ):
                 preview = pipeline.preview_planning_apply(state.id, request_id=str(uuid.uuid4()))
             self.assertTrue(preview["can_apply"])
             result = pipeline.apply_planning_preview(
@@ -6867,12 +7089,12 @@ class PipelineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
             state.planning_agent_id = "worker"
-            pipeline._append_planning_user_message(state, "완료 조건에 로그 복사를 추가해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "완료 조건에 로그 복사를 추가해 주세요.")
             pipeline.store.save(state)
             original_tasks = deepcopy(state.tasks)
 
             with (
-                patch.object(pipeline, "_build_plan", side_effect=PlanningError("invalid updated plan")),
+                patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PlanningError("invalid updated plan")),
                 self.assertRaisesRegex(PlanningError, "invalid updated plan"),
             ):
                 pipeline.request_planning_conversation_apply(
@@ -6896,7 +7118,7 @@ class PipelineTest(unittest.TestCase):
             state.tasks[0].status = TaskStatus.RUNNING
             state.tasks[0].active_action = TaskAction.EXECUTE
             state.begin_step(RunStep.AGENT_EXECUTION)
-            pipeline._append_planning_user_message(state, "현재 결과에 로그 복사 조건을 추가해 주세요.")
+            pipeline._common_runtime.planning.messages.append_user(state, "현재 결과에 로그 복사 조건을 추가해 주세요.")
             state.refresh_task_readiness()
             pipeline.store.save(state)
 
@@ -7031,8 +7253,8 @@ class PipelineTest(unittest.TestCase):
                 raise ProviderTimeoutError("provider timed out")
 
             with (
-                patch.object(pipeline, "_invoke_planning_agent", side_effect=invoke),
-                patch("ai_orchestrator.pipeline.time.monotonic", side_effect=(0.0, 0.25, 0.75)),
+                patch.object(pipeline._common_runtime.planning.ai, 'invoke', side_effect=invoke),
+                patch("time.monotonic", side_effect=(0.0, 0.25, 0.75)),
                 self.assertRaisesRegex(PlanningError, "planning timed out after 1 seconds"),
             ):
                 pipeline.start(spec)
@@ -7068,7 +7290,7 @@ class PipelineTest(unittest.TestCase):
                 raise ProviderTimeoutError("SDK activity timed out")
 
             with (
-                patch.object(pipeline, "_invoke_planning_agent", side_effect=invoke),
+                patch.object(pipeline._common_runtime.planning.ai, 'invoke', side_effect=invoke),
                 self.assertRaisesRegex(PlanningError, "no Codex SDK activity for 1 seconds"),
             ):
                 pipeline.start(spec)
@@ -7354,10 +7576,10 @@ class PipelineTest(unittest.TestCase):
                 "{run_id}": "run-1",
             }
             with (
-                patch.object(pipeline, "_resolve_executable", return_value="custom-agent"),
-                patch("ai_orchestrator.pipeline.subprocess.Popen", return_value=process) as popen,
+                patch.object(pipeline._common_runtime.provider_probes, "resolve_executable", return_value="custom-agent"),
+                patch("ai_orchestrator.execution.provider_runner.subprocess.Popen", return_value=process) as popen,
             ):
-                output = pipeline._invoke_provider_command(
+                output = pipeline._common_runtime.provider.invoke(
                     agent=agent,
                     command_template=agent.command,
                     replacements=replacements,
@@ -7375,12 +7597,12 @@ class PipelineTest(unittest.TestCase):
             process.communicate.assert_called_once_with(input="유니코드—입력", timeout=config.execution.agent_timeout_seconds)
 
             with (
-                patch.object(pipeline, "_resolve_executable") as resolve,
-                patch("ai_orchestrator.pipeline.subprocess.Popen") as popen,
+                patch.object(pipeline._common_runtime.provider_probes, "resolve_executable") as resolve,
+                patch("ai_orchestrator.execution.provider_runner.subprocess.Popen") as popen,
                 self.assertRaisesRegex(PipelineError, "maximum length"),
             ):
                 codex = AgentConfig("codex-planner", ("planning",), (), provider_id="codex")
-                pipeline._invoke_provider_command(
+                pipeline._common_runtime.provider.invoke(
                     agent=codex,
                     command_template=codex.command,
                     replacements=replacements,
@@ -7409,8 +7631,11 @@ class PipelineTest(unittest.TestCase):
                 "{run_id}": "run-1",
             }
 
-            with patch.object(pipeline, "_resolve_executable") as resolve, patch("ai_orchestrator.pipeline.subprocess.Popen") as popen:
-                output = pipeline._invoke_provider_command(
+            with (
+                patch.object(pipeline._common_runtime.provider_probes, 'resolve_executable') as resolve,
+                patch('ai_orchestrator.execution.provider_runner.subprocess.Popen') as popen,
+            ):
+                output = pipeline._common_runtime.provider.invoke(
                     agent=agent,
                     command_template=agent.command,
                     replacements=replacements,
@@ -7471,7 +7696,7 @@ class PipelineTest(unittest.TestCase):
                 planning_reasoning_effort="medium",
             )
 
-            output = pipeline._invoke_planning_agent(state, agent, "planning prompt", root / "prompt.md", root / "planning.log")
+            output = pipeline._common_runtime.planning.ai.invoke(state, agent, "planning prompt", root / "prompt.md", root / "planning.log")
 
             self.assertEqual(output, "structured plan")
             saved = pipeline.store.load(state.id)
@@ -7531,7 +7756,7 @@ class PipelineTest(unittest.TestCase):
             task.begin_action(TaskAction.EXECUTE)
             pipeline.store.save(state)
 
-            output = pipeline._invoke_agent(state, task, agent, "implement", root / "worker.log", TaskAction.EXECUTE)
+            output = pipeline._common_runtime.execution.tasks.invoke_agent(state, task, agent, "implement", root / "worker.log", TaskAction.EXECUTE)
 
             self.assertEqual(output, "implemented")
             self.assertEqual(task.progress_phase, "plan_step")
@@ -7554,8 +7779,8 @@ class PipelineTest(unittest.TestCase):
                 "{run_id}": "run-1",
             }
 
-            with patch.object(pipeline, "_resolve_executable") as resolve:
-                output = pipeline._invoke_provider_command(
+            with patch.object(pipeline._common_runtime.provider_probes, "resolve_executable") as resolve:
+                output = pipeline._common_runtime.provider.invoke(
                     agent=agent,
                     command_template=agent.command,
                     replacements=replacements,
@@ -7581,8 +7806,11 @@ class PipelineTest(unittest.TestCase):
                 Config(path=root / "orchestrator.toml", project=ProjectConfig(repo=root), execution=ExecutionConfig(), agents=(agent,))
             )
 
-            with patch("ai_orchestrator.pipeline.subprocess.Popen") as popen, self.assertRaisesRegex(PipelineError, "openai-codex SDK"):
-                pipeline._invoke_provider_command(
+            with (
+                patch('ai_orchestrator.execution.provider_runner.subprocess.Popen') as popen,
+                self.assertRaisesRegex(PipelineError, 'openai-codex SDK'),
+            ):
+                pipeline._common_runtime.provider.invoke(
                     agent=agent,
                     command_template=agent.command,
                     replacements={"{run_id}": "run-1", "{task_id}": "planning"},
@@ -7611,7 +7839,7 @@ class PipelineTest(unittest.TestCase):
             codex_sdk.account_status.return_value = CodexSdkAccountStatus(True, "chatgpt", "ChatGPT 구독 로그인")
             pipeline = Pipeline(config, codex_sdk=codex_sdk)
 
-            with patch.object(pipeline, "_resolve_executable") as resolve:
+            with patch.object(pipeline._common_runtime.provider_probes, "resolve_executable") as resolve:
                 choices = pipeline.planning_provider_choices()
                 statuses = pipeline.provider_statuses("codex")
 
@@ -7670,7 +7898,7 @@ class PipelineTest(unittest.TestCase):
             )
 
             with patch(
-                "ai_orchestrator.pipeline.subprocess.run",
+                "ai_orchestrator.execution.provider_runner.subprocess.run",
                 return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout=auth_payload, stderr=""),
             ) as run:
                 status = pipeline.provider_statuses()[0]
@@ -7693,14 +7921,14 @@ class PipelineTest(unittest.TestCase):
             with (
                 self.subTest(payload=payload),
                 patch(
-                    "ai_orchestrator.pipeline.subprocess.run",
+                    "ai_orchestrator.execution.provider_runner.subprocess.run",
                     return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(payload), stderr=""),
                 ),
             ):
-                self.assertEqual(Pipeline._claude_auth_status("claude"), expected)
+                self.assertEqual(provider_connection.claude_auth_status("claude"), expected)
 
-        with patch("ai_orchestrator.pipeline.subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 5)):
-            self.assertEqual(Pipeline._claude_auth_status("claude"), (None, "error", "인증 확인 실패"))
+        with patch("ai_orchestrator.execution.provider_runner.subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 5)):
+            self.assertEqual(provider_connection.claude_auth_status("claude"), (None, "error", "인증 확인 실패"))
 
     def test_claude_login_is_required_before_planning_preparation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -7718,7 +7946,7 @@ class PipelineTest(unittest.TestCase):
             )
 
             with (
-                patch.object(pipeline, "_claude_auth_status", return_value=(False, "none", "로그인 필요")),
+                patch.object(pipeline._common_runtime.provider_probes, "claude_auth", return_value=(False, "none", "로그인 필요")),
                 self.assertRaisesRegex(PipelineError, "claude auth login"),
             ):
                 pipeline.prepare_planning(root / "missing-spec.md")
@@ -7899,9 +8127,9 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(state.verified_main_head, state.base_commit)
             self.assertTrue(state.verified_integration_head)
             integration_head = state.verified_integration_head
-            integration_branch = pipeline._integration_branch_name(state.id)
+            integration_branch = integration_branch_name(state.id)
             self.assertFalse(pipeline.git.branch_exists(integration_branch))
-            self.assertFalse(pipeline._verification_worktree_path(state.id).exists())
+            self.assertFalse(pipeline._common_runtime.execution.workspace.verification_worktree_path(state.id).exists())
             with (
                 patch.object(pipeline.git, "remote_configured", return_value=True),
                 patch.object(pipeline.git, "push_branch") as push_branch,
@@ -8128,13 +8356,13 @@ else:
                     if mode == "locked":
                         cleanup.side_effect = GitError("worktree residue is still locked")
                     if mode in {"clean", "partial"}:
-                        pipeline._cleanup_shared_workspace(state)
+                        pipeline._common_runtime.integration.workspaces.cleanup_shared_workspace(state)
                         self.assertFalse(worktree.exists())
                         self.assertFalse(pipeline.git.branch_exists(state.execution_branch))
                         self.assertEqual(cleanup.call_count, int(mode == "partial"))
                     else:
                         with self.assertRaises((GitError, PipelineError)):
-                            pipeline._cleanup_shared_workspace(state)
+                            pipeline._common_runtime.integration.workspaces.cleanup_shared_workspace(state)
                         self.assertTrue(worktree.exists())
                         self.assertTrue(pipeline.git.branch_exists(state.execution_branch))
                         self.assertEqual(cleanup.call_count, int(mode == "locked"))
@@ -8147,7 +8375,7 @@ else:
                 if mode == "locked":
                     self.assertIn("preserve", residue.read_text(encoding="utf-8"))
                     restarted = Pipeline(pipeline.config)
-                    restarted._cleanup_shared_workspace(recorded)
+                    restarted._common_runtime.integration.workspaces.cleanup_shared_workspace(recorded)
                     self.assertFalse(worktree.exists())
                     self.assertFalse(restarted.git.branch_exists(state.execution_branch))
                 if mode in {"foreign_marker", "unrecorded"}:
@@ -8174,7 +8402,13 @@ else:
             verified = pipeline.verify(completed.id)
             request_id = str(uuid.uuid4())
 
-            with patch.object(pipeline, "_cleanup_shared_workspace", side_effect=PipelineError("workspace locked")) as cleanup:
+            with (
+                patch.object(
+                    pipeline._common_runtime.integration.workspaces,
+                    'cleanup_shared_workspace',
+                    side_effect=PipelineError('workspace locked'),
+                ) as cleanup,
+            ):
                 applied = pipeline.merge(verified.id, approved=True, request_id=request_id)
                 replayed = pipeline.merge(verified.id, approved=True, request_id=request_id)
 
@@ -8590,11 +8824,15 @@ else:
         )
 
         self.assertEqual(
-            fallback_pipeline._integration_verification_commands(state), (("python", "-m", "compileall", "src"), ("python", "-m", "unittest"))
+            fallback_pipeline._common_runtime.execution.verification.integration_verification_command_selection(state)[0],
+            (('python', '-m', 'compileall', 'src'), ('python', '-m', 'unittest')),
         )
-        _, excluded = fallback_pipeline._integration_verification_command_selection(state)
+        _, excluded = fallback_pipeline._common_runtime.execution.verification.integration_verification_command_selection(state)
         self.assertEqual(excluded, (("git", "worktree", "list", "--porcelain"),))
-        self.assertEqual(configured_pipeline._integration_verification_commands(state), (("python", "-m", "pytest"),))
+        self.assertEqual(
+            configured_pipeline._common_runtime.execution.verification.integration_verification_command_selection(state)[0],
+            (('python', '-m', 'pytest'),),
+        )
 
     def test_integration_verification_persists_each_running_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -8645,8 +8883,8 @@ else:
                 return subprocess.CompletedProcess([], 0, "passed\n", "")
 
             commands = (("python", "first.py"), ("git", "status", "--short"))
-            with patch("ai_orchestrator.pipeline.run_command", side_effect=capture_progress):
-                pipeline._run_verification_commands(state, root, commands)
+            with patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=capture_progress):
+                pipeline._common_runtime.execution.verification.run_verification_commands(state, root, commands)
 
             self.assertEqual(observed, [("running_command", "python first.py", 1, 2), ("running_command", "git status --short", 2, 2)])
             self.assertEqual(invocations, [(True, INTEGRATION_VERIFICATION_COMMAND_TIMEOUT_SECONDS), (True, LOCAL_GIT_TIMEOUT_SECONDS)])
@@ -8695,8 +8933,8 @@ else:
                 return subprocess.CompletedProcess(command, 0, "passed\n", "")
 
             command = ("npm", "--prefix", "renderer", "run", "build")
-            with patch("ai_orchestrator.pipeline.run_command", side_effect=capture_command):
-                pipeline._run_verification_commands(state, root, (command,))
+            with patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=capture_command):
+                pipeline._common_runtime.execution.verification.run_verification_commands(state, root, (command,))
 
             self.assertEqual(invocations, [("npm", "--prefix", "renderer", "ci"), command])
             verify_log = pipeline.store.run_dir(state.id) / "logs" / "verify.log"
@@ -8725,7 +8963,7 @@ else:
                 ("npm", "--prefix", "installed", "run", "test"),
             )
 
-            self.assertEqual(pipeline._npm_dependency_restore_commands(root, commands), ())
+            self.assertEqual(VerificationRunner.npm_dependency_restore_commands(root, commands), ())
 
     def test_integration_verification_respects_explicit_npm_restore(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -8746,7 +8984,7 @@ else:
                 ("npm", "--prefix", "renderer", "run", "build"),
             )
 
-            self.assertEqual(pipeline._npm_dependency_restore_commands(root, commands), ())
+            self.assertEqual(VerificationRunner.npm_dependency_restore_commands(root, commands), ())
 
     def test_integration_verification_excludes_worktree_commands(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -8802,9 +9040,14 @@ else:
             state.begin_verification(1)
             pipeline.store.save(state)
 
-            with patch("ai_orchestrator.pipeline.run_command", side_effect=GitError("command timed out after 600 seconds: test")) as run:
+            with (
+                patch(
+                    'ai_orchestrator.execution.verification_commands.run_command',
+                    side_effect=GitError('command timed out after 600 seconds: test'),
+                ) as run,
+            ):
                 with self.assertRaisesRegex(PipelineError, "제한시간을 초과"):
-                    pipeline._run_verification_commands(state, root, (("python", "slow.py"),))
+                    pipeline._common_runtime.execution.verification.run_verification_commands(state, root, (("python", "slow.py"),))
 
             self.assertEqual(run.call_args.kwargs["timeout_seconds"], INTEGRATION_VERIFICATION_COMMAND_TIMEOUT_SECONDS)
             self.assertTrue(run.call_args.kwargs["non_interactive"])
@@ -8871,9 +9114,9 @@ else:
             self.assertIn("프로젝트 공통 검증 명령", attempt.attribution_reason)
             self.assertEqual(pipeline.git.head(repo), main_head)
             self.assertFalse((repo / "result.txt").exists())
-            self.assertFalse(pipeline._verification_worktree_path(state.id).exists())
+            self.assertFalse(pipeline._common_runtime.execution.workspace.verification_worktree_path(state.id).exists())
 
-            with patch.object(pipeline, "_run_verification_commands"):
+            with patch.object(pipeline._common_runtime.execution.verification, 'run_verification_commands'):
                 retried = pipeline.verify(state.id)
 
             self.assertEqual(retried.stage, Stage.VERIFIED)
@@ -8936,7 +9179,7 @@ else:
             self.assertTrue(verified.verified_integration_head)
             self.assertFalse((repo / "first.txt").exists())
             self.assertFalse((repo / "second.txt").exists())
-            self.assertFalse(pipeline._verification_worktree_path(state.id).exists())
+            self.assertFalse(pipeline._common_runtime.execution.workspace.verification_worktree_path(state.id).exists())
 
     def test_integration_verification_uses_latest_main_and_applies_exact_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -9009,11 +9252,11 @@ else:
                 verified_integration_head="integration-head",
             )
             pipeline.store.save(state)
-            integration_branch = pipeline._integration_branch_name(state.id)
+            integration_branch = integration_branch_name(state.id)
             request_id = "07e2e893-f982-4d9c-bf75-3ec38664811e"
 
             with (
-                patch.object(pipeline, "_ensure_main_worktree_ready"),
+                patch.object(pipeline._common_runtime.integration.workspaces, 'ensure_main_worktree_ready'),
                 patch.object(pipeline.git, "branch_head", side_effect=("task-head", "integration-head")) as branch_head,
                 patch.object(pipeline.git, "head", side_effect=("main-head", "integration-head")) as head,
                 patch.object(pipeline.git, "branch_exists", return_value=True) as branch_exists,
@@ -9136,7 +9379,10 @@ else:
 
             failed.tasks[0].verify_commands = [[sys.executable, "-c", "print('verified')"]]
             pipeline.store.save(failed)
-            with patch.object(pipeline, "_run_executor") as executor, patch.object(pipeline, "_run_review_cycles") as reviewer:
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'run_executor') as executor,
+                patch.object(pipeline._common_runtime.execution.tasks, 'run_review_cycles') as reviewer,
+            ):
                 retried = pipeline.retry_task(failed.id, failed.tasks[0].id)
 
             self.assertEqual(retried.stage, Stage.READY_TO_MERGE)
@@ -9181,7 +9427,7 @@ else:
                 ],
             )
             pipeline.store.save(state)
-            pipeline._prepare_tasks(state)
+            pipeline._common_runtime.task_preparation().prepare(state)
             task = state.tasks[0]
             worktree = Path(task.worktree)
             (worktree / "result.txt").write_text("done\n", encoding="utf-8")
@@ -9195,7 +9441,7 @@ else:
             state.refresh_task_readiness()
             pipeline.store.save(state)
 
-            with patch.object(pipeline, "_run_executor") as executor:
+            with patch.object(pipeline._common_runtime.execution.tasks, 'run_executor') as executor:
                 retried = pipeline.retry_task(state.id, task.id)
 
             self.assertEqual(retried.stage, Stage.READY_TO_MERGE)
@@ -9235,7 +9481,7 @@ else:
         )
 
         with patch.object(pipeline.git, "commit_subjects_since", return_value=["feat(other-task): unrelated dependency"]):
-            pipeline._restore_legacy_no_commit_retry_action(state, task)
+            pipeline._common_runtime.execution.tasks.restore_legacy_no_commit_retry_action(state, task)
 
         self.assertEqual(task.failed_action, TaskAction.EXECUTE)
 
@@ -9666,7 +9912,7 @@ else:
                 (worktree / "result.txt").write_text("agent implementation", encoding="utf-8")
                 return "implemented"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=implement) as invoke:
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement) as invoke:
                 result = pipeline.handoff_manual_task_to_ai(waiting.id, first.id, **version)
             invoke.assert_called_once()
             self.assertEqual(result.stage, Stage.EXECUTING)
@@ -9708,7 +9954,7 @@ else:
                 review_reply = 'AI_REVIEW_RESULT: {"verdict":"approved","summary":"checked","findings":[]}'
                 with (
                     patch.object(pipeline.git, "commit_all", wraps=pipeline.git.commit_all) as commit_all,
-                    patch.object(pipeline, "_invoke_agent", return_value=review_reply) as invoke,
+                    patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', return_value=review_reply) as invoke,
                 ):
                     completed = pipeline.complete_manual_verification(waiting.id, task_id, **params)
                     repeated = pipeline.complete_manual_verification(waiting.id, task_id, **params)
@@ -9764,7 +10010,7 @@ else:
                     pipeline.complete_manual_verification(waiting.id, task.id, **params)
             self.assertEqual(pipeline.status(waiting.id).tasks[0].status, TaskStatus.WAITING)
             review_reply = 'AI_REVIEW_RESULT: {"verdict":"approved","summary":"checked","findings":[]}'
-            with patch.object(pipeline, "_invoke_agent", return_value=review_reply) as invoke:
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', return_value=review_reply) as invoke:
                 with self.assertRaises(TaskVerificationFailure):
                     pipeline.complete_manual_verification(waiting.id, task.id, **params)
                 failed = pipeline.status(waiting.id)
@@ -9819,7 +10065,7 @@ else:
                 (worktree / "result.txt").write_text("independent\n", encoding="utf-8")
                 return "independent task result"
 
-            with patch.object(pipeline, "_invoke_agent", side_effect=run_independent) as invoke:
+            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=run_independent) as invoke:
                 state = pipeline.resume(state.id)
             invoke.assert_called_once()
             self.assertEqual(state.stage, Stage.EXECUTING)
@@ -10053,7 +10299,7 @@ else:
                 routing=RoutingConfig(default_provider="local", review_required=True, max_review_cycles=2),
             )
             pipeline = Pipeline(config)
-            pipeline._claude_auth_status = Mock(return_value=(True, "claude_subscription", "로그인됨"))
+            pipeline._common_runtime.provider_probes.claude_auth = Mock(return_value=(True, "claude_subscription", "로그인됨"))
 
             failed = pipeline.execute(pipeline.confirm_plan(pipeline.start(spec).id).id)
             self.assertEqual(failed.tasks[0].failed_action, TaskAction.REVIEW)
@@ -10103,7 +10349,7 @@ else:
                 routing=RoutingConfig(default_provider="local", review_required=True, max_review_cycles=2),
             )
             pipeline = Pipeline(config)
-            pipeline._claude_auth_status = Mock(return_value=(True, "claude_subscription", "fixture connected"))
+            pipeline._common_runtime.provider_probes.claude_auth = Mock(return_value=(True, "claude_subscription", "fixture connected"))
 
             failed = pipeline.execute(pipeline.confirm_plan(pipeline.start(spec).id).id)
             task = failed.tasks[0]
@@ -10258,8 +10504,11 @@ else:
         process.pid = 4321
         process.poll.side_effect = [None, None]
 
-        with patch("ai_orchestrator.pipeline.os.name", "nt"), patch("ai_orchestrator.pipeline.subprocess.run") as run:
-            Pipeline._terminate_agent_process(process)
+        with (
+            patch('ai_orchestrator.execution.provider_runner.os.name', 'nt'),
+            patch('ai_orchestrator.execution.provider_runner.subprocess.run') as run,
+        ):
+            ProviderRunner.terminate_process(process)
 
         command = run.call_args.args[0]
         self.assertEqual(command, ["taskkill", "/PID", "4321", "/T", "/F"])
@@ -10283,11 +10532,11 @@ else:
             log_path = root / "provider.log"
 
             with (
-                patch("ai_orchestrator.pipeline.subprocess.Popen", return_value=process),
-                patch.object(pipeline, "_terminate_agent_process"),
+                patch("ai_orchestrator.execution.provider_runner.subprocess.Popen", return_value=process),
+                patch.object(ProviderRunner, 'terminate_process'),
                 self.assertRaisesRegex(ProviderTimeoutError, "timed out after 1 seconds"),
             ):
-                pipeline._invoke_provider_command(
+                pipeline._common_runtime.provider.invoke(
                     agent=agent,
                     command_template=(sys.executable, "-c", "pass"),
                     replacements={"{run_id}": "run-1", "{task_id}": "task-1"},
@@ -10380,7 +10629,7 @@ else:
                 routing=RoutingConfig(default_provider="local", review_required=True, max_review_cycles=2),
             )
             pipeline = Pipeline(config)
-            pipeline._claude_auth_status = Mock(return_value=(True, "claude_subscription", "fixture connected"))
+            pipeline._common_runtime.provider_probes.claude_auth = Mock(return_value=(True, "claude_subscription", "fixture connected"))
 
             state = pipeline.start(spec)
             state = pipeline.confirm_plan(state.id)
@@ -10424,7 +10673,7 @@ else:
                 routing=RoutingConfig(default_provider="local", review_required=True),
             )
             pipeline = Pipeline(config)
-            pipeline._claude_auth_status = Mock(return_value=(True, "claude_subscription", "로그인됨"))
+            pipeline._common_runtime.provider_probes.claude_auth = Mock(return_value=(True, "claude_subscription", "로그인됨"))
 
             state = pipeline.start(spec)
             state = pipeline.confirm_plan(state.id)
@@ -10462,7 +10711,7 @@ else:
                 routing=RoutingConfig(default_provider="local", review_required=True),
             )
             pipeline = Pipeline(config)
-            pipeline._claude_auth_status = Mock(return_value=(True, "claude_subscription", "fixture connected"))
+            pipeline._common_runtime.provider_probes.claude_auth = Mock(return_value=(True, "claude_subscription", "fixture connected"))
 
             state = pipeline.start(spec)
             state = pipeline.confirm_plan(state.id)
@@ -10474,7 +10723,7 @@ else:
 
     def test_review_result_protocol_is_required(self) -> None:
         with self.assertRaisesRegex(PipelineError, "exactly one"):
-            Pipeline._parse_review("review completed without a verdict")
+            TaskWorkflows.parse_review("review completed without a verdict")
 
     def test_docs_only_planning_records_greenfield_gate_without_creating_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -10514,7 +10763,7 @@ else:
         state.repository_intent = "new_project"
         state.planning_agent_id = "reviewer"
         state.tasks = []
-        state = pipeline._apply_plan(state, Plan("만들 프로그램 확인", False, [], questions=["어떤 프로그램을 만들까요?"]))
+        state = pipeline._common_runtime.planning.lifecycle.apply_plan(state, Plan("만들 프로그램 확인", False, [], questions=["어떤 프로그램을 만들까요?"]))
         return pipeline, state
 
     def test_greenfield_goal_questions_save_without_invented_candidates_or_tasks(self) -> None:
@@ -10534,13 +10783,13 @@ else:
             options = dict(source_root=None, source_index=None, required_instruction_paths=set(), execution_agents=(),
                            planning_mode=PlanningMode.DIRECTED, require_directory_task_draft=False, greenfield_bootstrap=True,
                            greenfield_initial=True)
-            plan = pipeline._validated_planning_plan("AI_PLAN_RESULT: " + json.dumps(payload, ensure_ascii=False), **options)
+            plan = pipeline._common_runtime.planning.ai.validate_plan("AI_PLAN_RESULT: " + json.dumps(payload, ensure_ascii=False), **options)
             self.assertEqual(plan.tasks, [])
             self.assertEqual(plan.tech_stack_options, [])
             self.assertEqual(plan.questions, payload["questions"])
             payload["questions"] = []
             with self.assertRaises(PlanningError):
-                pipeline._validated_planning_plan("AI_PLAN_RESULT: " + json.dumps(payload, ensure_ascii=False), **options)
+                pipeline._common_runtime.planning.ai.validate_plan("AI_PLAN_RESULT: " + json.dumps(payload, ensure_ascii=False), **options)
 
     def test_greenfield_answer_source_read_failure_is_saved_and_can_retry_the_same_request(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -10558,7 +10807,7 @@ else:
             self.assertEqual(failed.planning_apply_requests[0].status, PlanningApplyStatus.FAILED)
             self.assertEqual(failed.planning_apply_requests[0].answer_message, values["answer_message"])
             snapshot.write_text(original, encoding="utf-8")
-            with patch.object(pipeline, "_build_plan", return_value=Plan("추가 조건", False, [], questions=["운영체제는 무엇인가요?"])):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', return_value=Plan("추가 조건", False, [], questions=["운영체제는 무엇인가요?"])):
                 updated = pipeline.request_planning_conversation_apply(state.id, **values, retry_failed=True)
             self.assertEqual(updated.planning_apply_requests[0].status, PlanningApplyStatus.SUCCEEDED)
             self.assertEqual(sum(message.text == values["answer_message"] for message in updated.planning_messages), 1)
@@ -10570,7 +10819,13 @@ else:
             values = dict(request_id="goal-answer", expected_revision=state.plan_revision,
                           conversation_revision=state.planning_conversation_revision, answer_message="오프라인 메모 앱입니다.",
                           expected_tech_stack_revision=state.current_tech_stack_decision().revision)
-            with patch.object(pipeline, "_build_plan", return_value=Plan("추천", False, [], tech_stack_options=[option])) as build:
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan('추천', False, [], tech_stack_options=[option]),
+                ) as build,
+            ):
                 updated = pipeline.request_planning_conversation_apply(state.id, **values)
                 replayed = pipeline.request_planning_conversation_apply(state.id, **values)
             self.assertEqual(build.call_count, 1)
@@ -10590,14 +10845,20 @@ else:
             values = dict(request_id="goal-answer-retry", expected_revision=state.plan_revision,
                           conversation_revision=state.planning_conversation_revision, answer_message="개인 메모를 저장합니다.",
                           expected_tech_stack_revision=state.current_tech_stack_decision().revision)
-            with patch.object(pipeline, "_build_plan", side_effect=PlanningError("추천 생성 실패")):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PlanningError("추천 생성 실패")):
                 with self.assertRaisesRegex(PlanningError, "추천 생성 실패"):
                     pipeline.request_planning_conversation_apply(state.id, **values)
             failed = pipeline.store.load(state.id)
             self.assertEqual(failed.planning_apply_requests[0].answer_message, values["answer_message"])
             self.assertEqual(failed.planning_apply_requests[0].status, PlanningApplyStatus.FAILED)
             self.assertIsNone(failed.active_step)
-            with patch.object(pipeline, "_build_plan", return_value=Plan("추가 확인", False, [], questions=["대상 운영체제는 무엇인가요?"])):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan('추가 확인', False, [], questions=['대상 운영체제는 무엇인가요?']),
+                ),
+            ):
                 updated = pipeline.request_planning_conversation_apply(state.id, **values, retry_failed=True)
             self.assertEqual(sum(message.text == values["answer_message"] for message in updated.planning_messages), 1)
             self.assertEqual(len(updated.planning_apply_requests), 1)
@@ -10623,10 +10884,10 @@ else:
             values = dict(request_id="goal-changed", expected_revision=state.plan_revision,
                           conversation_revision=state.planning_conversation_revision, answer_message="메모 앱입니다.",
                           expected_tech_stack_revision=state.current_tech_stack_decision().revision)
-            with patch.object(pipeline, "_build_plan", side_effect=PlanningError("실패")), self.assertRaises(PlanningError):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PlanningError("실패")), self.assertRaises(PlanningError):
                 pipeline.request_planning_conversation_apply(state.id, **values)
             failed = pipeline.store.load(state.id)
-            pipeline._append_planning_user_message(failed, "동기화도 필요합니다.")
+            pipeline._common_runtime.planning.messages.append_user(failed, "동기화도 필요합니다.")
             pipeline.store.save(failed)
             with self.assertRaisesRegex(PipelineError, "답변이나 계획이 변경"):
                 pipeline.request_planning_conversation_apply(state.id, **values, retry_failed=True)
@@ -10635,11 +10896,17 @@ else:
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._greenfield_guidance_run(Path(directory))
             option = TechStackOption("python", "Python", 1, TechStackComponents(languages=["Python"]))
-            state = pipeline._apply_plan(state, Plan("추천", False, [], tech_stack_options=[option]))
+            state = pipeline._common_runtime.planning.lifecycle.apply_plan(state, Plan("추천", False, [], tech_stack_options=[option]))
             state = pipeline.confirm_tech_stack(state.id, option_id="python", expected_revision=2)
             values = dict(request_id="bootstrap-plan", expected_revision=state.plan_revision,
                           conversation_revision=state.planning_conversation_revision, expected_tech_stack_revision=2)
-            with patch.object(pipeline, "_build_plan", return_value=Plan("잘못된 재추천", False, [], tech_stack_options=[option])):
+            with (
+                patch.object(
+                    pipeline._common_runtime.planning.ai,
+                    'build_plan',
+                    return_value=Plan('잘못된 재추천', False, [], tech_stack_options=[option]),
+                ),
+            ):
                 with self.assertRaisesRegex(PipelineError, "구성 결정은 보존"):
                     pipeline.request_planning_conversation_apply(state.id, **values)
             failed = pipeline.store.load(state.id)
@@ -10648,7 +10915,7 @@ else:
             task = WorkTask(id="project-bootstrap", title="기본 구조", description="실행 가능한 구조를 준비합니다.",
                             capabilities=["general"], expected_paths=["pyproject.toml", "src/main.py"],
                             acceptance_criteria=["실행과 테스트 성공"], verify_commands=[[sys.executable, "-m", "unittest"]], agent_id="worker")
-            with patch.object(pipeline, "_build_plan", return_value=Plan("기본 구조", False, [task])):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', return_value=Plan("기본 구조", False, [task])):
                 updated = pipeline.request_planning_conversation_apply(state.id, **values, retry_failed=True)
             self.assertEqual(updated.greenfield_phase, "bootstrap_ready")
             self.assertEqual(updated.bootstrap_spec.decision_revision, 2)
@@ -10668,7 +10935,10 @@ else:
             option = TechStackOption("ts", "TypeScript와 Node.js 최소 콘솔 프로젝트", 1,
                                      TechStackComponents(languages=["TypeScript"], runtimes=["Node.js LTS"]))
             question = "빈 프로젝트의 설치·빌드·테스트를 검증할 기술 구성으로 추천한 TypeScript와 Node.js를 선택할까요?"
-            state = pipeline._apply_plan(state, Plan("기술 후보", False, [], questions=[question], tech_stack_options=[option]))
+            state = pipeline._common_runtime.planning.lifecycle.apply_plan(
+                state,
+                Plan('기술 후보', False, [], questions=[question], tech_stack_options=[option]),
+            )
             with self.assertRaisesRegex(PipelineError, "현재 revision 1"):
                 pipeline.confirm_tech_stack(state.id, option_id="ts", expected_revision=0)
             with self.assertRaisesRegex(PipelineError, "unknown technology stack option"):
@@ -10699,7 +10969,7 @@ else:
                 requirement_fit=["로컬 실행"], tradeoffs=["패키징 필요"],
             )
             plan = Plan("기술 후보", False, [], questions=["실행할 운영체제는 무엇인가요?"], tech_stack_options=[option])
-            state = pipeline._apply_plan(state, plan)
+            state = pipeline._common_runtime.planning.lifecycle.apply_plan(state, plan)
             with self.assertRaisesRegex(PipelineError, "질문에 먼저 답해"):
                 pipeline.confirm_tech_stack(state.id, option_id="python", expected_revision=1)
             saved = pipeline.store.load(state.id)
@@ -10707,7 +10977,7 @@ else:
             self.assertEqual(saved.current_tech_stack_decision().status, TechStackDecisionStatus.QUESTIONS_REQUIRED)
             self.assertEqual(saved.tasks, [])
 
-            refreshed = pipeline._apply_plan(saved, Plan("답변을 반영한 기술 후보", False, [], tech_stack_options=[option]))
+            refreshed = pipeline._common_runtime.planning.lifecycle.apply_plan(saved, Plan("답변을 반영한 기술 후보", False, [], tech_stack_options=[option]))
             self.assertEqual(refreshed.current_tech_stack_decision().revision, 2)
             with self.assertRaisesRegex(PipelineError, "현재 revision 2"):
                 pipeline.confirm_tech_stack(state.id, option_id="python", expected_revision=1)
@@ -10749,7 +11019,7 @@ else:
                 pipeline.confirm_tech_stack(waiting.id, option_id="python", expected_revision=1)
             chatted = pipeline.send_planning_message(waiting.id, "Windows에서 실행합니다.")
             self.assertEqual(chatted.current_tech_stack_decision().revision, 1)
-            compact_prompt = pipeline._planning_materialization_prompt(chatted)
+            compact_prompt = planning_materialization_prompt(chatted)
             self.assertIn("Technology candidate refresh", compact_prompt)
             self.assertIn("return questions: []", compact_prompt)
             self.assertIn("Windows에서 실행합니다.", compact_prompt)
@@ -10767,7 +11037,7 @@ else:
             confirmed = pipeline.confirm_tech_stack(waiting.id, option_id="python", expected_revision=2)
             self.assertEqual(confirmed.greenfield_phase, "stack_confirmed")
             self.assertEqual(confirmed.tasks, [])
-            self.assertNotIn("Technology candidate refresh", pipeline._planning_materialization_prompt(confirmed))
+            self.assertNotIn("Technology candidate refresh", planning_materialization_prompt(confirmed))
 
     def test_greenfield_stack_confirmation_checks_revision_and_does_not_create_project_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -10797,7 +11067,7 @@ else:
                     )
                 ],
             )
-            state = pipeline._apply_plan(state, plan)
+            state = pipeline._common_runtime.planning.lifecycle.apply_plan(state, plan)
 
             self.assertEqual(state.greenfield_phase, "options_ready")
             self.assertEqual(state.tech_stack_decisions[-1].revision, 1)
@@ -10811,7 +11081,7 @@ else:
             self.assertEqual(confirmed.tech_stack_decisions[-1].selected_option_id, "electron-typescript")
             self.assertEqual(confirmed.tasks, [])
             self.assertGreater(confirmed.planning_conversation_revision, state.planning_conversation_revision)
-            revised = pipeline._apply_plan(
+            revised = pipeline._common_runtime.planning.lifecycle.apply_plan(
                 confirmed,
                 Plan(
                     "수정된 기술 구성 후보",
@@ -10848,7 +11118,7 @@ else:
                 planning_request="새 데스크톱 앱을 계획해 주세요.",
                 repository_intent="new_project",
             )
-            state = pipeline._apply_plan(
+            state = pipeline._common_runtime.planning.lifecycle.apply_plan(
                 state,
                 Plan(
                     "기술 구성 후보",
@@ -10870,7 +11140,7 @@ else:
                 ),
             )
             state = pipeline.confirm_tech_stack(state.id, option_id="electron-typescript", expected_revision=1)
-            state = pipeline._apply_plan(
+            state = pipeline._common_runtime.planning.lifecycle.apply_plan(
                 state,
                 Plan(
                     "기본 구조 생성",
@@ -10901,7 +11171,7 @@ else:
             self.assertEqual(spec.agent_instructions.mode, "create_from_template")  # type: ignore[union-attr]
             self.assertIn("Electron + TypeScript", spec.agent_instructions.rendered_content)  # type: ignore[union-attr]
             self.assertIn("AGENTS.md", state.tasks[0].expected_paths)
-            prompt = pipeline._prompt(state, state.tasks[0], "계획")
+            prompt = task_prompt_from_state(state, state.tasks[0], "계획")
             self.assertIn("Create `AGENTS.md` with exactly", prompt)
             self.assertIn(spec.agent_instructions.rendered_content.rstrip(), prompt)  # type: ignore[union-attr]
             self.assertEqual(len(spec.digest), 64)
@@ -10934,7 +11204,7 @@ else:
             self.assertNotIn("AGENTS.md", skipped_spec.planned_paths)  # type: ignore[union-attr]
             self.assertNotIn("AGENTS.md", state.tasks[0].expected_paths)
             self.assertNotIn(BOOTSTRAP_AGENTS_ACCEPTANCE, state.tasks[0].acceptance_criteria)
-            self.assertIn("excluded by user", pipeline._prompt(state, state.tasks[0], "계획"))
+            self.assertIn("excluded by user", task_prompt_from_state(state, state.tasks[0], "계획"))
             stored_plan = json.loads(Path(state.structured_plan_path).read_text(encoding="utf-8"))
             self.assertNotIn("AGENTS.md", stored_plan["tasks"][0]["expected_paths"])
 
@@ -10975,7 +11245,7 @@ else:
                 planning_request="새 도구를 계획해 주세요.",
                 repository_intent="new_project",
             )
-            state = pipeline._apply_plan(
+            state = pipeline._common_runtime.planning.lifecycle.apply_plan(
                 state,
                 Plan(
                     "기술 구성 후보",
@@ -10992,7 +11262,7 @@ else:
                 ),
             )
             state = pipeline.confirm_tech_stack(state.id, option_id="python", expected_revision=1)
-            state = pipeline._apply_plan(
+            state = pipeline._common_runtime.planning.lifecycle.apply_plan(
                 state,
                 Plan(
                     "기본 구조 생성",
@@ -11007,7 +11277,7 @@ else:
             self.assertEqual(spec.agent_instructions.mode, "preserve_existing")  # type: ignore[union-attr]
             self.assertNotIn("AGENTS.md", spec.planned_paths)
             self.assertEqual([item.relative_path for item in spec.path_snapshot], ["AGENTS.md"])
-            self.assertIn("Preserve `AGENTS.md` exactly", pipeline._prompt(state, state.tasks[0], "계획"))
+            self.assertIn("Preserve `AGENTS.md` exactly", task_prompt_from_state(state, state.tasks[0], "계획"))
             with self.assertRaisesRegex(PipelineError, "기존 AGENTS.md"):
                 pipeline.configure_bootstrap_agent_instructions(
                     state.id,
@@ -11040,7 +11310,7 @@ else:
                 '"tradeoffs":["번들 크기"],"unresolved_constraints":["Windows 버전"],'
                 '"required_external_dependencies":[]}]}'
             )
-            plan = pipeline._validated_planning_plan(
+            plan = pipeline._common_runtime.planning.ai.validate_plan(
                 questions,
                 source_root=None,
                 source_index=None,
@@ -11062,7 +11332,7 @@ else:
                 '"risk_level":"low","provider_id":"local","model":"","reasoning_effort":""}]}'
             )
             with self.assertRaisesRegex(PlanningError, "exactly one project-bootstrap"):
-                pipeline._validated_planning_plan(
+                pipeline._common_runtime.planning.ai.validate_plan(
                     feature,
                     source_root=None,
                     source_index=None,
@@ -11073,7 +11343,7 @@ else:
                     greenfield_bootstrap=True,
                     greenfield_initial=False,
                 )
-            feature_plan = pipeline._validated_planning_plan(
+            feature_plan = pipeline._common_runtime.planning.ai.validate_plan(
                 feature,
                 source_root=None,
                 source_index=None,
@@ -11169,7 +11439,7 @@ else:
                 ],
             )
 
-            with patch.object(pipeline, "_build_plan", return_value=feature_plan) as build_plan:
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', return_value=feature_plan) as build_plan:
                 generated = pipeline.generate_feature_plan(state.id)
 
             self.assertEqual(generated.stage, Stage.PLANNED)
@@ -11182,7 +11452,7 @@ else:
             self.assertEqual(generated.bootstrap_spec.feature_plan_attempts, 1)  # type: ignore[union-attr]
             self.assertIn('"verified_integration_head": "' + "c" * 40, build_plan.call_args.kwargs["clarification_context"])
 
-            changed_drafts = [pipeline._task_plan_draft(task) for task in generated.tasks]
+            changed_drafts = [task_plan_draft(task) for task in generated.tasks]
             changed_drafts[0]["title"] = "변경하면 안 되는 기본 구조"
             with self.assertRaisesRegex(PipelineError, "project-bootstrap Task는 수정할 수 없습니다"):
                 pipeline.update_plan(state.id, changed_drafts)
@@ -11238,7 +11508,7 @@ else:
             )
             pipeline.store.save(state)
 
-            with patch.object(pipeline, "_build_plan", side_effect=PlanningError("provider unavailable")):
+            with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PlanningError("provider unavailable")):
                 with self.assertRaisesRegex(PlanningError, "provider unavailable"):
                     pipeline.generate_feature_plan(state.id)
 
@@ -11292,8 +11562,8 @@ else:
                     code_style_evidence=inspect_task_code_style(repo, state.code_style_snapshot, ["main.py"]),
                 )
             )
-            worker_prompt = pipeline._prompt(state, task, "spec")
-            reviewer_prompt = pipeline._review_prompt(state, task, 1)
+            worker_prompt = task_prompt_from_state(state, task, "spec")
+            reviewer_prompt = pipeline._common_runtime.execution.tasks.review_prompt(state, task, 1)
             self.assertIn("Fixed project code style snapshot", worker_prompt)
             self.assertIn("pep8", worker_prompt)
             self.assertIn("pep8", reviewer_prompt)
@@ -11338,9 +11608,9 @@ else:
             pipeline.store.save(state)
             (pipeline.store.run_dir(state.id) / "logs").mkdir(parents=True, exist_ok=True)
 
-            with patch("ai_orchestrator.pipeline.run_command", return_value=Mock(returncode=7, stdout="lint failed")):
+            with patch("ai_orchestrator.execution.verification_commands.run_command", return_value=Mock(returncode=7, stdout="lint failed")):
                 with self.assertRaisesRegex(PipelineError, "task verification command failed"):
-                    pipeline._perform_task_verification(state, task)
+                    pipeline._common_runtime.execution.tasks.perform_task_verification(state, task)
 
             evidence = task.action_results[-1].code_style_evidence
             self.assertIsNotNone(evidence)

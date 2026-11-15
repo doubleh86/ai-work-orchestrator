@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ai_orchestrator.execution import scope_contract_digest
+
 import os
 import sys
 import uuid
@@ -14,6 +16,8 @@ from ai_orchestrator.config import create_default_config, load_config
 from ai_orchestrator.desktop_rpc import DesktopApplication
 from ai_orchestrator.mcp_operations import McpOperations
 from ai_orchestrator.models import RunArchive, RunState, RunStep, Stage, TaskActionResult, TaskResultRecord, TaskStatus, VerificationAttempt, WorkTask
+from ai_orchestrator.execution.provider_choices import ConnectedProviderQueries
+from ai_orchestrator.orchestration.planning import PlanningCommands
 from ai_orchestrator.pipeline import Pipeline, PipelineError
 from ai_orchestrator.registry import ProjectRegistry
 from ai_orchestrator.store import StateStore
@@ -124,7 +128,7 @@ def test_stdio_creates_and_connects_document_then_handles_current_failure(tmp_pa
                 assert (await client.call_tool("get_run", {"project_name": "예제", "run_id": "../run"})).isError
 
                 current.tasks[0].error = TaskScopeReview("자동 종료 뒤 참가 마침 저장이 필요합니다.", ("service/Topic.cs",)).error(
-                    pipeline._task_scope_contract_digest(current.tasks[0]))
+                    scope_contract_digest(current.tasks[0]))
                 current.tasks[0].action_results = [TaskActionResult("execute", attempt_id="attempt-2", status="failed",
                                                                    error=current.tasks[0].error)]
                 pipeline.store.save(current)
@@ -401,8 +405,8 @@ def test_external_plan_submission_is_scoped_replayable_and_requires_app_approval
                 assert handed_off.tasks[0].status == TaskStatus.WAITING and Path(handed_off.tasks[0].worktree).is_dir()
 
     try:
-        with patch.object(Pipeline, "run_planning", side_effect=AssertionError("must not run Planning AI")), \
-             patch.object(Pipeline, "_connected_provider_ids", side_effect=AssertionError("submission needs no provider connection")):
+        with patch.object(PlanningCommands, "run_planning", side_effect=AssertionError("must not run Planning AI")), \
+             patch.object(ConnectedProviderQueries, "ids", side_effect=AssertionError("submission needs no provider connection")):
             run(scenario)
     finally:
         application.close()

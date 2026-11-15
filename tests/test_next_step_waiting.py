@@ -38,7 +38,7 @@ def instruction(pipeline: Pipeline, state: RunState) -> str:
 
 def current_prompt(pipeline: Pipeline) -> dict[str, object] | None:
     state = pipeline.store.load("waiting")
-    return pipeline.waiting_prompt(state, pipeline._summary_execution_control(state))
+    return pipeline.waiting_prompt(state, pipeline._common_runtime.runs.controls.summary_control(state))
 
 
 def complete(pipeline: Pipeline, state: RunState, **kwargs: object) -> RunState:
@@ -61,7 +61,7 @@ def complete(pipeline: Pipeline, state: RunState, **kwargs: object) -> RunState:
 
 def test_saved_instruction_records_one_event_without_execution_and_requires_the_same_failure(tmp_path: Path) -> None:
     pipeline, state = fixture(tmp_path)
-    with patch.object(pipeline, "_execute") as execute:
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute:
         request_id = instruction(pipeline, state)
         fingerprint = pipeline.task_retry_context(state.id, "fix")["fingerprint"]
         pipeline.save_task_retry_instruction(state.id, "fix", request_id=request_id, text="fix test", fingerprint=fingerprint)
@@ -77,7 +77,7 @@ def test_saved_instruction_records_one_event_without_execution_and_requires_the_
 def test_only_successful_selected_retry_offers_the_ready_remaining_task(tmp_path: Path) -> None:
     pipeline, state = fixture(tmp_path)
     instruction(pipeline, state)
-    with patch.object(pipeline, "_execute", side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
         result = pipeline.retry_task(state.id, "fix")
     assert result.tasks[1].status == TaskStatus.PENDING
     prompt = current_prompt(pipeline)
@@ -95,7 +95,7 @@ def test_only_successful_selected_retry_offers_the_ready_remaining_task(tmp_path
 def test_ordinary_completion_and_retry_failure_do_not_make_recovery_success_events(tmp_path: Path) -> None:
     pipeline, state = fixture(tmp_path)
     instruction(pipeline, state)
-    with patch.object(pipeline, "_execute", side_effect=RuntimeError("retry failed")), pytest.raises(RuntimeError):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=RuntimeError("retry failed")), pytest.raises(RuntimeError):
         pipeline.retry_task(state.id, "fix")
     assert not any(event.summary_code == "remaining_tasks_resume_required" for event in pipeline.store.load_notification_events(state.id))
     state = pipeline.store.load(state.id)
@@ -108,10 +108,10 @@ def test_last_recovered_task_offers_verification_instead_of_group_resume(tmp_pat
     state.tasks.pop()
     pipeline.store.save(state)
     instruction(pipeline, state)
-    with patch.object(pipeline, "_execute", side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
         result = pipeline.retry_task(state.id, "fix")
     integration = IntegrationControl(IntegrationStatus.NEEDS_VERIFICATION, "ready", "tasks_complete", True, False)
-    prompt = pipeline.waiting_prompt(result, pipeline._summary_execution_control(result), integration)
+    prompt = pipeline.waiting_prompt(result, pipeline._common_runtime.runs.controls.summary_control(result), integration)
     assert prompt["action"] == "verify"
     assert prompt["remaining_count"] == 0
     assert not any(event.summary_code == "remaining_tasks_resume_required" for event in pipeline.store.load_notification_events(state.id))
@@ -123,7 +123,7 @@ def test_last_recovered_task_offers_verification_instead_of_group_resume(tmp_pat
 def test_other_unresolved_tasks_take_priority_over_resuming(tmp_path: Path, status: TaskStatus) -> None:
     pipeline, state = fixture(tmp_path)
     instruction(pipeline, state)
-    with patch.object(pipeline, "_execute", side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
         pipeline.retry_task(state.id, "fix")
     state = pipeline.store.load(state.id)
     state.tasks[1].status = status
@@ -134,10 +134,10 @@ def test_other_unresolved_tasks_take_priority_over_resuming(tmp_path: Path, stat
 def test_changed_plan_blocked_successor_active_planning_and_unknown_execution_have_no_resume_prompt(tmp_path: Path) -> None:
     pipeline, state = fixture(tmp_path)
     instruction(pipeline, state)
-    with patch.object(pipeline, "_execute", side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
         pipeline.retry_task(state.id, "fix")
     state = pipeline.store.load(state.id)
-    control = pipeline._summary_execution_control(state)
+    control = pipeline._common_runtime.runs.controls.summary_control(state)
     with pipeline.store.planning_chat_lock(state.id):
         assert pipeline.waiting_prompt(state, control) is None
     with pipeline.store.lock(state.id, "resume"):
@@ -154,14 +154,14 @@ def test_changed_plan_blocked_successor_active_planning_and_unknown_execution_ha
 def test_intentional_stop_and_stale_success_record_do_not_repeat_resume_prompt(tmp_path: Path) -> None:
     pipeline, state = fixture(tmp_path)
     instruction(pipeline, state)
-    with patch.object(pipeline, "_execute", side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
         pipeline.retry_task(state.id, "fix")
     state = pipeline.store.load(state.id)
     control = RunExecutionControl(RunExecutionSituation.RESUMABLE, RunExecutionAction.RESUME, "stopped", RunLockState.UNLOCKED,
                                   stop_phase="stopped", dispatch_paused=True)
     assert pipeline.waiting_prompt(state, control) is None
     state.tasks[0].completed_commit = "b" * 40
-    assert pipeline.waiting_prompt(state, pipeline._summary_execution_control(state)) is None
+    assert pipeline.waiting_prompt(state, pipeline._common_runtime.runs.controls.summary_control(state)) is None
 
 
 def test_next_task_matches_scheduler_priority_without_modifying_run(tmp_path: Path) -> None:
@@ -170,12 +170,12 @@ def test_next_task_matches_scheduler_priority_without_modifying_run(tmp_path: Pa
     state.tasks.append(WorkTask("priority", "우선 작업", ["general"], risk_level=RiskLevel.HIGH, dependencies=["fix"]))
     pipeline.store.save(state)
     instruction(pipeline, state)
-    with patch.object(pipeline, "_execute", side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=lambda state, **kwargs: complete(pipeline, state, **kwargs)):
         pipeline.retry_task(state.id, "fix")
     state = pipeline.store.load(state.id)
     before = state.to_dict()
     stored = pipeline.store.state_path(state.id).read_bytes()
-    prompt = pipeline.waiting_prompt(state, pipeline._summary_execution_control(state))
+    prompt = pipeline.waiting_prompt(state, pipeline._common_runtime.runs.controls.summary_control(state))
     assert (prompt["next_task_id"], prompt["remaining_count"]) == ("priority", 2)
     assert state.to_dict() == before
     assert pipeline.store.state_path(state.id).read_bytes() == stored
@@ -218,7 +218,7 @@ def test_resume_event_requires_a_new_verified_attempt_and_no_other_blocker(tmp_p
         pipeline.store.save(result)
         return result
 
-    with patch.object(pipeline, "_execute", side_effect=execute):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=execute):
         pipeline.retry_task(state.id, "fix")
     assert not any(event.summary_code == "remaining_tasks_resume_required" for event in pipeline.store.load_notification_events(state.id))
 
@@ -228,7 +228,7 @@ def test_desktop_status_exposes_current_waiting_evidence_without_running_or_rewr
     instruction(pipeline, state)
     saved = pipeline.store.state_path(state.id).read_bytes()
     app = DesktopApplication(Mock(), codex_sdk=Mock())
-    with patch.object(app, "_pipeline", return_value=pipeline), patch.object(pipeline, "_execute") as execute:
+    with patch.object(app, "_pipeline", return_value=pipeline), patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute:
         result = app.status("project", state.id)
     assert result["waiting_prompt"]["action"] == "retry"
     assert result["waiting_prompt"]["task_id"] == "fix"

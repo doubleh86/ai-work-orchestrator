@@ -10,28 +10,28 @@ import socket
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterator
 
-from .usage import UsageObservation, UsageRecord, task_usage_summaries, usage_groups, usage_id, usage_now, usage_summary
+from .usage import UsageObservation, UsageRecord
+
+from .persistence.atomic import write_json_atomic, write_text_atomic
+from .persistence.errors import PlanningCacheError, PlanningChatSidecarError, RunLockedError
+from .persistence.planning import (
+    PLANNING_RESULT_CACHE_SCHEMA_VERSION, PLANNING_CHAT_SIDECAR_SCHEMA_VERSION,
+    PlanningResultCache, apply_planning_chat, planning_chat_payload,
+)
+from .persistence.notifications import NotificationEventRepository
+from .persistence.usage import UsageLedger
 
 from .models import (
-    DirectionChangeRequest,
-    DirectionChangeStatus,
     EffortExecutionBinding,
     EffortProfileSnapshot,
     EffortPlanningBinding,
     EffortPolicyState,
     EffortPolicyView,
-    Event,
     ExecutionControlRecord,
     OperationRecord,
-    PlanningApplyRequest,
-    PlanningApplyStatus,
-    PlanningMessage,
-    PlanningMessageRole,
     ProfileSource,
     RunLockState,
     RunLockStatus,
@@ -44,21 +44,7 @@ from .models import (
     utc_now,
 )
 
-PLANNING_RESULT_CACHE_SCHEMA_VERSION = 1
-PLANNING_CHAT_SIDECAR_SCHEMA_VERSION = 1
 ARCHIVE_MANIFEST_SCHEMA_VERSION = 1
-
-
-class RunLockedError(RuntimeError):
-    pass
-
-
-class PlanningCacheError(ValueError):
-    pass
-
-
-class PlanningChatSidecarError(ValueError):
-    pass
 
 
 class StateStore:
@@ -194,44 +180,14 @@ class StateStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         self._write_json_atomic(target, {"schema_version": 1, "requests": requests})
 
+    def _notification_event_repository(self) -> NotificationEventRepository:
+        return NotificationEventRepository(self._validate_effort_run_id, self.run_dir, self._write_json_atomic)
+
     def save_notification_event(self, event: UserNotificationEvent) -> None:
-        self._validate_effort_run_id(event.run_id)
-        if not re.fullmatch(r"[0-9a-f]{64}", event.event_id):
-            raise ValueError("invalid notification event ID")
-        target = self.run_dir(event.run_id) / "notifications" / f"{event.event_id[:16]}.json"
-        if target.exists():
-            saved = self._read_notification_event(target, event.run_id)
-            if (saved.event_id, saved.source_key, saved.project_key) != (event.event_id, event.source_key, event.project_key):
-                raise ValueError("notification event ID refers to different evidence")
-            return
-        target.parent.mkdir(parents=True, exist_ok=True)
-        self._write_json_atomic(target, {"schema_version": 1, "event": event.to_dict()})
+        return self._notification_event_repository().save(event)
 
     def load_notification_events(self, run_id: str) -> list[UserNotificationEvent]:
-        self._validate_effort_run_id(run_id)
-        root = self.run_dir(run_id) / "notifications"
-        if not root.exists():
-            return []
-        events = [self._read_notification_event(path, run_id) for path in root.iterdir() if path.suffix == ".json"]
-        return sorted(events, key=lambda event: (event.occurred_at, event.event_id))
-
-    @staticmethod
-    def _read_notification_event(path: Path, run_id: str) -> UserNotificationEvent:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or raw.get("schema_version") != 1 or not isinstance(raw.get("event"), dict):
-            raise ValueError(f"invalid notification event: {path}")
-        try:
-            event = UserNotificationEvent(**raw["event"])
-        except TypeError as exc:
-            raise ValueError(f"invalid notification event: {path}") from exc
-        fields = event.to_dict()
-        if (not isinstance(event.event_id, str) or not re.fullmatch(r"[0-9a-f]{64}", event.event_id)
-                or event.run_id != run_id or event.event_id[:16] != path.stem
-                or any(not isinstance(value, str) for name, value in fields.items() if name not in {"related_targets", "os_eligible"})
-                or not isinstance(event.os_eligible, bool) or not isinstance(event.related_targets, list)
-                or any(not isinstance(value, str) for value in event.related_targets)):
-            raise ValueError(f"invalid notification event: {path}")
-        return event
+        return self._notification_event_repository().load(run_id)
 
     def revision_proposals_path(self, run_id: str) -> Path:
         self._validate_effort_run_id(run_id)
@@ -291,132 +247,26 @@ class StateStore:
         finally:
             lock.__exit__(None, None, None)
 
-    def _usage_records(self, run_id: str) -> list[UsageRecord]:
-        self.load(run_id)  # Do not recreate a deleted or unknown run from a late SDK callback.
-        records = []
-        for path in self.usage_dir(run_id).glob("*.json"):
-            if path.name == "manifest.json":
-                continue
-            try:
-                usage_id(path.stem)
-                record = UsageRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
-                if record.invocation_id != path.stem:
-                    raise ValueError("usage file ID differs from its record")
-            except (OSError, TypeError, ValueError) as exc:
-                raise ValueError(f"invalid usage record: {path.name}: {exc}") from exc
-            records.append(record)
-        identifiers = [(row.provider, row.thread_id, row.turn_id) for row in records if row.thread_id and row.turn_id]
-        if len(identifiers) != len(set(identifiers)):
-            raise ValueError("duplicate provider turn in usage ledger")
-        return sorted(records, key=lambda row: (row.created_at, row.invocation_id), reverse=True)
+    def _usage_ledger(self, run_id: str) -> UsageLedger:
+        return UsageLedger(
+            directory=lambda: self.usage_dir(run_id), read_state=lambda: self.load(run_id),
+            acquire_lock=lambda: self.usage_lock(run_id), write_json=self._write_json_atomic,
+        )
 
     def begin_usage(self, run_id: str, record: UsageRecord) -> None:
-        with self.usage_lock(run_id):
-            rows = self._usage_records(run_id)
-            existing = next((row for row in rows if row.invocation_id == record.invocation_id), None)
-            if existing is not None:
-                if existing != record:
-                    raise ValueError("usage invocation already registered with different metadata")
-                return
-            directory = self.usage_dir(run_id)
-            directory.mkdir(parents=True, exist_ok=True)
-            manifest = directory / "manifest.json"
-            if not manifest.exists():
-                self._write_json_atomic(manifest, {"schema_version": 1, "recording_started_at": usage_now()})
-            self._write_json_atomic(directory / f"{record.invocation_id}.json", record.to_dict())
+        return self._usage_ledger(run_id).begin(record)
 
     def observe_usage(self, run_id: str, invocation_id: str, observation: UsageObservation) -> None:
-        usage_id(invocation_id)
-        with self.usage_lock(run_id):
-            rows = self._usage_records(run_id)
-            current = next((row for row in rows if row.invocation_id == invocation_id), None)
-            if current is None:
-                raise ValueError("unknown usage invocation")
-            if observation.source_revision < current.source_revision:
-                return
-            updated = current.observe(observation)
-            if observation.source_revision == current.source_revision:
-                if updated != current:
-                    raise ValueError("usage source revision has conflicting values")
-                return
-            if current.finalized and not observation.finalized:
-                raise ValueError("usage finalization cannot regress")
-            if current.thread_id and (current.thread_id, current.turn_id, current.usage_epoch) != (
-                    updated.thread_id, updated.turn_id, updated.usage_epoch):
-                raise ValueError("usage provider identifiers cannot change")
-            if updated.thread_id and updated.turn_id and any(
-                (row.provider, row.thread_id, row.turn_id) == (updated.provider, updated.thread_id, updated.turn_id)
-                for row in rows if row.invocation_id != invocation_id
-            ):
-                raise ValueError("provider turn already belongs to another usage invocation")
-            self._write_json_atomic(self.usage_dir(run_id) / f"{invocation_id}.json", updated.to_dict())
+        return self._usage_ledger(run_id).observe(invocation_id, observation)
 
     def finish_usage(self, run_id: str, invocation_id: str, outcome: str, *, structured: bool) -> None:
-        self._update_usage(run_id, invocation_id, lambda row: replace(
-            row, outcome=outcome, finalized=row.finalized or not structured,
-            missing_reason="provider_not_reported" if row.missing_reason == "usage_pending" else row.missing_reason,
-        ))
+        return self._usage_ledger(run_id).finish(invocation_id, outcome, structured=structured)
 
     def update_usage_model(self, run_id: str, invocation_id: str, model: str) -> None:
-        self._update_usage(run_id, invocation_id, lambda row: replace(row, model_effective=model))
-
-    def _update_usage(self, run_id: str, invocation_id: str, update: Callable[[UsageRecord], UsageRecord]) -> None:
-        usage_id(invocation_id)
-        with self.usage_lock(run_id):
-            current = next((row for row in self._usage_records(run_id) if row.invocation_id == invocation_id), None)
-            if current is None:
-                raise ValueError("unknown usage invocation")
-            self._write_json_atomic(self.usage_dir(run_id) / f"{invocation_id}.json", update(current).to_dict())
+        return self._usage_ledger(run_id).update_model(invocation_id, model)
 
     def usage_snapshot(self, run_id: str, *, execution_request_id: str = "", cursor: str = "", limit: int = 50) -> dict[str, object]:
-        if type(limit) is not int or not 1 <= limit <= 200:
-            raise ValueError("usage limit must be an integer between 1 and 200")
-        if execution_request_id:
-            usage_id(execution_request_id)
-        if cursor:
-            usage_id(cursor)
-        with self.usage_lock(run_id):
-            rows = self._usage_records(run_id)
-            active_execution = self.load(run_id).active_execution_request_id
-            if active_execution:
-                usage_id(active_execution)
-            manifest = self.usage_dir(run_id) / "manifest.json"
-            started_at = ""
-            if manifest.exists():
-                try:
-                    raw = json.loads(manifest.read_text(encoding="utf-8"))
-                    if (not isinstance(raw, dict) or raw.keys() != {"schema_version", "recording_started_at"}
-                            or type(raw["schema_version"]) is not int or raw["schema_version"] != 1
-                            or not isinstance(raw["recording_started_at"], str)
-                            or datetime.fromisoformat(raw["recording_started_at"]).tzinfo is None):
-                        raise ValueError("invalid recording manifest")
-                    started_at = raw["recording_started_at"]
-                except (OSError, TypeError, ValueError) as exc:
-                    raise ValueError("invalid usage recording manifest") from exc
-            elif rows:
-                raise ValueError("usage recording manifest is missing")
-            request_ids = list(dict.fromkeys(row.execution_request_id for row in rows if row.execution_request_id))
-            if active_execution and active_execution not in request_ids:
-                request_ids.insert(0, active_execution)
-            selected_id = execution_request_id or active_execution or next(iter(request_ids), "")
-            execution_rows = [row for row in rows if selected_id and row.execution_request_id == selected_id]
-            filtered = execution_rows if execution_request_id else rows
-            start = 0
-            if cursor:
-                position = next((index for index, row in enumerate(filtered) if row.invocation_id == cursor), None)
-                if position is None:
-                    raise ValueError("unknown usage cursor in this execution scope")
-                start = position + 1
-            page = filtered[start:start + limit]
-            return {
-                "history_scope": "recorded_calls", "recording_started_at": started_at,
-                "summary": usage_summary(rows), "by_mode": usage_groups(rows, "mode"), "by_purpose": usage_groups(rows, "purpose"),
-                "task_summaries": task_usage_summaries(rows),
-                "execution_request_id": selected_id, "execution_requests": request_ids, "execution_summary": usage_summary(execution_rows),
-                "execution_is_active": bool(selected_id and selected_id == active_execution),
-                "records": [row.to_dict() for row in page],
-                "next_cursor": page[-1].invocation_id if page and start + len(page) < len(filtered) else "",
-            }
+        return self._usage_ledger(run_id).snapshot(execution_request_id=execution_request_id, cursor=cursor, limit=limit)
 
     def effort_policy_lock_path(self, run_id: str) -> Path:
         self._validate_effort_run_id(run_id)
@@ -480,45 +330,13 @@ class StateStore:
         return self.run_dir(run_id) / "summary.md"
 
     def planning_cache_path(self, key: str) -> Path:
-        if len(key) != 64 or any(character not in "0123456789abcdef" for character in key):
-            raise PlanningCacheError(f"invalid planning cache key: {key}")
-        return self.root / "planning-cache" / f"{key}.json"
+        return PlanningResultCache(self.root / "planning-cache").path(key)
 
     def load_planning_result(self, key: str) -> str | None:
-        path = self.planning_cache_path(key)
-        if not path.exists():
-            return None
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise PlanningCacheError(f"invalid planning result cache: {path}: {exc}") from exc
-        if not isinstance(raw, dict):
-            raise PlanningCacheError(f"planning result cache must be an object: {path}")
-        if raw.get("schema_version") != PLANNING_RESULT_CACHE_SCHEMA_VERSION:
-            raise PlanningCacheError(f"unsupported planning result cache schema: {raw.get('schema_version')}")
-        if raw.get("key") != key:
-            raise PlanningCacheError(f"planning result cache key mismatch: {path}")
-        output = raw.get("output")
-        if not isinstance(output, str) or not output.strip():
-            raise PlanningCacheError(f"planning result cache output must be a non-empty string: {path}")
-        return output
+        return PlanningResultCache(self.root / "planning-cache").load(key)
 
     def save_planning_result(self, key: str, output: str) -> Path:
-        if not isinstance(output, str) or not output.strip():
-            raise PlanningCacheError("planning result cache output must be a non-empty string")
-        path = self.planning_cache_path(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temporary.write_text(
-                json.dumps({"schema_version": PLANNING_RESULT_CACHE_SCHEMA_VERSION, "key": key, "output": output}, ensure_ascii=False, indent=2)
-                + "\n",
-                encoding="utf-8",
-            )
-            temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return path
+        return PlanningResultCache(self.root / "planning-cache").save(key, output)
 
     def load_result_artifact(self, run_id: str) -> dict[str, object] | None:
         path = self.run_dir(run_id) / "result-artifact.json"
@@ -1092,76 +910,14 @@ class StateStore:
         return files
 
     def save_planning_chat(self, state: RunState) -> None:
-        raw = state.to_dict()
+        payload = planning_chat_payload(state)
         target = self.archived_planning_chat_path(state.id) if state.archive else self.planning_chat_path(state.id)
         target.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": PLANNING_CHAT_SIDECAR_SCHEMA_VERSION,
-            "planning_messages": raw["planning_messages"],
-            "clarification_paths": raw["clarification_paths"],
-            "planning_attempts": raw["planning_attempts"],
-            "planning_agent_id": raw["planning_agent_id"],
-            "planning_provider_id": raw["planning_provider_id"],
-            "planning_model": raw["planning_model"],
-            "planning_reasoning_effort": raw["planning_reasoning_effort"],
-            "planning_profile_source": raw["planning_profile_source"],
-            "planning_effort_baseline_reasoning": raw["planning_effort_baseline_reasoning"],
-            "planning_claude_session_id": raw["planning_claude_session_id"],
-            "planning_follow_up_requests": raw["planning_follow_up_requests"],
-            "planning_conversation_revision": raw["planning_conversation_revision"],
-            "planning_applied_conversation_revision": raw["planning_applied_conversation_revision"],
-            "planning_apply_requests": raw["planning_apply_requests"],
-            "direction_change_requests": raw["direction_change_requests"],
-            "events": [event for event in raw["events"] if event["kind"] in {"planning", "planning_progress"}],
-            "updated_at": raw["updated_at"],
-        }
         self._write_json_atomic(target, payload)
 
-    @staticmethod
-    def _write_json_atomic(target: Path, payload: dict[str, object]) -> None:
-        content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temporary.write_text(content, encoding="utf-8")
-        except OSError:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass  # Preserve the original write error.
-            raise
-        delays = (0.05, 0.1, 0.2, 0.4, 0.8)
-        for attempt in range(len(delays) + 1):
-            try:
-                temporary.replace(target)
-                return
-            except OSError as exc:
-                if getattr(exc, "winerror", None) in {5, 32, 33} and attempt < len(delays):
-                    time.sleep(delays[attempt])
-                    continue
-                raise OSError(f"상태 파일 저장 실패: {target}. 기존 파일을 삭제하지 않았습니다. 저장하려던 내용은 임시 파일에 보존했습니다: {temporary}. 원인: {exc}") from exc
+    _write_json_atomic = staticmethod(write_json_atomic)
 
-    @staticmethod
-    def _write_text_atomic(target: Path, content: str) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temporary.write_text(content, encoding="utf-8")
-        except OSError:
-            temporary.unlink(missing_ok=True)
-            raise
-        delays = (0.05, 0.1, 0.2, 0.4, 0.8)
-        for attempt in range(len(delays) + 1):
-            try:
-                temporary.replace(target)
-                return
-            except OSError as exc:
-                if getattr(exc, "winerror", None) in {5, 32, 33} and attempt < len(delays):
-                    time.sleep(delays[attempt])
-                    continue
-                raise OSError(
-                    f"보관 요약 저장 실패: {target}. 기존 파일을 삭제하지 않았습니다. "
-                    f"저장하려던 내용은 임시 파일에 보존했습니다: {temporary}. 원인: {exc}"
-                ) from exc
+    _write_text_atomic = staticmethod(write_text_atomic)
 
     def load(self, run_id: str) -> RunState:
         path = self.state_path(run_id)
@@ -1176,85 +932,7 @@ class StateStore:
         path = self.planning_chat_path(state.id)
         if state.archive and self.archived_planning_chat_path(state.id).exists():
             path = self.archived_planning_chat_path(state.id)
-        if not path.exists():
-            return
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise PlanningChatSidecarError(f"invalid planning chat sidecar: {path}: {exc}") from exc
-        if not isinstance(raw, dict):
-            raise PlanningChatSidecarError(f"planning chat sidecar must be an object: {path}")
-        if raw.get("schema_version") != PLANNING_CHAT_SIDECAR_SCHEMA_VERSION:
-            raise PlanningChatSidecarError(f"unsupported planning chat sidecar schema: {raw.get('schema_version')}")
-        try:
-            sidecar_revision = int(raw.get("planning_conversation_revision", len(raw.get("planning_messages", []))))
-            if sidecar_revision < state.planning_conversation_revision:
-                return
-            state.planning_messages = [
-                PlanningMessage(role=PlanningMessageRole(item["role"]), text=str(item["text"]), at=str(item.get("at", "")))
-                for item in raw.get("planning_messages", [])
-            ]
-            state.clarification_paths = [str(item) for item in raw.get("clarification_paths", [])]
-            state.planning_attempts = int(raw.get("planning_attempts", state.planning_attempts))
-            for name in ("planning_agent_id", "planning_provider_id", "planning_model", "planning_reasoning_effort", "planning_claude_session_id"):
-                setattr(state, name, str(raw.get(name, getattr(state, name))))
-            state.planning_profile_source = ProfileSource(raw.get("planning_profile_source", state.planning_profile_source))
-            baseline_reasoning = raw.get(
-                "planning_effort_baseline_reasoning", state.planning_effort_baseline_reasoning
-            )
-            if baseline_reasoning is not None and not isinstance(baseline_reasoning, str):
-                raise ValueError("planning effort baseline reasoning must be a string or null")
-            state.planning_effort_baseline_reasoning = baseline_reasoning
-            state.planning_follow_up_requests = [str(item) for item in raw.get("planning_follow_up_requests", []) if str(item).strip()]
-            state.planning_conversation_revision = int(
-                raw.get("planning_conversation_revision", len(state.planning_messages))
-            )
-            state.planning_applied_conversation_revision = int(raw.get("planning_applied_conversation_revision", 0))
-            state.planning_apply_requests = [
-                PlanningApplyRequest(
-                    request_id=str(item["request_id"]),
-                    conversation_revision=int(item.get("conversation_revision", 0)),
-                    plan_revision=int(item.get("plan_revision", 0)),
-                    context_snapshot=str(item.get("context_snapshot", "")),
-                    answer_message=str(item.get("answer_message", "")),
-                    answer_conversation_revision=int(item.get("answer_conversation_revision", 0)),
-                    tech_stack_revision=int(item.get("tech_stack_revision", 0)),
-                    status=PlanningApplyStatus(item.get("status", PlanningApplyStatus.QUEUED.value)),
-                    created_at=str(item.get("created_at", "")),
-                    completed_at=str(item.get("completed_at", "")),
-                    added_tasks=int(item.get("added_tasks", 0)),
-                    updated_tasks=int(item.get("updated_tasks", 0)),
-                    excluded_tasks=int(item.get("excluded_tasks", 0)),
-                    unchanged_tasks=int(item.get("unchanged_tasks", 0)),
-                    error_code=str(item.get("error_code", "")),
-                    error=str(item.get("error", "")),
-                )
-                for item in raw.get("planning_apply_requests", [])
-                if isinstance(item, dict) and str(item.get("request_id", "")).strip()
-            ]
-            state.direction_change_requests = [
-                DirectionChangeRequest(
-                    request_id=str(item["request_id"]), text=str(item["text"]),
-                    task_id=str(item.get("task_id", "")), task_title=str(item.get("task_title", "")),
-                    status=DirectionChangeStatus(item.get("status", DirectionChangeStatus.RECEIVED.value)),
-                    next_step=str(item.get("next_step", "")), preview_id=str(item.get("preview_id", "")),
-                    error=str(item.get("error", "")), created_at=str(item.get("created_at", "")),
-                    updated_at=str(item.get("updated_at", "")),
-                )
-                for item in raw.get("direction_change_requests", [])
-                if isinstance(item, dict) and str(item.get("request_id", "")).strip()
-            ]
-            known_events = {(event.at, event.kind, event.message) for event in state.events}
-            for item in raw.get("events", []):
-                event = Event(at=str(item["at"]), kind=str(item["kind"]), message=str(item["message"]))
-                identity = (event.at, event.kind, event.message)
-                if identity not in known_events:
-                    state.events.append(event)
-                    known_events.add(identity)
-            state.events.sort(key=lambda event: event.at)
-            state.updated_at = max(state.updated_at, str(raw.get("updated_at", state.updated_at)))
-        except (KeyError, TypeError, ValueError) as exc:
-            raise PlanningChatSidecarError(f"invalid planning chat sidecar payload: {path}: {exc}") from exc
+        apply_planning_chat(path, state)
 
     def list_runs(self) -> list[RunState]:
         runs_dir = self.root / "runs"

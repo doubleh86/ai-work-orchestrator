@@ -1,3 +1,5 @@
+
+from ai_orchestrator.orchestration.lifecycle import LifecycleCommands
 import io
 import json
 import socket
@@ -48,7 +50,7 @@ class CliTest(unittest.TestCase):
                 reason="safe",
             )
             output = io.StringIO()
-            with patch.object(Pipeline, "workspace_statuses", return_value=[status]):
+            with patch.object(LifecycleCommands, 'workspace_statuses', return_value=[status]):
                 with redirect_stdout(output):
                     exit_code = main(["--config", str(config_path), "--json", "workspace", "status", "run-1"])
 
@@ -63,7 +65,7 @@ class CliTest(unittest.TestCase):
             self.assertIn("requires --approve", error.getvalue())
 
             output = io.StringIO()
-            with patch.object(Pipeline, "cleanup_workspace", return_value=status) as cleanup:
+            with patch.object(LifecycleCommands, 'cleanup_workspace', return_value=status) as cleanup:
                 with redirect_stdout(output):
                     exit_code = main(["--config", str(config_path), "workspace", "clear", "run-1", "task-1", "--approve"])
 

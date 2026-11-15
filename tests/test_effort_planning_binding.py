@@ -1,3 +1,6 @@
+
+from ai_orchestrator.planning import source_indexes as planning_indexes
+from ai_orchestrator.execution import provider_connection
 import json
 import tempfile
 import unittest
@@ -65,9 +68,9 @@ class EffortPlanningBindingTest(unittest.TestCase):
                     raise PipelineError("provider unavailable")
                 return "삭제 범위 밖의 파일을 보존하고 확인해야 합니다."
 
-            with (patch.object(pipeline, "_invoke_provider_command", side_effect=provider),
-                  patch.object(pipeline, "_build_plan") as build_plan,
-                  patch.object(pipeline, "execute") as execute):
+            with (patch.object(pipeline._common_runtime.provider, 'invoke', side_effect=provider),
+                  patch.object(pipeline._common_runtime.planning.ai, 'build_plan') as build_plan,
+                  patch.object(pipeline._common_runtime.execution.execution_commands, 'execute') as execute):
                 for index in range(3):
                     if index == 1:
                         with self.assertRaisesRegex(PipelineError, "provider unavailable"):
@@ -100,9 +103,9 @@ class EffortPlanningBindingTest(unittest.TestCase):
             original = pipeline.store.effort_policy_path(state.id).read_bytes()
             prompt = Path(directory) / "prompt.md"
             prompt.write_text("Help", encoding="utf-8")
-            with patch.object(pipeline, "_invoke_provider_command") as provider:
+            with patch.object(pipeline._common_runtime.provider, 'invoke') as provider:
                 with self.assertRaisesRegex(PipelineError, "fixed effort policy request"):
-                    pipeline._invoke_planning_agent(
+                    pipeline._common_runtime.planning.ai.invoke(
                         state, pipeline.agents["planner"], "Help", prompt, Path(directory) / "unused.log", usage_purpose="chat",
                     )
                 pipeline.store.effort_policy_path(state.id, archived_chat=True).write_text("{broken", encoding="utf-8")
@@ -117,7 +120,7 @@ class EffortPlanningBindingTest(unittest.TestCase):
             pipeline.store.effort_policy_path(state.id).unlink()
             state.planning_profile_source = ProfileSource.LEGACY
             pipeline.store.save(state)
-            with patch.object(pipeline, "_invoke_provider_command", return_value="보관된 기록입니다.") as provider:
+            with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="보관된 기록입니다.") as provider:
                 pipeline.send_planning_message(state.id, "도움")
             self.assertEqual(provider.call_args.kwargs["reasoning_effort"], "medium")
             self.assertFalse(pipeline.store.effort_policy_path(state.id, archived_chat=True).exists())
@@ -127,7 +130,7 @@ class EffortPlanningBindingTest(unittest.TestCase):
             pipeline, state = self._archived(Path(directory))
             original = pipeline.store.state_path(state.id).read_bytes()
             original_policy = pipeline.store.effort_policy_path(state.id).read_bytes()
-            with patch.object(pipeline, "_invoke_provider_command", return_value="답변") as provider:
+            with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="답변") as provider:
                 chatted = pipeline.send_planning_message(
                     state.id, "도움", planning_model="gpt-6-luna", planning_reasoning_effort="low",
                 )
@@ -145,7 +148,7 @@ class EffortPlanningBindingTest(unittest.TestCase):
                 pipeline.store.save(state)
                 original = pipeline.store.state_path(state.id).read_bytes()
                 with (pipeline.store.lock(state.id, "execute"), pipeline.store.planning_chat_lock(state.id, operation),
-                      patch.object(pipeline, "_invoke_provider_command") as provider):
+                      patch.object(pipeline._common_runtime.provider, 'invoke') as provider):
                     execution = pipeline.store.lock_path(state.id).read_bytes()
                     planning = pipeline.store.planning_chat_lock_path(state.id).read_bytes()
                     with self.assertRaisesRegex(RunLockedError, f"operation={operation}"):
@@ -165,7 +168,10 @@ class EffortPlanningBindingTest(unittest.TestCase):
             state.fail_step(RunStep.AGENT_EXECUTION, "saved failure")
             pipeline.store.save(state)
             original = pipeline.store.state_path(state.id).read_bytes()
-            with pipeline.store.lock(state.id, "execute"), patch.object(pipeline, "_invoke_provider_command", return_value="Saved failure explanation"):
+            with (
+                pipeline.store.lock(state.id, 'execute'),
+                patch.object(pipeline._common_runtime.provider, 'invoke', return_value='Saved failure explanation'),
+            ):
                 lock = pipeline.store.lock_path(state.id).read_bytes()
                 chatted = pipeline.send_planning_message(state.id, "What failed?")
                 self.assertEqual(chatted.planning_messages[-1].text, "Saved failure explanation")
@@ -201,7 +207,7 @@ class EffortPlanningBindingTest(unittest.TestCase):
             try:
                 with (pipeline.store.lock(state.id, "execute"),
                       patch.object(pipeline.store, "_create_lock_file", side_effect=finish_writer_on_contention),
-                      patch.object(pipeline, "_invoke_provider_command", return_value="Saved failure explanation")):
+                      patch.object(pipeline._common_runtime.provider, 'invoke', return_value="Saved failure explanation")):
                     lock = pipeline.store.lock_path(state.id).read_bytes()
                     chatted = pipeline.send_planning_message(state.id, "What failed?")
                     self.assertEqual(chatted.planning_messages[-1].text, "Saved failure explanation")
@@ -237,7 +243,7 @@ class EffortPlanningBindingTest(unittest.TestCase):
         directory = pipeline.store.run_dir(state.id)
         prompt = directory / "prompt.md"
         prompt.write_text("Plan the requested work", encoding="utf-8")
-        return pipeline._invoke_planning_agent(state, pipeline.agents["planner"], prompt.read_text(), prompt, directory / "agent.log")
+        return pipeline._common_runtime.planning.ai.invoke(state, pipeline.agents["planner"], prompt.read_text(), prompt, directory / "agent.log")
 
     def test_same_request_freezes_profile_across_corrections_and_ignores_execution_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -252,11 +258,11 @@ class EffortPlanningBindingTest(unittest.TestCase):
                 observed.append(kwargs)
                 return "answer"
 
-            with patch.object(pipeline, "_invoke_provider_command", side_effect=provider):
-                with pipeline._planning_effort_scope(state, purpose="planning") as first:
+            with patch.object(pipeline._common_runtime.provider, 'invoke', side_effect=provider):
+                with pipeline._common_runtime.planning_policy.scope(state, purpose="planning") as first:
                     self._invoke(pipeline, state)
                     pipeline.store.set_effort_mode(state.id, "balanced", target="planning", expected_revision=2, request_id=str(uuid.uuid4()))
-                    with pipeline._planning_effort_scope(state, purpose="chat") as nested:
+                    with pipeline._common_runtime.planning_policy.scope(state, purpose="chat") as nested:
                         self.assertEqual(first, nested)
                         self._invoke(pipeline, state)
             policy = StateStore(pipeline.store.root).load_effort_policy(state.id)
@@ -276,16 +282,16 @@ class EffortPlanningBindingTest(unittest.TestCase):
             state.planning_profile_source = ProfileSource.MANUAL
             state.planning_reasoning_effort = "xhigh"
             pipeline.store.save(state)
-            with patch.object(pipeline, "_invoke_provider_command", side_effect=PipelineError("provider failed")) as provider:
+            with patch.object(pipeline._common_runtime.provider, 'invoke', side_effect=PipelineError("provider failed")) as provider:
                 with self.assertRaisesRegex(PipelineError, "provider failed"):
-                    with pipeline._planning_effort_scope(state, purpose="planning_preview"):
+                    with pipeline._common_runtime.planning_policy.scope(state, purpose="planning_preview"):
                         self._invoke(pipeline, state)
             self.assertEqual(provider.call_args.kwargs["reasoning_effort"], "xhigh")
             policy = pipeline.store.load_effort_policy(state.id)
             first = policy.planning_bindings[0]
             self.assertEqual(first.status, "failed")
             self.assertEqual(policy.policy(first.policy_id).manual_exception_ids, ("planning",))
-            with pipeline._planning_effort_scope(state, purpose="recovery_planning"):
+            with pipeline._common_runtime.planning_policy.scope(state, purpose="recovery_planning"):
                 pass  # A cached or static plan has no actual AI start.
             after = pipeline.store.load_effort_policy(state.id)
             self.assertEqual(after.planning_bindings[0], first)
@@ -298,9 +304,9 @@ class EffortPlanningBindingTest(unittest.TestCase):
             with self.subTest(method=method), tempfile.TemporaryDirectory() as directory:
                 pipeline, state = self._selected(Path(directory))
                 with patch.object(pipeline.store, method, side_effect=OSError("write denied")):
-                    with patch.object(pipeline, "_invoke_provider_command") as provider:
+                    with patch.object(pipeline._common_runtime.provider, 'invoke') as provider:
                         with self.assertRaisesRegex(OSError, "write denied"):
-                            with pipeline._planning_effort_scope(state, purpose="chat"):
+                            with pipeline._common_runtime.planning_policy.scope(state, purpose="chat"):
                                 self._invoke(pipeline, state)
                 provider.assert_not_called()
                 bindings = pipeline.store.load_effort_policy(state.id).planning_bindings
@@ -328,15 +334,15 @@ class EffortPlanningBindingTest(unittest.TestCase):
                     return "invalid response"
                 return valid
 
-            with patch.object(pipeline, "_invoke_provider_command", side_effect=provider), \
+            with patch.object(pipeline._common_runtime.provider, 'invoke', side_effect=provider), \
                     patch.object(pipeline.git, "has_uncommitted_changes", return_value=False):
-                self.assertEqual(pipeline._build_plan(state, "Update the README").tasks[0].id, "docs")
+                self.assertEqual(pipeline._common_runtime.planning.ai.build_plan(state, "Update the README").tasks[0].id, "docs")
                 self.assertEqual(len(calls), 2)
                 self.assertEqual([item["reasoning_effort"] for item in calls], ["high", "high"])
-                pipeline._build_plan(state, "Update the README")
+                pipeline._common_runtime.planning.ai.build_plan(state, "Update the README")
                 self.assertEqual(len(calls), 3)  # A different mode cannot use the first cached policy.
                 self.assertEqual(calls[-1]["reasoning_effort"], "high")
-                pipeline._build_plan(state, "Update the README")
+                pipeline._common_runtime.planning.ai.build_plan(state, "Update the README")
                 self.assertEqual(len(calls), 3)  # An identical policy can reuse validated output.
             bindings = pipeline.store.load_effort_policy(state.id).planning_bindings
             self.assertEqual(len(bindings), 3)
@@ -351,7 +357,7 @@ class EffortPlanningBindingTest(unittest.TestCase):
             payload["schema_version"] = 1
             payload.pop("planning_bindings")
             path.write_text(json.dumps(payload), encoding="utf-8")
-            with pipeline._planning_effort_scope(state, purpose="planning") as snapshot:
+            with pipeline._common_runtime.planning_policy.scope(state, purpose="planning") as snapshot:
                 policy = pipeline.store.load_effort_policy(state.id)
                 binding = policy.planning_bindings[-1]
                 replay, saved = policy.prepare_planning(
@@ -375,8 +381,8 @@ class EffortPlanningBindingTest(unittest.TestCase):
             pipeline = self._pipeline(Path(directory))
             state = RunState("legacy", "plan", "digest", directory, "main", Stage.REVIEWED, planning_reasoning_effort="medium")
             pipeline.store.save(state)
-            with patch.object(pipeline, "_invoke_provider_command", return_value="answer") as provider:
-                with pipeline._planning_effort_scope(state, purpose="planning") as policy:
+            with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="answer") as provider:
+                with pipeline._common_runtime.planning_policy.scope(state, purpose="planning") as policy:
                     self.assertIsNone(policy)
                     self._invoke(pipeline, state)
             self.assertEqual(provider.call_args.kwargs["reasoning_effort"], "medium")
@@ -385,7 +391,7 @@ class EffortPlanningBindingTest(unittest.TestCase):
     def test_new_request_defaults_balanced_and_explicit_profile_source_is_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pipeline = self._pipeline(Path(directory))
-            with (patch.object(pipeline, "_ensure_planning_provider_ready"), patch.object(pipeline, "_ensure_git_ready_for_planning"),
+            with (patch.object(provider_connection, 'ensure_planning_provider_ready'), patch.object(planning_indexes, 'ensure_planning_git_ready'),
                   patch.object(pipeline.git, "ensure_repository"), patch.object(pipeline.git, "head", return_value="abc123")):
                 state = pipeline.prepare_planning("", planning_mode="directed", planning_request="Update the requested feature")
                 self.assertEqual(pipeline.store.load_effort_policy(state.id).selected_mode, EffortMode.BALANCED)

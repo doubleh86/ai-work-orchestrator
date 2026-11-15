@@ -27,10 +27,16 @@ def project_chat(tmp_path):
     pipeline.store.save(state)
     control = RunExecutionControl(RunExecutionSituation.READY, RunExecutionAction.EXECUTE, "ready", RunLockState.UNLOCKED)
     integration = IntegrationControl(IntegrationStatus.NEEDS_VERIFICATION, "verify", "needs_verification", False, False)
-    with patch.object(pipeline, "status_with_controls", side_effect=lambda _: (pipeline.store.load(state.id), control, integration)), \
-         patch.object(pipeline, "_configure_planning_profile", return_value=agent), \
-         patch.object(pipeline, "_planning_effort_scope", return_value=nullcontext()), \
-         patch.object(pipeline, "_invoke_planning_agent") as invoke:
+    with (
+        patch.object(
+            type(pipeline._common_runtime.runs),
+            'status_with_controls',
+            side_effect=lambda _: (pipeline.store.load(state.id), control, integration),
+        ),
+        patch.object(type(pipeline._common_runtime.planning.profiles), 'configure', return_value=agent),
+        patch.object(type(pipeline._common_runtime.planning_policy), 'scope', return_value=nullcontext()),
+        patch.object(pipeline._common_runtime.planning.ai, 'invoke') as invoke,
+    ):
         yield pipeline, state, invoke, control, integration
 
 
@@ -72,7 +78,7 @@ def test_question_and_scope_change_finish_without_execution(project_chat):
     assert args.args[1].review_sandbox_mode == "read-only"
     assert args.args[1].review_approval_mode == "deny-all"
     assert "available_actions" in args.args[2] and "live owner" in args.args[2]
-    assert pipeline._configure_planning_profile.call_args.kwargs["planning_model"] == "chosen"
+    assert pipeline._common_runtime.planning.profiles.configure.call_args.kwargs["planning_model"] == "chosen"
 
 
 @pytest.fixture
@@ -93,7 +99,7 @@ def failed_profile_task(project_chat):
                                 status=TaskStatus.COMPLETED, last_attempt_id="completed-attempt"))
     state.refresh_task_readiness()
     pipeline.store.save(state)
-    with patch.object(pipeline, "_connected_provider_ids", side_effect=lambda providers: providers):
+    with patch.object(type(pipeline._common_runtime.providers.connections), "ids", side_effect=lambda providers: providers):
         yield pipeline, state, invoke
 
 
@@ -101,7 +107,7 @@ def test_chat_saves_named_failed_task_profile_without_plan_approval_or_execution
     pipeline, state, invoke = failed_profile_task
     parent = accept(pipeline, state, "실패한 훅 인수 작업만 Codex(gpt-6.1-sol/high)로 바꿔줘")
     decision = pipeline.decide_project_chat(state.id, parent["request_id"])
-    with patch.object(pipeline, "_execute") as execute:
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute:
         assert perform(pipeline, state, decision)["status"] == "succeeded"
         assert perform(pipeline, state, decision)["status"] == "succeeded"
         execute.assert_not_called()
@@ -132,7 +138,7 @@ def test_chat_changes_profile_before_explicit_combined_retry(failed_profile_task
         pipeline.store.save(current)
         return current
 
-    with patch.object(pipeline, "_execute", side_effect=execute_saved) as execute:
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=execute_saved) as execute:
         assert perform(pipeline, state, decision)["status"] == "succeeded"
         perform(pipeline, state, decision)
         execute.assert_called_once()
@@ -148,7 +154,10 @@ def test_chat_does_not_recover_with_old_profile_when_change_cannot_be_saved(fail
         current = pipeline.store.load(state.id)
         current.tasks[0].last_attempt_id = "newer-attempt"
         pipeline.store.save(current)
-    with patch.object(pipeline, "_connected_provider_ids", return_value=set()), patch.object(pipeline, "_execute") as execute:
+    with (
+        patch.object(type(pipeline._common_runtime.providers.connections), 'ids', return_value=set()),
+        patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute,
+    ):
         with pytest.raises(PipelineError, match="연결이 없습니다" if condition == "unavailable" else "변경됐습니다"):
             perform(pipeline, state, decision)
         execute.assert_not_called()
@@ -191,7 +200,7 @@ def test_continue_executes_once_then_ai_reports_actual_result(project_chat):
         pipeline.store.save(current)
         return current
 
-    with patch.object(pipeline, "_resume", side_effect=finish) as resume:
+    with patch.object(pipeline._common_runtime.execution.flow, 'resume', side_effect=finish) as resume:
         result = perform(pipeline, state, decision)
         perform(pipeline, state, decision)
         resume.assert_called_once()
@@ -219,7 +228,7 @@ def test_late_ai_action_cannot_change_a_new_target(project_chat, change):
     else:
         pipeline.cancel_chat_control(state.id, parent["request_id"])
     pipeline.store.save(current)
-    with patch.object(pipeline, "_resume") as resume:
+    with patch.object(pipeline._common_runtime.execution.flow, 'resume') as resume:
         if change == "cancel":
             assert perform(pipeline, state, decision)["status"] == "interrupted"
         else:
@@ -231,10 +240,13 @@ def test_late_ai_action_cannot_change_a_new_target(project_chat, change):
 def test_active_or_unknown_lock_cannot_be_cleared(project_chat):
     pipeline, state, invoke, control, integration = project_chat
     for lock in [RunLockState.ACTIVE, RunLockState.UNVERIFIABLE, RunLockState.MALFORMED]:
-        assert "clear_lock" not in pipeline._project_chat_actions(state, replace(control, lock_state=lock), integration, 0)
+        assert (
+            'clear_lock'
+            not in pipeline._common_runtime.execution.control.project_chat_actions(state, replace(control, lock_state=lock), integration, 0)
+        )
     parent = accept(pipeline, state)
     decision = decide(pipeline, state, invoke, parent, "clear_lock")
-    with patch.object(pipeline, "clear_run_lock") as clear, pytest.raises(PipelineError, match="실행할 수 없는"):
+    with patch.object(pipeline._common_runtime.execution.control, 'clear_run_lock') as clear, pytest.raises(PipelineError, match="실행할 수 없는"):
         perform(pipeline, state, decision)
     clear.assert_not_called()
 
@@ -267,8 +279,14 @@ def test_failed_repairs_are_bounded_and_failure_is_not_success(project_chat):
         pipeline.store.save(saved)
         raise PipelineError("검증 실패")
 
-    with patch.object(pipeline, "task_retry_context", return_value={"fingerprint": "f", "recovery": {"fingerprint": "r"}}), \
-         patch.object(pipeline, "repair_task_from_chat", side_effect=fail) as repair:
+    with (
+        patch.object(
+            pipeline._common_runtime.execution.execution_commands,
+            'task_retry_context',
+            return_value={'fingerprint': 'f', 'recovery': {'fingerprint': 'r'}},
+        ),
+        patch.object(pipeline._common_runtime.execution.control, 'repair_task_from_chat', side_effect=fail) as repair,
+    ):
         for _ in range(MAX_REPAIRS):
             decision = decide(pipeline, state, invoke, parent, "repair", task_id="task", instruction="실패 원인 수정")
             result = perform(pipeline, state, decision)
@@ -300,7 +318,7 @@ def test_transport_failure_is_not_replayed_after_restart(project_chat):
     decision = decide(pipeline, state, invoke, parent, "continue")
     suspended = pipeline.advance_chat_control(state.id, parent["request_id"], suspend=True)
     assert suspended["operation"]["status"] == "partial"
-    with patch.object(pipeline, "_resume") as resume:
+    with patch.object(pipeline._common_runtime.execution.flow, 'resume') as resume:
         perform(pipeline, state, decision)
         resume.assert_not_called()
 
@@ -322,9 +340,9 @@ def test_actual_repair_entry_keeps_parent_and_executes_with_saved_profiles(proje
         pipeline.store.save(current)
         return current
 
-    with patch.object(pipeline, "_task_retry_context", return_value=context), \
-         patch.object(pipeline, "_task_recovery_capability", return_value={"can_execute": True, "fingerprint": "recovery"}), \
-         patch.object(pipeline, "_execute", side_effect=finish) as execute:
+    with patch.object(type(pipeline._common_runtime.retry_guidance), 'context', return_value=context), \
+         patch.object(type(pipeline._common_runtime.retry_guidance), 'capability', return_value={"can_execute": True, "fingerprint": "recovery"}), \
+         patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=finish) as execute:
         result = perform(pipeline, state, decision)
     execute.assert_called_once()
     assert result["phase"] == "observed"
@@ -339,8 +357,14 @@ def test_stale_lock_resolution_then_resume_uses_observable_execution_lock(projec
     state.tasks[0].status = TaskStatus.RUNNING
     pipeline.store.save(state)
     parent = accept(pipeline, state, "잠금해제 하고 계속 진행해줘")
-    with patch.object(pipeline, "status_with_controls", side_effect=lambda _: (pipeline.store.load(state.id), stale, integration)), \
-         patch.object(pipeline, "clear_run_lock") as clear:
+    with (
+        patch.object(
+            type(pipeline._common_runtime.runs),
+            'status_with_controls',
+            side_effect=lambda _: (pipeline.store.load(state.id), stale, integration),
+        ),
+        patch.object(pipeline._common_runtime.execution.control, 'clear_run_lock') as clear,
+    ):
         decision = decide(pipeline, state, invoke, parent, "clear_lock")
         perform(pipeline, state, decision)
         clear.assert_called_once_with(state.id, approved=True)
@@ -354,7 +378,7 @@ def test_stale_lock_resolution_then_resume_uses_observable_execution_lock(projec
         pipeline.store.save(current)
         return current
 
-    with patch.object(pipeline, "_resume", side_effect=resume):
+    with patch.object(pipeline._common_runtime.execution.flow, 'resume', side_effect=resume):
         assert perform(pipeline, state, decision)["phase"] == "observed"
 
 
@@ -373,7 +397,10 @@ def test_a_user_stop_during_execution_ends_autonomous_followup(project_chat):
         current = replace(control, stop_phase="stopped", stop_request_id="user-stop", execution_id="new-execution") if stopped else control
         return pipeline.store.load(state.id), current, integration
 
-    with patch.object(pipeline, "_resume", side_effect=resume), patch.object(pipeline, "status_with_controls", side_effect=status):
+    with (
+        patch.object(pipeline._common_runtime.execution.flow, 'resume', side_effect=resume),
+        patch.object(type(pipeline._common_runtime.runs), 'status_with_controls', side_effect=status),
+    ):
         assert perform(pipeline, state, decision)["status"] == "interrupted"
     assert pipeline.advance_chat_control(state.id, parent["request_id"])["next_action"] == "none"
 
@@ -389,7 +416,7 @@ def test_concurrent_goal_change_is_not_adopted_as_own_progress(project_chat):
         pipeline.store.save(current)
         return current
 
-    with patch.object(pipeline, "_resume", side_effect=change):
+    with patch.object(pipeline._common_runtime.execution.flow, 'resume', side_effect=change):
         result = perform(pipeline, state, decision)
     assert result["status"] == "failed"
     assert "계획 또는 대화" in result["error"]
@@ -398,9 +425,14 @@ def test_concurrent_goal_change_is_not_adopted_as_own_progress(project_chat):
 def test_saved_advice_reaches_the_actual_executor_without_replacing_original_instructions(project_chat):
     pipeline, state, *_ = project_chat
     state.tasks[0].implementation_notes = ["오류 경로를 먼저 확인한다."]
-    with patch.object(pipeline, "_run_executor", side_effect=RuntimeError("executor probe")) as executor:
+    with patch.object(pipeline._common_runtime.execution.tasks, 'run_executor', side_effect=RuntimeError("executor probe")) as executor:
         with pytest.raises(RuntimeError, match="executor probe"):
-            pipeline._run_task_attempt(state, state.tasks[0], TaskAction.EXECUTE, prompt="Original task and acceptance criteria")
+            pipeline._common_runtime.execution.tasks.run_task_attempt(
+                state,
+                state.tasks[0],
+                TaskAction.EXECUTE,
+                prompt='Original task and acceptance criteria',
+            )
     prompt = executor.call_args.args[2]
     assert "Original task and acceptance criteria" in prompt
     assert "오류 경로를 먼저 확인한다." in prompt

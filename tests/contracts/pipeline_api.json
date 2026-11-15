@@ -1,0 +1,458 @@
+{
+  "baseline_date": "2026-11-15",
+  "baseline_public_methods": 112,
+  "callables": {
+    "__init__": {
+      "binding": "instance",
+      "signature": "(self, config: 'Config', *, codex_sdk: 'CodexSdkManager | None' = None, dotnet_executable: 'str' = '', code_style_preference: 'ProjectCodeStylePreference | None' = None, code_style_preference_revision: 'int' = 0, account_usage_reader: 'Callable[[str], AccountUsage] | None' = None)"
+    },
+    "account_usage": {
+      "binding": "static",
+      "signature": "(provider: 'str', *, claude_api_key: 'str | None' = None) -> 'AccountUsage'"
+    },
+    "active_group_summaries": {
+      "binding": "instance",
+      "signature": "(self) -> 'list[dict[str, object]]'"
+    },
+    "advance_chat_control": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', request_id: 'str', *, suspend: 'bool' = False) -> 'dict[str, object]'"
+    },
+    "apply_conflict_resolution": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, conflict_id: 'str', candidate_id: 'str', candidate_revision: 'int', fingerprint: 'str', request_id: 'str', approved: 'bool') -> 'RunState'"
+    },
+    "apply_effort_mode_to_plan": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', mode: 'EffortMode | str', *, expected_policy_revision: 'int', expected_plan_revision: 'int', reviewer_agent_ids: 'dict[str, str] | None' = None) -> 'RunState'"
+    },
+    "apply_planning_conversation": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, message: 'str' = '', planning_agent_id: 'str | None' = None, planning_model: 'str | None' = None, planning_reasoning_effort: 'str | None' = None) -> 'RunState'"
+    },
+    "apply_planning_preview": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, preview_id: 'str', fingerprint: 'str', candidate_digest: 'str') -> 'dict[str, object]'"
+    },
+    "apply_recovery": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', fingerprint: 'str', source_ids: 'list[str]', *, approved: 'bool', request_id: 'str' = '', resume_request_id: 'str' = '') -> 'RunState'"
+    },
+    "apply_reviewed_main": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str', review_id: 'str', approved: 'bool') -> 'tuple[RunState, str]'"
+    },
+    "approve_task_scope": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, request_id: 'str', review_id: 'str', approved: 'bool') -> 'dict[str, object]'"
+    },
+    "archive_plan": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'dict[str, object]'"
+    },
+    "archive_run": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, expected_revision: 'str', fingerprint: 'str', request_id: 'str', approved: 'bool') -> 'RunState'"
+    },
+    "attention_item_summaries": {
+      "binding": "instance",
+      "signature": "(self) -> 'list[dict[str, object]]'"
+    },
+    "begin_planning_request": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str', kind: 'str', message: 'str' = '') -> 'dict[str, object]'"
+    },
+    "cancel_chat_control": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', request_id: 'str') -> 'dict[str, object]'"
+    },
+    "cancel_effort_reservation": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, expected_revision: 'int', request_id: 'str') -> 'EffortPolicyView'"
+    },
+    "check_dotnet": {
+      "binding": "instance",
+      "signature": "(self, *, run_id: 'str' = '', task_id: 'str' = '') -> 'DotnetDiagnostic'"
+    },
+    "clarify": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', answers_path: 'str | Path') -> 'RunState'"
+    },
+    "clarify_text": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', answers: 'str', *, planning_agent_id: 'str | None' = None, planning_model: 'str | None' = None, planning_reasoning_effort: 'str | None' = None) -> 'RunState'"
+    },
+    "claude_connection_status": {
+      "binding": "static",
+      "signature": "() -> 'dict[str, object]'"
+    },
+    "cleanup_workspace": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, approved: 'bool') -> 'WorkspaceStatus'"
+    },
+    "clear_run_lock": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, approved: 'bool') -> 'RunLockStatus'"
+    },
+    "commit_and_push_main_changes": {
+      "binding": "instance",
+      "signature": "(self, snapshot_id: 'str', selections: 'list[tuple[str, str]]', message: 'str', *, approved: 'bool' = False) -> 'MainMutationResult'"
+    },
+    "commit_main_changes": {
+      "binding": "instance",
+      "signature": "(self, snapshot_id: 'str', selections: 'list[tuple[str, str]]', message: 'str', *, approved: 'bool' = False) -> 'MainMutationResult'"
+    },
+    "complete_manual_verification": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, note: 'str', expected_commit: 'str', expected_revision: 'int') -> 'RunState'"
+    },
+    "complete_task": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str') -> 'RunState'"
+    },
+    "configure_bootstrap_agent_instructions": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, create: 'bool', expected_revision: 'int', expected_digest: 'str') -> 'RunState'"
+    },
+    "confirm_plan": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, expected_revision: 'int | None' = None, expected_bootstrap_digest: 'str' = '') -> 'RunState'"
+    },
+    "confirm_tech_stack": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, option_id: 'str', expected_revision: 'int') -> 'RunState'"
+    },
+    "create_result_revision_request": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str', text: 'str', task_ids: 'Sequence[str]', paths: 'Sequence[str]', proposal_id: 'str' = '') -> 'dict[str, object]'"
+    },
+    "decide_project_chat": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', request_id: 'str') -> 'dict[str, object]'"
+    },
+    "delete_run": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, approved: 'bool') -> 'RunDeletion'"
+    },
+    "deploy": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, approved: 'bool') -> 'RunState'"
+    },
+    "desktop_effort_mode_preview": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', mode: 'str', *, expected_revision: 'int') -> 'dict[str, object]'"
+    },
+    "effort_control": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, expected_state: 'RunState | None' = None) -> 'dict[str, object]'"
+    },
+    "exclude_tasks": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_ids: 'list[str]') -> 'RunState'"
+    },
+    "execute": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, manual: 'bool' = False, agent_overrides: 'dict[str, str] | None' = None, model_overrides: 'dict[str, str] | None' = None, reasoning_effort_overrides: 'dict[str, str] | None' = None, expected_revision: 'int | None' = None) -> 'RunState'"
+    },
+    "execute_task": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, manual: 'bool' = False, agent_overrides: 'dict[str, str] | None' = None, model_overrides: 'dict[str, str] | None' = None, reasoning_effort_overrides: 'dict[str, str] | None' = None) -> 'RunState'"
+    },
+    "execution_profile_view": {
+      "binding": "instance",
+      "signature": "(self, state: 'RunState') -> 'RunState'"
+    },
+    "execution_provider_choices": {
+      "binding": "instance",
+      "signature": "(self, capabilities: 'list[str]') -> 'list[ProviderChoice]'"
+    },
+    "external_planning_context": {
+      "binding": "instance",
+      "signature": "(self) -> 'dict[str, object]'"
+    },
+    "finish_planning_request": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str', phase: 'str', error: 'str' = '') -> 'dict[str, object]'"
+    },
+    "generate_feature_plan": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'RunState'"
+    },
+    "handoff_manual_task_to_ai": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, expected_commit: 'str', expected_revision: 'int') -> 'RunState'"
+    },
+    "integration_conflict": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, conflict_id: 'str' = '', file_path: 'str' = '', recovery_task_id: 'str' = '') -> 'dict[str, object]'"
+    },
+    "interrupt_planning": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, approved: 'bool') -> 'RunState'"
+    },
+    "latest_main_operations": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'dict[str, dict[str, str] | None]'"
+    },
+    "latest_recovery_operation": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', kind: 'str') -> 'dict[str, object] | None'"
+    },
+    "launch_result_artifact": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, expected_digest: 'str', device_id: 'str' = '') -> 'dict[str, object]'"
+    },
+    "list_statuses": {
+      "binding": "instance",
+      "signature": "(self) -> 'list[RunState]'"
+    },
+    "list_summaries": {
+      "binding": "instance",
+      "signature": "(self, scope: 'str' = 'all') -> 'list[RunSummary]'"
+    },
+    "main_change_diff": {
+      "binding": "instance",
+      "signature": "(self, snapshot_id: 'str', path: 'str', mode: 'str') -> 'MainChangeDiff'"
+    },
+    "main_changes": {
+      "binding": "instance",
+      "signature": "(self, *, refresh_remote: 'bool' = False) -> 'MainChangeSnapshot'"
+    },
+    "merge": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, approved: 'bool', request_id: 'str' = '', review_id: 'str' = '') -> 'RunState'"
+    },
+    "notifications": {
+      "binding": "instance",
+      "signature": "(self, *, after_cursor: 'str' = '', limit: 'int' = 100) -> 'dict[str, object]'"
+    },
+    "perform_project_chat": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', request_id: 'str', step_id: 'str') -> 'dict[str, object]'"
+    },
+    "planned_user_checks": {
+      "binding": "static",
+      "signature": "(state: 'RunState', *, include_notes: 'bool' = False) -> 'list[dict[str, object]]'"
+    },
+    "planning_apply_preview": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'dict[str, object] | None'"
+    },
+    "planning_preview_status": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'dict[str, object]'"
+    },
+    "planning_provider_choices": {
+      "binding": "instance",
+      "signature": "(self) -> 'list[ProviderChoice]'"
+    },
+    "prepare_conflict_resolution": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, conflict_id: 'str', fingerprint: 'str', request_id: 'str', agent_id: 'str' = '', model: 'str' = '', reasoning_effort: 'str' = '') -> 'dict[str, object]'"
+    },
+    "prepare_planning": {
+      "binding": "instance",
+      "signature": "(self, spec_path: 'str | Path', *, planning_agent_id: 'str' = '', planning_model: 'str' = '', planning_reasoning_effort: 'str' = '', planning_mode: 'PlanningMode | str' = <PlanningMode.AUTO: 'auto'>, planning_request: 'str' = '', prepared_source_index: 'PlanningSourceIndex | None' = None, repository_intent: 'str | None' = None, revision_source_run_id: 'str' = '', revision_request_id: 'str' = '', revision_request_text: 'str' = '', revision_source_task_ids: 'Sequence[str]' = (), revision_source_paths: 'Sequence[str]' = (), effort_mode: 'EffortMode | str' = <EffortMode.BALANCED: 'balanced'>, planning_profile_source: 'ProfileSource | str | None' = None, reserved_run_id: 'str' = '') -> 'RunState'"
+    },
+    "preview_bootstrap": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'BootstrapSpec'"
+    },
+    "preview_effort_mode": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', mode: 'EffortMode | str', *, expected_revision: 'int') -> 'EffortModePreview'"
+    },
+    "preview_main_apply": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'dict[str, object]'"
+    },
+    "preview_planning_apply": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str') -> 'dict[str, object]'"
+    },
+    "propose_result_revision": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, proposal_id: 'str', text: 'str', focus_task_id: 'str' = '') -> 'dict[str, object]'"
+    },
+    "provider_statuses": {
+      "binding": "instance",
+      "signature": "(self, provider_id: 'str' = '') -> 'list[ProviderStatus]'"
+    },
+    "push": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, approved: 'bool', request_id: 'str' = '') -> 'RunState'"
+    },
+    "push_main_commits": {
+      "binding": "instance",
+      "signature": "(self, snapshot_id: 'str', *, approved: 'bool' = False) -> 'MainMutationResult'"
+    },
+    "record_task_diagnosis": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', fingerprint: 'str', diagnosis: 'str') -> 'None'"
+    },
+    "record_user_check": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', check_id: 'str', *, expected_revision: 'int', expected_commit: 'str', outcome: 'str', note: 'str') -> 'RunState'"
+    },
+    "recover_main_apply": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, approved: 'bool', request_id: 'str' = '', expected_repo: 'str' = '', expected_commit: 'str' = '') -> 'RunState'"
+    },
+    "recovery_operation": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', request_id: 'str') -> 'dict[str, object]'"
+    },
+    "recovery_plan": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str' = '') -> 'dict[str, object]'"
+    },
+    "refresh_planning_index": {
+      "binding": "instance",
+      "signature": "(self, source_root: 'str | Path', *, base_commit: 'str' = '') -> 'PlanningSourceIndex'"
+    },
+    "register_result_artifact": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, kind: 'str', relative_path: 'str', expected_commit: 'str') -> 'dict[str, object]'"
+    },
+    "repair_task_from_chat": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, request_id: 'str', message: 'str', fingerprint: 'str', conversation_revision: 'int', parent_request_id: 'str' = '', recovery_fingerprint: 'str' = '') -> 'RunState'"
+    },
+    "request_chat_control": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str', intent: 'str', message: 'str', expected: 'dict[str, object]', session_id: 'str' = '', profile: 'dict[str, str] | None' = None) -> 'dict[str, object]'"
+    },
+    "request_direction_change": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str', text: 'str') -> 'RunState'"
+    },
+    "request_planning_conversation_apply": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str', expected_revision: 'int', conversation_revision: 'int', control_message: 'str' = '', answer_message: 'str' = '', expected_tech_stack_revision: 'int | None' = None, retry_failed: 'bool' = False, planning_agent_id: 'str | None' = None, planning_model: 'str | None' = None, planning_reasoning_effort: 'str | None' = None) -> 'RunState'"
+    },
+    "request_stop": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str', execution_id: 'str', scope: 'str', task_id: 'str' = '', attempt_id: 'str' = '', invocation_id: 'str' = '', chat_message: 'str' = '') -> 'OperationRecord'"
+    },
+    "result_artifact_info": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'dict[str, object]'"
+    },
+    "result_revision_requests": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'dict[str, object]'"
+    },
+    "resume": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, manual: 'bool' = False, expected_revision: 'int | None' = None) -> 'RunState'"
+    },
+    "retry_archive_cleanup": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, fingerprint: 'str', request_id: 'str', approved: 'bool') -> 'RunState'"
+    },
+    "retry_main_push": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, approved: 'bool', request_id: 'str' = '') -> 'RunState'"
+    },
+    "retry_task": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, manual: 'bool' = False) -> 'RunState'"
+    },
+    "run_lock_status": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'RunLockStatus'"
+    },
+    "run_planning": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'RunState'"
+    },
+    "save_task_retry_instruction": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, request_id: 'str', text: 'str', fingerprint: 'str') -> 'dict[str, object]'"
+    },
+    "send_planning_message": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', message: 'str', *, planning_agent_id: 'str | None' = None, planning_model: 'str | None' = None, planning_reasoning_effort: 'str | None' = None) -> 'RunState'"
+    },
+    "set_effort_mode": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', mode: 'EffortMode | str', *, expected_revision: 'int', request_id: 'str', target: 'str' = 'planning') -> 'EffortPolicyView'"
+    },
+    "set_manual_task_deferred": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, deferred: 'bool') -> 'RunState'"
+    },
+    "start": {
+      "binding": "instance",
+      "signature": "(self, spec_path: 'str | Path', *, planning_agent_id: 'str' = '', planning_model: 'str' = '', planning_reasoning_effort: 'str' = '', planning_mode: 'PlanningMode | str' = <PlanningMode.AUTO: 'auto'>, planning_request: 'str' = '', effort_mode: 'EffortMode | str' = <EffortMode.BALANCED: 'balanced'>, planning_profile_source: 'ProfileSource | str | None' = None) -> 'RunState'"
+    },
+    "status": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'RunState'"
+    },
+    "status_with_controls": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'tuple[RunState, RunExecutionControl, IntegrationControl]'"
+    },
+    "status_with_execution_control": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'tuple[RunState, RunExecutionControl]'"
+    },
+    "submit_external_plan": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, expected_base_commit: 'str', summary: 'str', requirements: 'str', task_drafts: 'list[dict[str, object]]', server_work: 'bool' = False, user_checks: 'tuple[UserCheck, ...]' = ()) -> 'RunState'"
+    },
+    "task_failure_message": {
+      "binding": "instance",
+      "signature": "(self, task: 'WorkTask') -> 'str'"
+    },
+    "task_log": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str') -> 'str'"
+    },
+    "task_retry_context": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str') -> 'dict[str, object]'"
+    },
+    "update_main": {
+      "binding": "instance",
+      "signature": "(self, *, approved: 'bool' = False) -> 'RepositoryUpdate'"
+    },
+    "update_plan": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_drafts: 'list[dict[str, object]]', *, expected_revision: 'int | None' = None) -> 'RunState'"
+    },
+    "update_task_execution_profile": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', task_id: 'str', *, agent_id: 'str', model: 'str', reasoning_effort: 'str', expected_profile: 'dict[str, str]') -> 'RunState'"
+    },
+    "usage": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, execution_request_id: 'str' = '', cursor: 'str' = '', limit: 'int' = 50) -> 'dict[str, object]'"
+    },
+    "user_check_summaries": {
+      "binding": "instance",
+      "signature": "(self) -> 'list[dict[str, object]]'"
+    },
+    "user_checks": {
+      "binding": "static",
+      "signature": "(state: 'RunState', *, include_recorded: 'bool' = False) -> 'list[dict[str, object]]'"
+    },
+    "verify": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str') -> 'RunState'"
+    },
+    "verify_and_repair": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str', *, request_id: 'str', chat_message: 'str' = '', parent_request_id: 'str' = '') -> 'RunState'"
+    },
+    "waiting_prompt": {
+      "binding": "instance",
+      "signature": "(self, state: 'RunState', control: 'RunExecutionControl', integration: 'IntegrationControl | None' = None) -> 'dict[str, object] | None'"
+    },
+    "workspace_statuses": {
+      "binding": "instance",
+      "signature": "(self, run_id: 'str' = '') -> 'list[WorkspaceStatus]'"
+    }
+  }
+}

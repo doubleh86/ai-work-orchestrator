@@ -92,17 +92,29 @@ def test_claude_assignment_preview_snapshot_and_invocation_use_the_same_model(tm
                                             baseline_reasoning_effort=task.effort_baseline_reasoning, purpose="task", task=task)
         assert (preview.model, preview.reasoning_effort) == (task.model, task.reasoning_effort)
     pipeline.set_effort_mode(state.id, "balanced", expected_revision=0, request_id=str(uuid.uuid4()))
-    pipeline._begin_effort_execution(state, agent_overrides=None, model_overrides=None, reasoning_effort_overrides=None)
+    pipeline._common_runtime.execution.policy.begin_effort_execution(
+        state,
+        agent_overrides=None,
+        model_overrides=None,
+        reasoning_effort_overrides=None,
+    )
     restored = pipeline.store.load(state.id)
     policy = pipeline.store.load_effort_policy(state.id).policy(restored.active_policy_id)
     assert [profile.model for _, profile in policy.task_profiles] == ["sonnet", "opus"]
-    pipeline._validate_effort_execution_snapshot(restored, policy)
+    pipeline._common_runtime.execution.policy.validate_effort_execution_snapshot(restored, policy)
     for task in restored.tasks:
         task.worktree = str(tmp_path)
         task.prompt_path = str(tmp_path / f"{task.id}.md")
         Path(task.prompt_path).write_text("approved fixture task", encoding="utf-8")
-        with patch.object(pipeline, "_invoke_provider_command", return_value="done") as invoke:
-            pipeline._invoke_agent(restored, task, pipeline.agents[task.agent_id], "implement", tmp_path / "agent.log", TaskAction.EXECUTE)
+        with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="done") as invoke:
+            pipeline._common_runtime.execution.tasks.invoke_agent(
+                restored,
+                task,
+                pipeline.agents[task.agent_id],
+                'implement',
+                tmp_path / 'agent.log',
+                TaskAction.EXECUTE,
+            )
         assert invoke.call_args.kwargs["model"] == task.model
 
 
@@ -114,12 +126,17 @@ def test_previously_started_sonnet_snapshot_is_preserved_even_when_new_policy_wo
                      plan_revision=1, plan_approved_revision=1, tasks=[task])
     pipeline.store.save(state)
     pipeline.store.set_effort_mode(state.id, "balanced", target="planning", expected_revision=0, request_id=str(uuid.uuid4()))
-    changed = pipeline._effort_mode_preview(state, EffortMode.BALANCED, 1)
+    changed = pipeline._common_runtime.effort.previews.build_preview(state, EffortMode.BALANCED, 1)
     assert changed.requires_plan_review and changed.tasks[0].reasoning.model == "opus"
     with pytest.raises(PipelineError, match="policy_plan_review_required"):
-        pipeline._begin_effort_execution(state, agent_overrides=None, model_overrides=None, reasoning_effort_overrides=None)
-    preview = pipeline._effort_mode_preview(state, EffortMode.BALANCED, 1, preserve_execution_profiles=True)
-    policy = pipeline._resolved_execution_policy(state, preview)
+        pipeline._common_runtime.execution.policy.begin_effort_execution(
+            state,
+            agent_overrides=None,
+            model_overrides=None,
+            reasoning_effort_overrides=None,
+        )
+    preview = pipeline._common_runtime.effort.previews.build_preview(state, EffortMode.BALANCED, 1, preserve_execution_profiles=True)
+    policy = pipeline._common_runtime.execution.policy.resolved_execution_policy(state, preview)
     request_id = str(uuid.uuid4())
     pipeline.store.prepare_effort_execution(state.id, policy, execution_request_id=request_id, expected_revision=1)
     state.active_policy_id, state.active_execution_request_id = policy.policy_id, request_id
@@ -129,7 +146,15 @@ def test_previously_started_sonnet_snapshot_is_preserved_even_when_new_policy_wo
     pipeline.store.save(state)
     pipeline.store.set_effort_mode(state.id, "focused", target="next_execution", expected_revision=1, request_id=str(uuid.uuid4()))
     with patch("ai_orchestrator.effort_policy.select_claude_model", side_effect=AssertionError("must reuse the started snapshot")):
-        assert pipeline._begin_effort_execution(state, agent_overrides=None, model_overrides=None, reasoning_effort_overrides=None) == request_id
+        assert (
+            pipeline._common_runtime.execution.policy.begin_effort_execution(
+                state,
+                agent_overrides=None,
+                model_overrides=None,
+                reasoning_effort_overrides=None,
+            )
+            == request_id
+        )
     assert pipeline.store.load(state.id).tasks[0].model == "sonnet"
     assert pipeline.store.load_effort_policy(state.id).pending_execution_mode == EffortMode.FOCUSED
 
@@ -147,8 +172,8 @@ def test_automatic_claude_planning_is_pinned_and_matches_invocation_without_chan
     for source, model in [(ProfileSource.ROUTING, "sonnet"), (ProfileSource.MANUAL, "sonnet"),
                           (ProfileSource.LEGACY, "sonnet"), (ProfileSource.ROUTING, "claude-sonnet-5")]:
         state.planning_profile_source, state.planning_model, state.planning_reasoning_effort = source, model, "medium"
-        with patch.object(pipeline, "_invoke_provider_command", return_value="plan") as invoke:
-            pipeline._invoke_planning_agent(state, pipeline.agents["worker"], "fixture plan", prompt, tmp_path / "planning.log")
+        with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="plan") as invoke:
+            pipeline._common_runtime.planning.ai.invoke(state, pipeline.agents["worker"], "fixture plan", prompt, tmp_path / "planning.log")
         assert invoke.call_args.kwargs["model"] == ("opus" if source == ProfileSource.ROUTING and model == "sonnet" else model)
 
 
@@ -160,8 +185,8 @@ def test_new_claude_plan_is_ready_for_confirmation_without_an_extra_mode_apply(t
     pipeline.store.save(state)
     plan = Plan("feature", False, [ordinary_task()])
     assign_plan_agents(plan, pipeline.config.agents, pipeline.config.routing, sequential=True)
-    with patch.object(pipeline, "_planning_execution_agents", return_value=pipeline.config.agents):
-        pipeline._apply_plan(state, plan)
+    with patch.object(type(pipeline._common_runtime.providers.choices), 'planning_execution_agents', return_value=pipeline.config.agents):
+        pipeline._common_runtime.planning.lifecycle.apply_plan(state, plan)
     preview = pipeline.preview_effort_mode(state.id, "balanced", expected_revision=0)
     assert not preview.requires_plan_review
     assert state.planning_model == "opus" and state.tasks[0].model == "sonnet"

@@ -35,7 +35,10 @@ def test_retry_instruction_is_saved_once_without_plan_generation_or_task_mutatio
     before = pipeline.store.state_path(state.id).read_bytes()
     fingerprint = pipeline.task_retry_context(state.id, "task")["fingerprint"]
     request_id = str(uuid4())
-    with patch.object(pipeline, "_build_plan") as build, patch.object(pipeline, "_execute") as execute:
+    with (
+        patch.object(pipeline._common_runtime.planning.ai, 'build_plan') as build,
+        patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute,
+    ):
         saved = pipeline.save_task_retry_instruction(state.id, "task", request_id=request_id, text="  fix assertion  ", fingerprint=fingerprint)
         replay = pipeline.save_task_retry_instruction(state.id, "task", request_id=request_id, text="fix assertion", fingerprint=fingerprint)
         build.assert_not_called()
@@ -45,13 +48,17 @@ def test_retry_instruction_is_saved_once_without_plan_generation_or_task_mutatio
     assert len(pipeline.store.load_revision_requests(state.id)) == 1
     assert pipeline.store.state_path(state.id).read_bytes() == before
     reloaded = Pipeline(pipeline.config)
-    assert "fix assertion" in reloaded._result_revision_retry_instruction(state.id, "task")
+    assert "fix assertion" in reloaded._common_runtime.execution.tasks.result_revision_retry_instruction(state.id, "task")
     task = state.tasks[0]
     task.prompt_path = str(tmp_path / "task.md")
     Path(task.prompt_path).write_text("original contract", encoding="utf-8")
-    with (patch.object(pipeline, "_run_executor") as run, patch.object(pipeline, "_run_task_verification"),
-          patch.object(pipeline, "_record_task_result"), patch.object(pipeline.git, "head", return_value="a" * 40)):
-        pipeline._run_task(state, task)
+    with (
+        patch.object(pipeline._common_runtime.execution.tasks, 'run_executor') as run,
+        patch.object(pipeline._common_runtime.execution.tasks, 'run_task_verification'),
+        patch.object(pipeline._common_runtime.execution.tasks, 'record_task_result'),
+        patch.object(pipeline.git, 'head', return_value='a' * 40),
+    ):
+        pipeline._common_runtime.execution.tasks.run_task(state, task)
     assert "fix assertion" in run.call_args.args[2]
     assert "original contract" in run.call_args.args[2]
 
@@ -70,7 +77,7 @@ def test_retry_instruction_rejects_old_failure_and_conflicting_request_id(tmp_pa
         pipeline.save_task_retry_instruction(state.id, "task", request_id=str(uuid4()), text="fix", fingerprint=fingerprint)
     state.tasks[0].expected_paths = ["different.py"]
     pipeline.store.save(state)
-    assert pipeline._result_revision_retry_instruction(state.id, "task") == ""
+    assert pipeline._common_runtime.execution.tasks.result_revision_retry_instruction(state.id, "task") == ""
 
 
 def test_retry_context_does_not_present_an_older_response_as_this_failed_attempt(tmp_path: Path) -> None:
@@ -80,6 +87,22 @@ def test_retry_context_does_not_present_an_older_response_as_this_failed_attempt
     state.tasks[0].action_results.append(TaskActionResult("execute", attempt_id="new-attempt", status="failed", error="no response"))
     pipeline.store.save(state)
     assert pipeline.task_retry_context(state.id, "task")["response"] == ""
+
+
+def test_diagnosis_is_recorded_once_and_rejects_a_changed_failure_without_mutating_tasks(tmp_path: Path) -> None:
+    pipeline, state = fixture(tmp_path)
+    fingerprint = pipeline.task_retry_context(state.id, "task")["fingerprint"]
+    original_tasks = pipeline.store.load(state.id).to_dict()["tasks"]
+    for _ in range(2):
+        pipeline.record_task_diagnosis(state.id, "task", fingerprint, "실패 조건을 확인했습니다.")
+    saved = pipeline.store.load(state.id)
+    assert saved.to_dict()["tasks"] == original_tasks
+    assert len([event for event in saved.events if event.kind == "task_diagnosis"]) == 1
+    saved.tasks[0].error = "another attempt failed"
+    pipeline.store.save(saved)
+    with pytest.raises(PipelineError, match="작업이 변경"):
+        pipeline.record_task_diagnosis(state.id, "task", fingerprint, "오래된 실패의 점검 결과")
+    assert len([event for event in pipeline.store.load(state.id).events if event.kind == "task_diagnosis"]) == 1
 
 
 @pytest.mark.parametrize("step", [RunStep.VERIFY, RunStep.PLANNING, RunStep.MERGE])
@@ -101,7 +124,7 @@ def test_active_execution_blocks_instruction_and_preview_status_is_read_only(tmp
         assert pipeline.planning_preview_status(state.id)["phase"] == "check_required"
         with pytest.raises(RunLockedError):
             pipeline.save_task_retry_instruction(state.id, "task", request_id=str(uuid4()), text="fix", fingerprint=context["fingerprint"])
-    with pipeline.store.planning_chat_lock(state.id), patch.object(pipeline, "_build_plan") as build:
+    with pipeline.store.planning_chat_lock(state.id), patch.object(pipeline._common_runtime.planning.ai, 'build_plan') as build:
         assert all(pipeline.planning_preview_status(state.id)["phase"] == "chat" for _ in range(16))
         assert not pipeline.planning_preview_status(state.id)["can_generate"]
         build.assert_not_called()
@@ -121,7 +144,7 @@ def test_preview_reports_generation_activity_and_reuses_candidate_for_another_re
         return Plan(summary="plan", server_work=False, tasks=proposal)
 
     before = pipeline.store.state_path(state.id).read_bytes()
-    with patch.object(pipeline, "_build_plan", side_effect=build) as builder:
+    with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=build) as builder:
         first = pipeline.preview_planning_apply(state.id, request_id=str(uuid4()))
         second = pipeline.preview_planning_apply(state.id, request_id=str(uuid4()))
     assert first == second
@@ -136,7 +159,7 @@ def test_preview_reports_generation_activity_and_reuses_candidate_for_another_re
 
 def test_generation_failure_is_visible_and_not_read_as_an_idle_recreate(tmp_path: Path) -> None:
     pipeline, state = fixture(tmp_path)
-    with patch.object(pipeline, "_build_plan", side_effect=PipelineError("provider failed")):
+    with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=PipelineError("provider failed")):
         with pytest.raises(PipelineError, match="provider failed"):
             pipeline.preview_planning_apply(state.id, request_id=str(uuid4()))
     status = pipeline.planning_preview_status(state.id)
@@ -150,7 +173,7 @@ def test_applied_receipt_is_recovered_but_a_new_discussion_can_generate_again(tm
     proposal = deepcopy(state.tasks)
     proposal[0].status = TaskStatus.PENDING
     proposal[0].action_results = []
-    with patch.object(pipeline, "_build_plan", return_value=Plan(summary="plan", server_work=False, tasks=proposal)):
+    with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', return_value=Plan(summary="plan", server_work=False, tasks=proposal)):
         preview = pipeline.preview_planning_apply(state.id, request_id=str(uuid4()))
     state.planning_apply_requests.append(PlanningApplyRequest(
         request_id=preview["request_id"], conversation_revision=1, plan_revision=0,
@@ -183,7 +206,7 @@ def saved_candidate(pipeline: Pipeline, state: RunState) -> dict[str, object]:
     proposal[0].status = TaskStatus.PENDING
     proposal[0].action_results = []
     proposal[0].description = "updated description"
-    with patch.object(pipeline, "_build_plan", return_value=Plan(summary="plan", server_work=False, tasks=proposal)):
+    with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', return_value=Plan(summary="plan", server_work=False, tasks=proposal)):
         return pipeline.preview_planning_apply(state.id, request_id=str(uuid4()))
 
 
@@ -204,7 +227,7 @@ def test_ready_candidate_is_secondary_to_active_task_and_reads_do_not_create_act
     state.active_step = RunStep.AGENT_EXECUTION
     pipeline.store.save(state)
     before = pipeline.store.state_path(state.id).read_bytes()
-    with pipeline.store.lock(state.id, "retry-task"), patch.object(pipeline, "_build_plan") as build:
+    with pipeline.store.lock(state.id, "retry-task"), patch.object(pipeline._common_runtime.planning.ai, 'build_plan') as build:
         first = pipeline.planning_preview_status(state.id)
         second = pipeline.planning_preview_status(state.id)
         assert first["work_state"] == "active"

@@ -48,9 +48,9 @@ class WorkspaceLocationTest(unittest.TestCase):
             state.stage = Stage.PLANNED
             state.tasks = [WorkTask("task", "Task", ["general"])]
             pipeline.store.save(state)
-            worktree = pipeline._shared_run_worktree_path(state)
+            worktree = pipeline._common_runtime.execution.workspace.layout().shared_path(state)
             try:
-                pipeline._prepare_tasks(state)
+                pipeline._common_runtime.task_preparation().prepare(state)
                 self.assertEqual(Path(state.execution_worktree), worktree)
                 self.assertEqual(Path(state.tasks[0].worktree), worktree)
                 status = subprocess.run(
@@ -81,13 +81,13 @@ class WorkspaceLocationTest(unittest.TestCase):
                 execution_worktree=str(legacy_root / "legacy-run" / "work"),
                 tasks=[WorkTask("task", "Task", ["general"], worktree=str(legacy_root / "legacy-run" / "work"))],
             )
-            location = pipeline._workspace_location(state)
+            location = pipeline._common_runtime.execution.workspace.layout().location(state)
             self.assertEqual(Path(location.root), legacy_root.resolve())
             self.assertEqual(location.source, WorkspaceLocationSource.LEGACY_RECORD)
 
             state.tasks[0].worktree = str(repo.parent / "other" / "legacy-run" / "work")
             with self.assertRaisesRegex(PipelineError, "workspace_location_conflict"):
-                pipeline._workspace_location(state)
+                pipeline._common_runtime.execution.workspace.layout().location(state)
 
     def test_fixed_run_location_survives_later_config_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -100,7 +100,7 @@ class WorkspaceLocationTest(unittest.TestCase):
                 repo_path=str(repo),
                 main_branch="main",
                 stage=Stage.PLANNED,
-                workspace_location=original._workspace_location(
+                workspace_location=original._common_runtime.execution.workspace.layout().location(
                     RunState("new", "plan.md", "digest", str(repo), "main", Stage.PLANNED)
                 ),
             )
@@ -112,8 +112,11 @@ class WorkspaceLocationTest(unittest.TestCase):
                     agents=(),
                 )
             )
-            self.assertEqual(changed._workspace_location(state), state.workspace_location)
-            self.assertEqual(changed._verification_worktree_path(state), Path(state.workspace_location.root) / "fixed" / ".verification")
+            self.assertEqual(changed._common_runtime.execution.workspace.layout().location(state), state.workspace_location)
+            self.assertEqual(
+                changed._common_runtime.execution.workspace.verification_worktree_path(state),
+                Path(state.workspace_location.root) / 'fixed' / '.verification',
+            )
 
     @staticmethod
     def _pipeline(repo: Path) -> Pipeline:

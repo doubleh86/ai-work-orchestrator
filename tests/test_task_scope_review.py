@@ -1,3 +1,5 @@
+
+from ai_orchestrator.execution import scope_contract_digest
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -64,7 +66,7 @@ def blocked(tmp_path: Path):
                                execution=ExecutionConfig(), agents=()))
     task = WorkTask("adapter", "MCP 연결", ["general"], status=TaskStatus.FAILED, failed_action=TaskAction.EXECUTE,
                     expected_paths=["src/Contracts.cs"], last_attempt_id="current")
-    task.error = task_scope_report(report()).error(pipeline._task_scope_contract_digest(task))
+    task.error = task_scope_report(report()).error(scope_contract_digest(task))
     task.action_results = [TaskActionResult("execute", attempt_id="current", status="failed", error=task.error, worker_response=report())]
     state = RunState("scope", "plan", "digest", str(tmp_path), "main", Stage.FAILED, tasks=[task], failed_step=RunStep.AGENT_EXECUTION)
     pipeline.store.save(state)
@@ -92,7 +94,7 @@ def test_status_rpc_projects_the_reported_legacy_error_without_changing_raw_hist
     original = pipeline.store.state_path(state.id).read_bytes()
     application = DesktopApplication(Mock(), codex_sdk=Mock())
     with patch.object(application, "_pipeline", return_value=pipeline), \
-            patch.object(pipeline, "status_with_controls", return_value=(state, None, None)), \
+            patch.object(type(pipeline._common_runtime.runs), 'status_with_controls', return_value=(state, None, None)), \
             patch.object(pipeline, "latest_main_operations", return_value={}), \
             patch.object(pipeline, "effort_control", return_value={}), \
             patch.object(pipeline, "waiting_prompt", return_value=None):
@@ -120,11 +122,11 @@ def test_status_projection_does_not_guess_unknown_or_previous_responses(blocked)
 
 def test_same_contract_cannot_repeat_through_executor_or_chat_repair(blocked) -> None:
     pipeline, state, task = blocked
-    with patch.object(pipeline, "_run_task_attempt") as attempt:
+    with patch.object(pipeline._common_runtime.execution.tasks, 'run_task_attempt') as attempt:
         with pytest.raises(PipelineError, match=ERROR_MARKER):
-            pipeline._run_task(state, task)
+            pipeline._common_runtime.execution.tasks.run_task(state, task)
     attempt.assert_not_called()
-    with patch.object(pipeline, "_execute") as execute:
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute:
         with pytest.raises(PipelineError, match=ERROR_MARKER):
             pipeline.repair_task_from_chat(state.id, task.id, request_id=str(uuid4()), message="고쳐서 계속해",
                 fingerprint=pipeline.task_retry_context(state.id, task.id)["fingerprint"], conversation_revision=0)
@@ -136,10 +138,10 @@ def test_project_chat_keeps_scope_review_as_a_user_decision_instead_of_repeated_
     pipeline, state, task = blocked
     control = SimpleNamespace(can_stop=False, lock_state=RunLockState.UNLOCKED)
     integration = SimpleNamespace(can_verify=False)
-    assert pipeline._project_chat_actions(state, control, integration, 0) == ["reply", "ask"]
-    with patch.object(pipeline, "_begin_effort_execution") as binding:
+    assert pipeline._common_runtime.execution.control.project_chat_actions(state, control, integration, 0) == ["reply", "ask"]
+    with patch.object(pipeline._common_runtime.execution.policy, 'begin_effort_execution') as binding:
         with pytest.raises(PipelineError, match=ERROR_MARKER):
-            pipeline._execute(state, manual=False)
+            pipeline._common_runtime.execution.flow.execute(state, manual=False)
     binding.assert_not_called()
 
 
@@ -147,22 +149,22 @@ def test_only_scope_update_covering_requested_paths_releases_wait(blocked) -> No
     pipeline, state, task = blocked
     task.model = "new-model"
     task.expected_paths.append("unrelated.cs")
-    assert pipeline._task_scope_review(task) is not None
+    assert pipeline._common_runtime.execution.tasks.task_scope_review(task) is not None
     task.expected_paths.extend(["src/Adapter.cs", "tests/RunnerTests.cs"])
     task.forbidden_paths = ["tests/**"]
-    assert pipeline._task_scope_review(task) is not None
+    assert pipeline._common_runtime.execution.tasks.task_scope_review(task) is not None
     task.forbidden_paths = []
-    assert pipeline._task_scope_review(task) is None
-    assert pipeline._task_recovery_capability(state, task, can_execute=True)["can_execute"]
+    assert pipeline._common_runtime.execution.tasks.task_scope_review(task) is None
+    assert pipeline._common_runtime.retry_guidance.capability(state, task, can_execute=True)["can_execute"]
 
 
 def test_legacy_no_commit_uses_only_the_current_failed_implementation_response(blocked) -> None:
     pipeline, state, task = blocked
     task.error = "agent worker produced no commit for adapter"
     task.action_results[-1].worker_response = "src/Adapter.cs가 허용 경로에 빠져 있습니다. 추가해도 될까요?"
-    assert pipeline._task_scope_review(task) is not None
+    assert pipeline._common_runtime.execution.tasks.task_scope_review(task) is not None
     task.action_results[-1].attempt_id = "old"
-    assert pipeline._task_scope_review(task) is None
+    assert pipeline._common_runtime.execution.tasks.task_scope_review(task) is None
     task.action_results[-1].attempt_id = "current"
     task.failed_action = TaskAction.VERIFY
-    assert pipeline._task_scope_review(task) is None
+    assert pipeline._common_runtime.execution.tasks.task_scope_review(task) is None

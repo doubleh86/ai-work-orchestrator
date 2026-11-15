@@ -1,3 +1,5 @@
+
+from ai_orchestrator.execution import task_execution_profile_snapshot
 import tempfile
 import unittest
 import uuid
@@ -65,8 +67,8 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 self.assertEqual(snapshot.policy_version, 3)
                 self.assertEqual(snapshot.plan_revision, 1)
                 self.assertEqual(snapshot.task_profiles[0][1].reasoning_effort, "medium")
-                with patch.object(pipeline, "_invoke_provider_command", return_value="done") as provider:
-                    pipeline._invoke_agent(
+                with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="done") as provider:
+                    pipeline._common_runtime.execution.tasks.invoke_agent(
                         current, current.tasks[0], pipeline.agents["worker"], "implement", Path(directory) / "agent.log",
                         TaskAction.EXECUTE,
                     )
@@ -75,7 +77,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 observed.append(binding.execution_request_id)
                 return current
 
-            with patch.object(pipeline, "_execute_with_bound_policy", side_effect=execute):
+            with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=execute):
                 finished = pipeline.execute("run-policy")
 
             self.assertEqual(len(observed), 1)
@@ -98,7 +100,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
             self.assertEqual(before.pending_execution_mode, EffortMode.ECONOMY)
             first_request_id = before.execution_bindings[-1].execution_request_id
 
-            with patch.object(pipeline, "_execute_with_bound_policy", side_effect=lambda current, **_: current):
+            with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=lambda current, **_: current):
                 pipeline.execute("run-policy")
             after = pipeline.store.load_effort_policy("run-policy")
             self.assertEqual(after.binding(first_request_id).status, "abandoned")
@@ -129,25 +131,39 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 target = current.tasks[-1]
                 remote.update_task_execution_profile(
                     current.id, target.id, agent_id="worker", model="gpt-6.1-sol", reasoning_effort="high",
-                    expected_profile=remote._task_execution_profile_snapshot(target),
+                    expected_profile=task_execution_profile_snapshot(target),
                 )
                 self.assertEqual(target.reasoning_effort, "medium")
                 current.tasks[0].status, current.tasks[0].active_action = TaskStatus.COMPLETED, None
                 with pipeline.store.planning_chat_lock(current.id):
-                    self.assertTrue(pipeline._apply_queued_execution_profiles(current))
+                    self.assertTrue(pipeline._common_runtime.execution.profiles.apply_queued_execution_profiles(current))
                 self.assertEqual(target.reasoning_effort, "high")
                 policy = pipeline.store.load_effort_policy(current.id)
                 self.assertEqual(policy.policy(current.active_policy_id).to_dict(), original)
                 self.assertEqual(policy.pending_execution_mode, EffortMode.FOCUSED)
-                with patch.object(pipeline, "_invoke_provider_command", return_value="done") as provider:
-                    pipeline._invoke_agent(current, target, pipeline.agents["worker"], "implement", root / "agent.log", TaskAction.EXECUTE)
+                with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="done") as provider:
+                    pipeline._common_runtime.execution.tasks.invoke_agent(
+                        current,
+                        target,
+                        pipeline.agents['worker'],
+                        'implement',
+                        root / 'agent.log',
+                        TaskAction.EXECUTE,
+                    )
                     self.assertEqual(provider.call_args.kwargs["reasoning_effort"], "high")
                     self.assertEqual(provider.call_args.kwargs["usage_context"].policy_id, current.active_policy_id)
                 receipt_path = pipeline.store.task_execution_profiles_path(current.id)
                 receipt = pipeline.store.load_task_execution_profiles(current.id)
                 pipeline.store.save_task_execution_profiles(current.id, {})
                 with self.assertRaisesRegex(PipelineError, "policy profile differs"):
-                    pipeline._invoke_agent(current, target, pipeline.agents["worker"], "implement", root / "agent.log", TaskAction.EXECUTE)
+                    pipeline._common_runtime.execution.tasks.invoke_agent(
+                        current,
+                        target,
+                        pipeline.agents['worker'],
+                        'implement',
+                        root / 'agent.log',
+                        TaskAction.EXECUTE,
+                    )
                 self.assertTrue(receipt_path.exists())
                 pipeline.store.save_task_execution_profiles(current.id, receipt)
                 seen.append(current.active_policy_id)
@@ -155,7 +171,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 pipeline.store.save(current)
                 return current
 
-            with patch.object(pipeline, "_execute_with_bound_policy", side_effect=execute):
+            with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=execute):
                 completed = pipeline.execute(state.id)
             final = pipeline.store.load_effort_policy(state.id)
             self.assertEqual(len(final.execution_bindings), 1)
@@ -167,7 +183,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
     def test_started_failure_resumes_with_same_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pipeline = self._selected_pipeline(Path(directory))
-            with patch.object(pipeline, "_execute_with_bound_policy", side_effect=PipelineError("worker interrupted")):
+            with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=PipelineError("worker interrupted")):
                 with self.assertRaisesRegex(PipelineError, "worker interrupted"):
                     pipeline.execute("run-policy")
             started = pipeline.store.load("run-policy")
@@ -181,7 +197,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 self.assertEqual(current.active_execution_request_id, request_id)
                 return current
 
-            with patch.object(pipeline, "_execute_with_bound_policy", side_effect=resumed):
+            with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=resumed):
                 pipeline.resume("run-policy")
             final_policy = pipeline.store.load_effort_policy(started.id)
             self.assertEqual(final_policy.binding(request_id).status, "finished")
@@ -232,7 +248,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
                     pipeline.store.save(current)
                     return current
 
-                with patch.object(pipeline, "_execute_with_bound_policy", side_effect=execute) as work:
+                with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=execute) as work:
                     if entry == "chat":
                         context = pipeline.task_retry_context(state.id, task.id)
                         result = pipeline.repair_task_from_chat(
@@ -256,7 +272,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 root = Path(directory)
                 pipeline = self._selected_pipeline(root)
                 if history:
-                    with patch.object(pipeline, "_execute_with_bound_policy", side_effect=lambda current, **_: current):
+                    with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=lambda current, **_: current):
                         pipeline.execute("run-policy")
                 state = pipeline.store.load("run-policy")
                 state.stage = stage
@@ -292,18 +308,18 @@ class EffortExecutionBindingTest(unittest.TestCase):
                     pipeline.store.save(current)
                     return current
 
-                with patch.object(pipeline, "_execute_with_bound_policy", side_effect=execute) as work:
+                with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=execute) as work:
                     if entry == "resume":
                         result = pipeline.resume(state.id)
                     else:
                         control = RunExecutionControl(RunExecutionSituation.READY, RunExecutionAction.RESUME, "resume", RunLockState.UNLOCKED)
                         integration = IntegrationControl(IntegrationStatus.NOT_READY, "waiting", "waiting", False, False)
                         with (
-                            patch.object(pipeline, "status_with_controls",
+                            patch.object(type(pipeline._common_runtime.runs), 'status_with_controls',
                                          side_effect=lambda _: (pipeline.store.load(state.id), control, integration)),
-                            patch.object(pipeline, "_configure_planning_profile", return_value=pipeline.agents["worker"]),
-                            patch.object(pipeline, "_planning_effort_scope", return_value=nullcontext()),
-                            patch.object(pipeline, "_invoke_planning_agent", return_value=json.dumps({
+                            patch.object(type(pipeline._common_runtime.planning.profiles), 'configure', return_value=pipeline.agents["worker"]),
+                            patch.object(type(pipeline._common_runtime.planning_policy), 'scope', return_value=nullcontext()),
+                            patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=json.dumps({
                                 "action": "continue", "message": "저장한 설정으로 계속합니다.", "authorized": True,
                             })),
                         ):
@@ -337,7 +353,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 else:
                     state.tasks[0].provider_id = "other-provider"
                 pipeline.store.save(state)
-                with patch.object(pipeline, "_execute_with_bound_policy") as work, self.assertRaises(PipelineError):
+                with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy') as work, self.assertRaises(PipelineError):
                     if entry == "retry":
                         pipeline.retry_task(state.id, state.tasks[0].id)
                     else:
@@ -362,13 +378,13 @@ class EffortExecutionBindingTest(unittest.TestCase):
             state.tasks[0].profile_source = ProfileSource.MODE
             state.tasks[0].effort_baseline_reasoning = "medium"
             pipeline.store.save(state)
-            started_id = pipeline._begin_effort_execution(
+            started_id = pipeline._common_runtime.execution.policy.begin_effort_execution(
                 state, agent_overrides=None, model_overrides=None, reasoning_effort_overrides=None
             )
             state.tasks[0].reasoning_effort = "high"
-            with patch.object(pipeline, "_invoke_provider_command") as provider:
+            with patch.object(pipeline._common_runtime.provider, 'invoke') as provider:
                 with self.assertRaisesRegex(PipelineError, "profile differs"):
-                    pipeline._invoke_agent(
+                    pipeline._common_runtime.execution.tasks.invoke_agent(
                         state, state.tasks[0], pipeline.agents["worker"], "implement", Path(directory) / "agent.log",
                         TaskAction.EXECUTE,
                     )
@@ -386,7 +402,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 "worker", ("general",), (sys.executable, "-c", "pass"), 2,
                 provider_id="local-worker", model="worker-v1",
             )
-            with patch.object(pipeline, "_execute_with_bound_policy") as execute:
+            with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy') as execute:
                 with self.assertRaisesRegex(PipelineError, "worker profile differs"):
                     pipeline.execute("run-policy")
                 execute.assert_not_called()
@@ -420,18 +436,18 @@ class EffortExecutionBindingTest(unittest.TestCase):
             state.tasks[0].reviewer_model = "review-unknown"
             pipeline.store.save(state)
             with self.assertRaisesRegex(PipelineError, "policy_plan_review_required"):
-                pipeline._begin_effort_execution(
+                pipeline._common_runtime.execution.policy.begin_effort_execution(
                     state, agent_overrides=None, model_overrides=None, reasoning_effort_overrides=None
                 )
             state.tasks[0].reviewer_model = "review-v1"
             pipeline.store.save(state)
-            pipeline._begin_effort_execution(
+            pipeline._common_runtime.execution.policy.begin_effort_execution(
                 state, agent_overrides=None, model_overrides=None, reasoning_effort_overrides=None
             )
             snapshot = pipeline.store.load_effort_policy(state.id).prepared_policies[-1]
             self.assertEqual(snapshot.review_decisions[0].reviewer_model, "review-v1")
-            with patch.object(pipeline, "_invoke_provider_command", return_value="approved") as provider:
-                pipeline._invoke_agent(
+            with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="approved") as provider:
+                pipeline._common_runtime.execution.tasks.invoke_agent(
                     state, state.tasks[0], reviewer, "review", root / "review.log", TaskAction.REVIEW
                 )
                 self.assertIn("Execution effort policy: focused", provider.call_args.kwargs["prompt"])
@@ -440,9 +456,9 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 provider_id="local-review", model="review-v2",
             )
             pipeline.agents["reviewer"] = changed_reviewer
-            with patch.object(pipeline, "_invoke_provider_command") as provider:
+            with patch.object(pipeline._common_runtime.provider, 'invoke') as provider:
                 with self.assertRaisesRegex(PipelineError, "reviewer runtime differs"):
-                    pipeline._invoke_agent(
+                    pipeline._common_runtime.execution.tasks.invoke_agent(
                         state, state.tasks[0], changed_reviewer, "review", root / "review.log", TaskAction.REVIEW
                     )
                 provider.assert_not_called()

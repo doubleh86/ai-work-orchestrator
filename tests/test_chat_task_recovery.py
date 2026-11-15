@@ -56,7 +56,7 @@ def test_chat_repair_saves_advice_before_execution_and_preserves_contract_and_co
         assert len(saved) == 1
         assert saved[0]["handling"] == "same_task_retry"
         assert "멈춘 테스트를 찾아 수정" in saved[0]["text"]
-        assert "고쳐서 계속해줘" in pipeline._result_revision_retry_instruction(state.id, "broken")
+        assert "고쳐서 계속해줘" in pipeline._common_runtime.execution.tasks.result_revision_retry_instruction(state.id, "broken")
         assert current.tasks[1].failed_action == TaskAction.EXECUTE, "verification-only retry would bypass the requested correction"
         assert current.tasks[0] == original[0]
         assert current.tasks[2] == original[2]
@@ -74,7 +74,7 @@ def test_chat_repair_saves_advice_before_execution_and_preserves_contract_and_co
         pipeline.store.save(current)
         return current
 
-    with patch.object(pipeline, "_execute", side_effect=execute) as run:
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=execute) as run:
         result = pipeline.repair_task_from_chat(state.id, "broken", **arguments)
         replay = pipeline.repair_task_from_chat(state.id, "broken", **arguments)
     assert result.stage == replay.stage == Stage.READY_TO_MERGE
@@ -102,7 +102,7 @@ def test_changed_or_ineligible_recovery_never_saves_instructions_or_executes(rec
     else:
         state.archive = RunArchive("now", "rev", "snapshot", "manifest", "summary", "fingerprint")
     pipeline.store.save(state)
-    with patch.object(pipeline, "_execute") as execute:
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute:
         with pytest.raises(PipelineError):
             pipeline.repair_task_from_chat(state.id, "broken", **arguments)
     execute.assert_not_called()
@@ -113,7 +113,10 @@ def test_changed_or_ineligible_recovery_never_saves_instructions_or_executes(rec
 def test_chat_instruction_save_failure_does_not_start_or_claim_recovery(recovery) -> None:
     pipeline, state = recovery
     arguments = request(pipeline, state)
-    with patch.object(pipeline.store, "save_revision_requests", side_effect=OSError("disk full")), patch.object(pipeline, "_execute") as run:
+    with (
+        patch.object(pipeline.store, 'save_revision_requests', side_effect=OSError('disk full')),
+        patch.object(pipeline._common_runtime.execution.flow, 'execute') as run,
+    ):
         with pytest.raises(OSError, match="disk full"):
             pipeline.repair_task_from_chat(state.id, "broken", **arguments)
     run.assert_not_called()
@@ -123,7 +126,7 @@ def test_chat_instruction_save_failure_does_not_start_or_claim_recovery(recovery
 def test_failed_execution_is_not_replayed_and_does_not_hide_failure(recovery) -> None:
     pipeline, state = recovery
     arguments = request(pipeline, state)
-    with patch.object(pipeline, "_execute", side_effect=PipelineError("worker failed again")) as run:
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=PipelineError("worker failed again")) as run:
         with pytest.raises(PipelineError, match="worker failed again"):
             pipeline.repair_task_from_chat(state.id, "broken", **arguments)
         replay = pipeline.repair_task_from_chat(state.id, "broken", **arguments)
@@ -137,7 +140,7 @@ def test_failed_execution_is_not_replayed_and_does_not_hide_failure(recovery) ->
 def test_chat_recovery_will_not_run_while_another_request_holds_the_run_lock(recovery) -> None:
     pipeline, state = recovery
     arguments = request(pipeline, state)
-    with pipeline.store.lock(state.id, "execute"), patch.object(pipeline, "_execute") as run:
+    with pipeline.store.lock(state.id, "execute"), patch.object(pipeline._common_runtime.execution.flow, 'execute') as run:
         with pytest.raises(Exception, match="lock"):
             pipeline.repair_task_from_chat(state.id, "broken", **arguments)
     run.assert_not_called()
@@ -153,7 +156,7 @@ def test_other_task_or_previous_attempt_advice_is_not_copied_to_the_current_reco
         state.planning_messages[-1].at = "2026-01-01T00:00:00+00:00"
         state.tasks[1].action_results = [TaskActionResult("verify", status="failed", finished_at="2026-01-02T00:00:00+00:00")]
     pipeline.store.save(state)
-    with patch.object(pipeline, "_execute", side_effect=lambda current, **_: current):
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=lambda current, **_: current):
         pipeline.repair_task_from_chat(state.id, "broken", **request(pipeline, state))
     instruction = pipeline.store.load_revision_requests(state.id)[0]["text"]
     assert "별도 상담 없음" in instruction
@@ -185,11 +188,11 @@ def test_stopped_task_recovers_only_after_the_matching_stop_is_confirmed(recover
         assert restored.failed_action == TaskAction.EXECUTE
         assert restored.action_results[-1].status == "interrupted"
         assert restored.stop_request_id == task.stop_request_id
-        assert "멈춘 테스트" in pipeline._result_revision_retry_instruction(state.id, task.id)
+        assert "멈춘 테스트" in pipeline._common_runtime.execution.tasks.result_revision_retry_instruction(state.id, task.id)
         assert current.tasks[0].completed_commit == "a" * 40
         return current
 
-    with patch.object(pipeline, "_execute", side_effect=execute) as run:
+    with patch.object(pipeline._common_runtime.execution.flow, 'execute', side_effect=execute) as run:
         if phase == "stopped":
             pipeline.repair_task_from_chat(state.id, task.id, **request(pipeline, state))
             run.assert_called_once()
@@ -224,7 +227,7 @@ def test_verification_repair_records_one_chat_command_on_repeated_delivery(recov
     state.failed_step = None
     pipeline.store.save(state)
     params = {"request_id": str(uuid.uuid4()), "chat_message": "검증 오류 복구 진행해줘"}
-    with patch.object(pipeline, "_verify_locked", return_value=state) as verify:
+    with patch.object(pipeline._common_runtime.execution.verification, 'verify_locked', return_value=state) as verify:
         pipeline.verify_and_repair(state.id, **params)
         pipeline.verify_and_repair(state.id, **params)
     verify.assert_called_once()

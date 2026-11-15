@@ -88,7 +88,7 @@ def test_user_checks_gate_only_their_dependents_and_integration(tmp_path: Path) 
         (Path(task.worktree) / f"src/{task.id}.txt").write_text(task.id, encoding="utf-8")
         return "implemented"
 
-    with patch.object(pipeline, "_invoke_agent", side_effect=implement):
+    with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement):
         paused = pipeline.execute(plan.id)
         assert paused.stage == Stage.EXECUTING and paused.failed_step is None and paused.active_step is None
         assert invoked == ["prepare", "independent"]

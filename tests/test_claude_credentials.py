@@ -1,3 +1,5 @@
+
+from ai_orchestrator.execution.provider_runner import ProviderRunner
 import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +12,7 @@ from ai_orchestrator.claude_credentials import claude_credential_scope, claude_e
 from ai_orchestrator.config import AgentConfig, Config, ExecutionConfig, ProjectConfig, RoutingConfig
 from ai_orchestrator.desktop_rpc import handle_request
 from ai_orchestrator.execution_control import ExecutionStopped
+from ai_orchestrator.execution import provider_connection
 from ai_orchestrator.pipeline import Pipeline, PipelineError, ProviderTimeoutError
 
 
@@ -70,11 +73,11 @@ def test_explicit_app_key_overrides_conflicting_auth_only_in_child_environment()
 
 
 def test_auth_query_and_provider_selection_use_app_key_without_exposing_it(tmp_path, monkeypatch):
-    monkeypatch.setattr(Pipeline, "_resolve_executable", staticmethod(lambda _: "claude"))
-    monkeypatch.setattr("ai_orchestrator.pipeline.selected_claude_executable", lambda: "")
+    monkeypatch.setattr(provider_connection, "resolve_provider_executable", lambda _: "claude")
+    monkeypatch.setattr("ai_orchestrator.execution.provider_connection.selected_claude_executable", lambda: "")
     result = subprocess.CompletedProcess([], 0, json.dumps({"loggedIn": True, "authMethod": "api_key", "email": "old@example.test"}), "")
     execute = Mock(return_value=result)
-    monkeypatch.setattr("ai_orchestrator.pipeline.subprocess.run", execute)
+    monkeypatch.setattr("ai_orchestrator.execution.provider_connection.subprocess.run", execute)
     with claude_credential_scope("fixture-key"):
         pipeline = configured_pipeline(tmp_path)
         status = Pipeline.claude_connection_status()
@@ -86,7 +89,7 @@ def test_auth_query_and_provider_selection_use_app_key_without_exposing_it(tmp_p
     assert execute.call_args.kwargs["env"]["ANTHROPIC_API_KEY"] == "fixture-key"
     execute.return_value = subprocess.CompletedProcess([], 1, json.dumps({"loggedIn": False}), "")
     with pytest.raises(PipelineError, match="Claude API 키 인증 상태"):
-        pipeline._ensure_planning_provider_ready(pipeline.agents["worker"])
+        provider_connection.ensure_planning_provider_ready(pipeline.agents["worker"])
     execute.return_value = subprocess.CompletedProcess([], 0, json.dumps({
         "loggedIn": True, "authMethod": "claude.ai", "email": "fixture-key", "subscriptionType": "pro",
     }), "")
@@ -101,7 +104,7 @@ def test_only_claude_process_receives_app_key_and_all_exit_paths_redact_logs(tmp
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with claude_credential_scope("fixture-private-key"):
         pipeline = configured_pipeline(tmp_path)
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda _: "claude")
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _: "claude")
     process = Mock(returncode=1 if outcome == "failure" else 0)
     process.communicate.return_value = ("done fixture-private-key", None)
     if outcome == "failure":
@@ -109,8 +112,8 @@ def test_only_claude_process_receives_app_key_and_all_exit_paths_redact_logs(tmp
     if outcome == "timeout":
         process.communicate.side_effect = [subprocess.TimeoutExpired(["claude"], 1, output="fixture-private-key"), ("fixture-private-key", None)]
     spawn = Mock(return_value=process)
-    monkeypatch.setattr("ai_orchestrator.pipeline.subprocess.Popen", spawn)
-    monkeypatch.setattr(pipeline, "_terminate_agent_process", Mock())
+    monkeypatch.setattr("ai_orchestrator.execution.provider_runner.subprocess.Popen", spawn)
+    monkeypatch.setattr(ProviderRunner, 'terminate_process', Mock())
     agent = pipeline.agents["worker"] if outcome != "other-provider" else AgentConfig("other", ("general",), ("example",), provider_id="custom")
     signal = Mock(request_id="stop-request") if outcome == "stop" else None
     if signal is not None:
@@ -121,12 +124,12 @@ def test_only_claude_process_receives_app_key_and_all_exit_paths_redact_logs(tmp
     error = {"failure": PipelineError, "timeout": ProviderTimeoutError, "stop": ExecutionStopped}.get(outcome)
     if error:
         with pytest.raises(error) as failed:
-            pipeline._run_provider_command(**options)
+            pipeline._common_runtime.provider.run(**options)
         if outcome == "failure":
             assert "Claude API 인증에 실패" in str(failed.value)
             assert "claude auth login" not in str(failed.value)
     else:
-        answer = pipeline._run_provider_command(**options)
+        answer = pipeline._common_runtime.provider.run(**options)
         if outcome == "success":
             assert "fixture-private-key" not in answer
     sent = spawn.call_args

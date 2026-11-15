@@ -28,7 +28,7 @@ def profile_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         codex = AgentConfig("codex", ("general",), (), 2, provider_id="codex", model="gpt-6.1-sol")
         config = Config(path=tmp_path / "config.toml", project=ProjectConfig(repo=tmp_path), execution=ExecutionConfig(), agents=(codex,))
         pipeline = Pipeline(config, codex_sdk=Mock())
-        monkeypatch.setattr(pipeline, "_resolve_executable", lambda _: sys.executable)
+        monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda _: sys.executable)
         task = WorkTask("task", "실패한 작업", ["general"], agent_id=codex.id, provider_id="codex", model=codex.model,
                         reasoning_effort="high", status=TaskStatus.FAILED, failed_action=TaskAction.VERIFY,
                         description="보존할 설명", expected_paths=["src/**"], last_attempt_id="old-attempt", error="원래 검증 오류",
@@ -166,7 +166,7 @@ def test_running_owner_keeps_state_while_pending_profile_survives_progress_saves
     pipeline, state = profile_run
     active_pending(pipeline, state)
     remote = Pipeline(pipeline.config, codex_sdk=Mock())
-    monkeypatch.setattr(remote, "_resolve_executable", lambda _: sys.executable)
+    monkeypatch.setattr(remote._common_runtime.provider_probes, "resolve_executable", lambda _: sys.executable)
     original = state.to_dict()
     plan = Path(state.structured_plan_path).read_bytes()
     with pipeline.store.lock(state.id, "execute"):
@@ -182,8 +182,8 @@ def test_running_owner_keeps_state_while_pending_profile_survives_progress_saves
         assert state.tasks[-1].provider_id == "codex"
         state.tasks[0].status, state.tasks[0].active_action = TaskStatus.COMPLETED, None
         with pipeline.store.planning_chat_lock(state.id):
-            assert pipeline._apply_queued_execution_profiles(state)
-            assert not pipeline._apply_queued_execution_profiles(state)
+            assert pipeline._common_runtime.execution.profiles.apply_queued_execution_profiles(state)
+            assert not pipeline._common_runtime.execution.profiles.apply_queued_execution_profiles(state)
         assert state.tasks[-1].provider_id == "nvidia"
         assert pipeline.store.load(state.id).tasks[-1].profile_source == ProfileSource.MANUAL
         assert state.tasks[-1].last_attempt_id == "old-attempt"
@@ -232,7 +232,7 @@ def test_changed_plan_rejects_queued_profile_at_dispatch_and_preserves_failure(p
         state.tasks[0].status, state.tasks[0].active_action = TaskStatus.COMPLETED, None
         state.plan_revision += 1
         with pipeline.store.planning_chat_lock(state.id), pytest.raises(PipelineError, match="상태 또는 계획"):
-            pipeline._apply_queued_execution_profiles(state)
+            pipeline._common_runtime.execution.profiles.apply_queued_execution_profiles(state)
     failed = pipeline.store.load(state.id)
     assert failed.stage == Stage.FAILED and failed.failed_step == RunStep.AGENT_EXECUTION
     assert "상태 또는 계획" in failed.failure_message
@@ -268,14 +268,14 @@ def test_interrupted_profile_application_preserves_selection_and_can_resume(prof
         else:
             monkeypatch.setattr(pipeline.store, "save_task_execution_profiles", save_profiles)
         with pipeline.store.planning_chat_lock(state.id), pytest.raises(OSError, match="interrupted"):
-            pipeline._apply_queued_execution_profiles(state)
+            pipeline._common_runtime.execution.profiles.apply_queued_execution_profiles(state)
         monkeypatch.setattr(pipeline.store, "save", original_save)
         monkeypatch.setattr(pipeline.store, "save_task_execution_profiles", original_profiles)
         restored = pipeline.store.load(state.id)
         assert pipeline.execution_profile_view(restored).tasks[-1].provider_id == "nvidia"
         assert "task" in pipeline.store.load_task_execution_profiles(state.id)
         with pipeline.store.planning_chat_lock(state.id):
-            pipeline._apply_queued_execution_profiles(restored)
+            pipeline._common_runtime.execution.profiles.apply_queued_execution_profiles(restored)
         assert pipeline.store.load(state.id).tasks[-1].provider_id == "nvidia"
         assert "task" not in pipeline.store.load_task_execution_profiles(state.id)
         assert pipeline.store.load_task_execution_profiles(state.id)["task@unbound"]["selection"]["model"] == NVIDIA_MODEL
@@ -291,9 +291,9 @@ def test_finishing_execution_during_planning_chat_preserves_pending_selection(pr
         state.tasks[0].status, state.tasks[0].active_action = TaskStatus.COMPLETED, None
         state.active_step = None
         pipeline.store.save(state)
-        monkeypatch.setattr(pipeline, "_execute_with_bound_policy", lambda current, **_: current)
+        monkeypatch.setattr(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', lambda current, **_: current)
         with pipeline.store.planning_chat_lock(state.id):
-            returned = pipeline._execute(state, manual=False)
+            returned = pipeline._common_runtime.execution.flow.execute(state, manual=False)
         assert returned.stage == Stage.EXECUTING
         if queued:
             assert pipeline.execution_profile_view(returned).tasks[-1].provider_id == "nvidia"

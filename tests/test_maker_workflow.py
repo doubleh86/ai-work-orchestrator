@@ -43,7 +43,7 @@ def draft() -> dict[str, object]:
 
 
 def test_empty_project_accepts_external_plan_without_planning_ai_and_rejects_stale_control(pipeline: Pipeline) -> None:
-    with patch.object(pipeline, "_build_plan", side_effect=AssertionError("no planning AI")):
+    with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=AssertionError("no planning AI")):
         state = pipeline.submit_external_plan(f"mcp-plan-{uuid.uuid4().hex}", expected_base_commit=pipeline.git.head(pipeline.config.project.repo),
                                               summary="새 앱", requirements="처음부터 만든다.", task_drafts=[draft()])
     assert state.stage == Stage.PLANNED and state.repository_intent == "external_plan"
@@ -63,7 +63,7 @@ def test_external_plan_runs_local_worker_and_verifies_without_planning_ai(pipeli
     worker = ("from pathlib import Path; Path('src').mkdir(exist_ok=True); Path('src/app.py').write_text('value = 1\\n'); "
               "Path('src/index.html').write_text('<h1>Fixture</h1>')")
     pipeline = Pipeline(replace(pipeline.config, agents=(AgentConfig("general", ("general",), (sys.executable, "-c", worker), 1),)))
-    with patch.object(pipeline, "_build_plan", side_effect=AssertionError("no planning AI")):
+    with patch.object(pipeline._common_runtime.planning.ai, 'build_plan', side_effect=AssertionError("no planning AI")):
         state = pipeline.submit_external_plan(f"mcp-plan-{uuid.uuid4().hex}", expected_base_commit=pipeline.git.head(pipeline.config.project.repo),
                                               summary="새 앱", requirements="처음부터 만든다.", task_drafts=[draft()],
                                               user_checks=(UserCheck("preview", "직접 실행", "결과를 확인한다.", ("화면이 보인다.",), "app",
@@ -185,7 +185,7 @@ def test_background_control_returns_promptly_and_preserves_failures_and_retries(
 
 def test_result_registration_pins_verified_worktree_and_file_content(pipeline: Pipeline, tmp_path: Path) -> None:
     state = RunState("result", "", "", str(pipeline.config.project.repo), "main", Stage.VERIFIED)
-    worktree = pipeline._shared_run_worktree_path(state)
+    worktree = pipeline._common_runtime.execution.workspace.layout().shared_path(state)
     git(pipeline.config.project.repo, "worktree", "add", "-b", "ai/result", str(worktree))
     output = worktree / "build" / "index.html"
     output.parent.mkdir()
@@ -215,7 +215,7 @@ def test_result_registration_pins_verified_worktree_and_file_content(pipeline: P
 def test_dirty_result_is_explained_without_file_list_and_still_blocks_launch(pipeline: Pipeline, stage: Stage, tracked: bool) -> None:
     state = RunState("dirty-result", "", "", str(pipeline.config.project.repo), "main", stage,
                      plan_revision=1, plan_approved_revision=1)
-    worktree = pipeline._shared_run_worktree_path(state)
+    worktree = pipeline._common_runtime.execution.workspace.layout().shared_path(state)
     git(pipeline.config.project.repo, "worktree", "add", "-b", "ai/dirty-result", str(worktree))
     output = worktree / "build" / "index.html"
     output.parent.mkdir()

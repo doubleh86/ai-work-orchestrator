@@ -240,7 +240,7 @@ class StateStoreTest(unittest.TestCase):
                             raise error
                         return original_replace(temporary, destination)
 
-                    with patch.object(Path, "replace", new=replace), patch("ai_orchestrator.store.time.sleep") as sleep:
+                    with patch.object(Path, "replace", new=replace), patch("ai_orchestrator.persistence.atomic.time.sleep") as sleep:
                         save(state)
                     self.assertEqual(len(attempts), 3)
                     self.assertEqual(sleep.call_count, 2)
@@ -259,7 +259,7 @@ class StateStoreTest(unittest.TestCase):
                 error = PermissionError("permanent access denied")
                 if windows:
                     error.winerror = 5
-                with patch.object(Path, "replace", side_effect=error) as replace, patch("ai_orchestrator.store.time.sleep") as sleep:
+                with patch.object(Path, "replace", side_effect=error) as replace, patch("ai_orchestrator.persistence.atomic.time.sleep") as sleep:
                     with self.assertRaisesRegex(OSError, "임시 파일에 보존") as caught:
                         store.save_planning_chat(state)
                 self.assertIs(caught.exception.__cause__, error)
@@ -307,7 +307,7 @@ class StateStoreTest(unittest.TestCase):
 
             try:
                 state.planning_messages.append(PlanningMessage(PlanningMessageRole.USER, "saved after reader closed"))
-                with patch("ai_orchestrator.store.time.sleep", side_effect=release) as sleep:
+                with patch("ai_orchestrator.persistence.atomic.time.sleep", side_effect=release) as sleep:
                     store.save_planning_chat(state)
                 self.assertGreaterEqual(sleep.call_count, 1)
                 self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["planning_messages"][0]["text"], "saved after reader closed")

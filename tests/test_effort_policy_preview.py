@@ -1,3 +1,5 @@
+
+from ai_orchestrator.planning.conversation import task_plan_draft
 import sys
 import tempfile
 import unittest
@@ -131,18 +133,18 @@ class EffortPolicyPreviewTest(unittest.TestCase):
             state = RunState("run-edit", "plan.md", "digest", directory, "main", stage=Stage.PLANNED, tasks=[task])
             pipeline.store.save(state)
 
-            draft = pipeline._task_plan_draft(task)
+            draft = task_plan_draft(task)
             draft["title"] = "Renamed"
             unchanged = pipeline.update_plan(state.id, [draft])
             self.assertEqual(unchanged.tasks[0].profile_source, ProfileSource.ROUTING)
 
-            changed_draft = pipeline._task_plan_draft(unchanged.tasks[0])
+            changed_draft = task_plan_draft(unchanged.tasks[0])
             changed_draft["provider_id"] = "local-b"
             changed = pipeline.update_plan(state.id, [changed_draft])
             self.assertEqual(changed.tasks[0].provider_id, "local-b")
             self.assertEqual(changed.tasks[0].profile_source, ProfileSource.MANUAL)
 
-            same_draft = pipeline._task_plan_draft(changed.tasks[0])
+            same_draft = task_plan_draft(changed.tasks[0])
             same_draft["title"] = "Renamed again"
             preserved = pipeline.update_plan(state.id, [same_draft])
             self.assertEqual(preserved.tasks[0].profile_source, ProfileSource.MANUAL)
@@ -154,7 +156,7 @@ class EffortPolicyPreviewTest(unittest.TestCase):
                 "run-3", "plan.md", "digest", directory, "main", stage=Stage.PLANNED,
                 planning_agent_id="worker", planning_provider_id="codex", planning_profile_source=ProfileSource.ROUTING,
             )
-            pipeline._configure_planning_profile(
+            pipeline._common_runtime.planning.profiles.configure(
                 state, planning_agent_id=None, planning_model="gpt-6-sol", planning_reasoning_effort="medium"
             )
             self.assertEqual(state.planning_profile_source, ProfileSource.MANUAL)
@@ -167,12 +169,15 @@ class EffortPolicyPreviewTest(unittest.TestCase):
             pipeline.store.save(state)
 
             same_profile = self._task("t01", ProfileSource.ROUTING)
-            preserved = pipeline._apply_plan(state, Plan(summary="Plan", server_work=False, tasks=[same_profile]))
+            preserved = pipeline._common_runtime.planning.lifecycle.apply_plan(state, Plan(summary="Plan", server_work=False, tasks=[same_profile]))
             self.assertEqual(preserved.tasks[0].profile_source, ProfileSource.MANUAL)
 
             changed_profile = self._task("t01", ProfileSource.ROUTING)
             changed_profile.reasoning_effort = "high"
-            replaced = pipeline._apply_plan(preserved, Plan(summary="Plan", server_work=False, tasks=[changed_profile]))
+            replaced = pipeline._common_runtime.planning.lifecycle.apply_plan(
+                preserved,
+                Plan(summary='Plan', server_work=False, tasks=[changed_profile]),
+            )
             self.assertEqual(replaced.tasks[0].profile_source, ProfileSource.ROUTING)
 
     def test_mode_application_requires_explicit_reviewer_and_plan_reconfirmation(self) -> None:
@@ -239,13 +244,13 @@ class EffortPolicyPreviewTest(unittest.TestCase):
                 self.assertEqual(binding.policy_id, current.active_policy_id)
                 return current
 
-            with patch.object(pipeline, "_execute_with_bound_policy", side_effect=observe_started):
+            with patch.object(pipeline._common_runtime.execution.flow, 'execute_with_bound_policy', side_effect=observe_started):
                 executed = pipeline.execute(state.id)
             self.assertEqual(executed.active_policy_id, "")
             self.assertEqual(executed.active_execution_request_id, "")
             self.assertEqual(pipeline.store.load_effort_policy(state.id).execution_bindings[-1].status, "finished")
 
-            draft = pipeline._task_plan_draft(confirmed.tasks[0])
+            draft = task_plan_draft(confirmed.tasks[0])
             draft["title"] = "Renamed task"
             edited = pipeline.update_plan(state.id, [draft])
             self.assertEqual(edited.tasks[0].reviewer_agent_id, "reviewer")
@@ -277,7 +282,7 @@ class EffortPolicyPreviewTest(unittest.TestCase):
             self.assertEqual(balanced.planning_profile_source, ProfileSource.MODE)
             self.assertEqual(balanced.planning_effort_baseline_reasoning, "medium")
 
-            manual_draft = pipeline._task_plan_draft(balanced.tasks[0])
+            manual_draft = task_plan_draft(balanced.tasks[0])
             manual_draft["reasoning_effort"] = "xhigh"
             manual = pipeline.update_plan(state.id, [manual_draft])
             self.assertEqual(manual.tasks[0].profile_source, ProfileSource.MANUAL)

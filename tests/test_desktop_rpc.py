@@ -583,7 +583,7 @@ def test_project_dotnet_rpc_saves_and_diagnoses_with_fresh_settings(tmp_path: Pa
     executable.touch()
     rpc.dispatch("projects.updateDotnet", {"projectName": "Example", "executable": str(executable)})
     diagnostic = DotnetDiagnostic(str(executable), "SDK selected")
-    with patch("ai_orchestrator.pipeline.diagnose_dotnet", return_value=diagnostic) as diagnose:
+    with patch("ai_orchestrator.git.diagnose_dotnet", return_value=diagnostic) as diagnose:
         assert rpc.dispatch("projects.checkDotnet", {"projectName": "Example"}) == diagnostic
     diagnose.assert_called_once_with(str(executable.resolve()), repo)
     rpc.dispatch("projects.updateDotnet", {"projectName": "Example", "executable": ""})
@@ -720,7 +720,10 @@ def test_desktop_application_reuses_and_closes_codex_sdk_manager(tmp_path: Path)
     codex_sdk = Mock()
     application = DesktopApplication(registry, codex_sdk=codex_sdk)
 
-    with patch("ai_orchestrator.desktop_rpc.load_config", return_value=config), patch("ai_orchestrator.desktop_rpc.Pipeline") as pipeline:
+    with (
+        patch("ai_orchestrator.application.project_settings.load_config", return_value=config),
+        patch("ai_orchestrator.application.runtime.Pipeline") as pipeline,
+    ):
         application._pipeline("sample")
         application._pipeline("sample")
 
@@ -833,9 +836,12 @@ def test_desktop_application_reuses_single_codex_sdk_manager(tmp_path: Path) -> 
     config.project.repo = tmp_path
     codex_sdk = Mock()
 
-    with patch("ai_orchestrator.desktop_rpc.CodexSdkManager", return_value=codex_sdk) as manager_factory:
+    with patch("ai_orchestrator.application.service.CodexSdkManager", return_value=codex_sdk) as manager_factory:
         application = DesktopApplication(registry)
-        with patch("ai_orchestrator.desktop_rpc.load_config", return_value=config), patch("ai_orchestrator.desktop_rpc.Pipeline") as pipeline:
+        with (
+            patch("ai_orchestrator.application.project_settings.load_config", return_value=config),
+            patch("ai_orchestrator.application.runtime.Pipeline") as pipeline,
+        ):
             application._pipeline("first")
             application._pipeline("second")
         application.close()
@@ -910,7 +916,7 @@ def test_attention_items_reuse_stalled_project_future() -> None:
 
     try:
         with patch.object(application, "_attention_items_for_project", side_effect=project_items):
-            with patch("ai_orchestrator.desktop_rpc.wait", side_effect=lambda futures, timeout: wait(futures, timeout=0.1)):
+            with patch("ai_orchestrator.application.summaries.wait", side_effect=lambda futures, timeout: wait(futures, timeout=0.1)):
                 first = application.attention_items()
                 second = application.attention_items()
     finally:
@@ -1508,7 +1514,7 @@ def test_application_preserves_pipeline_approval_boundaries(tmp_path: Path) -> N
     application = DesktopApplication(registry)
     expected = RunState(id="run-1", spec_path="plan.md", spec_digest="abc", repo_path=str(repo), main_branch="main", stage=Stage.MERGED)
 
-    with patch("ai_orchestrator.desktop_rpc.Pipeline") as pipeline_class:
+    with patch("ai_orchestrator.application.runtime.Pipeline") as pipeline_class:
         pipeline = pipeline_class.return_value
         pipeline.merge.return_value = expected
         pipeline.cleanup_workspace.return_value = {"state": "cleaned"}
@@ -1529,7 +1535,7 @@ def test_provider_profiles_expand_models_and_reasoning(tmp_path: Path, role: str
     registry.add("Example", repo, config_path)
     application = DesktopApplication(registry)
 
-    with patch("ai_orchestrator.desktop_rpc.Pipeline") as pipeline_class:
+    with patch("ai_orchestrator.application.runtime.Pipeline") as pipeline_class:
         choices = [ProviderChoice("codex", "planner", is_default=True)]
         if role == "planning":
             pipeline_class.return_value.planning_provider_choices.return_value = choices

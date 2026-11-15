@@ -1,3 +1,5 @@
+
+from ai_orchestrator.planning.conversation import task_plan_draft
 import sys
 import tempfile
 import unittest
@@ -66,7 +68,7 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             snapshot = pipeline.store.load_effort_policy(state.id).policy(state.active_policy_id)
             self.assertEqual(dict(snapshot.task_profiles)[task.id].model, CODEX_TERRA_MODEL)
             restored = pipeline.store.load(state.id)
-            pipeline._validate_effort_execution_snapshot(restored, snapshot)
+            pipeline._common_runtime.execution.policy.validate_effort_execution_snapshot(restored, snapshot)
 
     def test_planning_analysis_and_conflicts_keep_sol_in_every_mode(self) -> None:
         for mode in EffortMode:
@@ -135,7 +137,12 @@ class AutomaticModelSelectionTest(unittest.TestCase):
                          planning_reasoning_effort="high", planning_profile_source=ProfileSource.MANUAL)
         pipeline.store.save(state)
         pipeline.set_effort_mode(state.id, mode.value, expected_revision=0, request_id=str(uuid.uuid4()))
-        pipeline._begin_effort_execution(state, agent_overrides=None, model_overrides=None, reasoning_effort_overrides=None)
+        pipeline._common_runtime.execution.policy.begin_effort_execution(
+            state,
+            agent_overrides=None,
+            model_overrides=None,
+            reasoning_effort_overrides=None,
+        )
         return pipeline, state
 
     @staticmethod
@@ -150,19 +157,19 @@ class AutomaticModelSelectionTest(unittest.TestCase):
                 task = state.tasks[0]
                 self.record_failure(task)
                 failure = TaskVerificationFailure(task.id, ["test"], "AssertionError: wrong text", Path(directory) / "test.log")
-                pipeline._promote_automatic_model(state, task, failure)
+                pipeline._common_runtime.execution.profiles.promote_automatic_model(state, task, failure)
                 self.assertEqual(task.model, CODEX_SOL_MODEL)
                 self.assertEqual(task.reasoning_effort, "high")
                 restored = pipeline.store.load(state.id)
                 self.assertEqual(restored.tasks[0].model_escalation_policy_id, state.active_policy_id)
                 snapshot = pipeline.store.load_effort_policy(state.id).policy(state.active_policy_id)
                 self.assertEqual(dict(snapshot.task_profiles)[task.id].model, original)
-                pipeline._validate_effort_execution_snapshot(restored, snapshot)
+                pipeline._common_runtime.execution.policy.validate_effort_execution_snapshot(restored, snapshot)
                 count = len(state.events)
-                pipeline._promote_automatic_model(state, task, failure)
+                pipeline._common_runtime.execution.profiles.promote_automatic_model(state, task, failure)
                 self.assertEqual(len(state.events), count)
-                with patch.object(pipeline, "_invoke_provider_command", return_value="fixed") as provider:
-                    pipeline._invoke_agent(state, task, pipeline.agents[task.agent_id], "correct",
+                with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="fixed") as provider:
+                    pipeline._common_runtime.execution.tasks.invoke_agent(state, task, pipeline.agents[task.agent_id], "correct",
                                            Path(directory) / "repair.log", TaskAction.EXECUTE)
                     self.assertEqual(provider.call_args.kwargs["model"], CODEX_SOL_MODEL)
 
@@ -172,7 +179,7 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             task = state.tasks[0]
             self.record_failure(task)
             failure = TaskVerificationFailure(task.id, ["test"], "AssertionError", Path(directory) / "test.log")
-            pipeline._promote_automatic_model(state, task, failure)
+            pipeline._common_runtime.execution.profiles.promote_automatic_model(state, task, failure)
             snapshot = pipeline.store.load_effort_policy(state.id).policy(state.active_policy_id)
             for field, value in [("reasoning_effort", "max"), ("model", "gpt-5.6-sol"),
                                  ("model_escalation_policy_id", "other"), ("model_escalation_result_index", 12)]:
@@ -180,10 +187,10 @@ class AutomaticModelSelectionTest(unittest.TestCase):
                     changed = RunState.from_dict(state.to_dict())
                     setattr(changed.tasks[0], field, value)
                     with self.assertRaises(PipelineError):
-                        pipeline._validate_effort_execution_snapshot(changed, snapshot)
+                        pipeline._common_runtime.execution.policy.validate_effort_execution_snapshot(changed, snapshot)
             task.action_results[0].verification_failure_kind = "timeout"
             with self.assertRaises(PipelineError):
-                pipeline._validate_effort_execution_snapshot(state, snapshot)
+                pipeline._common_runtime.execution.policy.validate_effort_execution_snapshot(state, snapshot)
 
     def test_existing_automatic_correction_loop_executes_the_promoted_model_once(self) -> None:
         for mode, original in [(EffortMode.ECONOMY, CODEX_LUNA_MODEL), (EffortMode.BALANCED, CODEX_TERRA_MODEL)]:
@@ -197,14 +204,17 @@ class AutomaticModelSelectionTest(unittest.TestCase):
                     if len(calls) == 1:
                         self.record_failure(task)
                         raise TaskVerificationFailure(task.id, ["test"], "AssertionError: copy mismatch", Path(directory) / "test.log")
-                    with patch.object(pipeline, "_invoke_provider_command", return_value="corrected") as provider:
-                        pipeline._invoke_agent(state, task, pipeline.agents[task.agent_id], "fix",
+                    with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="corrected") as provider:
+                        pipeline._common_runtime.execution.tasks.invoke_agent(state, task, pipeline.agents[task.agent_id], "fix",
                                                Path(directory) / "repair.log", TaskAction.EXECUTE)
                         self.assertEqual(provider.call_args.kwargs["model"], CODEX_SOL_MODEL)
 
-                with patch.object(pipeline, "_run_task_attempt", side_effect=attempt), \
-                        patch.object(pipeline, "_ensure_verification_head"), patch.object(pipeline, "_validate_task_change_scope"):
-                    pipeline._run_task(state, task)
+                with (
+                    patch.object(pipeline._common_runtime.execution.tasks, 'run_task_attempt', side_effect=attempt),
+                    patch.object(pipeline._common_runtime.execution.verification_commands, 'ensure_verification_head'),
+                    patch.object(pipeline._common_runtime.execution.tasks, 'validate_task_change_scope'),
+                ):
+                    pipeline._common_runtime.execution.tasks.run_task(state, task)
                 self.assertEqual(calls, [original, CODEX_SOL_MODEL])
                 self.assertEqual(task.model_escalation_result_index, 0)
 
@@ -219,10 +229,13 @@ class AutomaticModelSelectionTest(unittest.TestCase):
                 self.record_failure(task)
                 raise TaskVerificationFailure(task.id, ["test"], "AssertionError: unchanged", Path(directory) / "test.log")
 
-            with patch.object(pipeline, "_run_task_attempt", side_effect=attempt), \
-                    patch.object(pipeline, "_ensure_verification_head"), patch.object(pipeline, "_validate_task_change_scope"):
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'run_task_attempt', side_effect=attempt),
+                patch.object(pipeline._common_runtime.execution.verification_commands, 'ensure_verification_head'),
+                patch.object(pipeline._common_runtime.execution.tasks, 'validate_task_change_scope'),
+            ):
                 with self.assertRaisesRegex(PipelineError, "같은 검증 실패"):
-                    pipeline._run_task(state, task)
+                    pipeline._common_runtime.execution.tasks.run_task(state, task)
             self.assertEqual(calls, [CODEX_LUNA_MODEL, CODEX_SOL_MODEL])
 
     def test_environment_errors_and_manual_selection_never_promote(self) -> None:
@@ -237,7 +250,7 @@ class AutomaticModelSelectionTest(unittest.TestCase):
                     task.profile_source = source
                     self.record_failure(task)
                     task.action_results[-1].verification_failure_kind = kind
-                    pipeline._promote_automatic_model(state, task, TaskVerificationFailure(
+                    pipeline._common_runtime.execution.profiles.promote_automatic_model(state, task, TaskVerificationFailure(
                         task.id, ["test"], output, Path(directory) / "test.log"))
                     self.assertEqual(task.model, original)
                     self.assertEqual(task.model_escalation_result_index, -1)
@@ -255,7 +268,7 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             restored = RunState.from_dict(state.to_dict())
             with patch.object(pipeline.store, "load_effort_policy", return_value=saved), \
                     patch.object(pipeline, "preview_effort_mode", side_effect=AssertionError("started policy must stay fixed")):
-                request_id = pipeline._begin_effort_execution(restored, agent_overrides=None, model_overrides=None,
+                request_id = pipeline._common_runtime.execution.policy.begin_effort_execution(restored, agent_overrides=None, model_overrides=None,
                                                               reasoning_effort_overrides=None)
             self.assertEqual(request_id, state.active_execution_request_id)
             self.assertEqual(restored.tasks[0].model, CODEX_SOL_MODEL)
@@ -281,7 +294,7 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             saved = pipeline.store.load_effort_policy(state.id)
             old = replace(saved, prepared_policies=tuple(replace(item, policy_version=2) for item in saved.prepared_policies))
             with patch.object(pipeline.store, "load_effort_policy", return_value=old):
-                pipeline._promote_automatic_model(state, task, TaskVerificationFailure(
+                pipeline._common_runtime.execution.profiles.promote_automatic_model(state, task, TaskVerificationFailure(
                     task.id, ["test"], "AssertionError", Path(directory) / "test.log",
                 ))
             self.assertEqual(task.model, CODEX_LUNA_MODEL)
@@ -290,11 +303,11 @@ class AutomaticModelSelectionTest(unittest.TestCase):
     def test_new_automatic_task_added_in_plan_editor_keeps_its_selection_origin_and_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self.bound_pipeline(Path(directory))
-            draft = pipeline._task_plan_draft(small_task())
+            draft = task_plan_draft(small_task())
             draft["id"] = "new-copy"
             draft["verify_commands"] = [[sys.executable, "-c", "pass"]]
-            with patch.object(pipeline, "_planning_execution_agents", return_value=pipeline.config.agents):
-                plan = pipeline._validated_plan_draft(state, [draft])
+            with patch.object(type(pipeline._common_runtime.providers.choices), 'planning_execution_agents', return_value=pipeline.config.agents):
+                plan = pipeline._common_runtime.planning.draft_validator().validate(state, [draft])
             task = plan.tasks[0]
             self.assertEqual((task.model, task.profile_source, task.effort_baseline_reasoning),
                              (CODEX_LUNA_MODEL, ProfileSource.MODE, ""))
@@ -311,14 +324,14 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             pipeline.store.save(state)
             plan = Plan("copy", False, [small_task()], [])
             assign_plan_agents(plan, (worker,), RoutingConfig())
-            pipeline._apply_plan(state, plan)
+            pipeline._common_runtime.planning.lifecycle.apply_plan(state, plan)
             preview = pipeline.preview_effort_mode(state.id, "balanced", expected_revision=0)
             self.assertFalse(preview.requires_plan_review)
             self.assertEqual((state.planning_model, state.planning_reasoning_effort), (CODEX_SOL_MODEL, "high"))
             prompt = root / "planning.md"
             prompt.write_text("Plan", encoding="utf-8")
-            with patch.object(pipeline, "_invoke_provider_command", return_value="planned") as provider:
-                pipeline._invoke_planning_agent(state, worker, "Plan", prompt, root / "planning.log")
+            with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="planned") as provider:
+                pipeline._common_runtime.planning.ai.invoke(state, worker, "Plan", prompt, root / "planning.log")
                 self.assertEqual(provider.call_args.kwargs["model"], CODEX_SOL_MODEL)
 
     def test_planning_without_a_selected_mode_closes_the_sdk_default_but_keeps_manual_choice(self) -> None:
@@ -332,8 +345,8 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             prompt.write_text("Plan", encoding="utf-8")
             for source, expected, effort in [(ProfileSource.ROUTING, CODEX_SOL_MODEL, "high"),
                                              (ProfileSource.MANUAL, "gpt-5.6-luna", "medium")]:
-                with self.subTest(source=source), patch.object(pipeline, "_invoke_provider_command", return_value="planned") as provider:
+                with self.subTest(source=source), patch.object(pipeline._common_runtime.provider, 'invoke', return_value="planned") as provider:
                     fresh.planning_profile_source = source
-                    pipeline._invoke_planning_agent(fresh, pipeline.agents["worker"], "Plan", prompt, root / "planning.log")
+                    pipeline._common_runtime.planning.ai.invoke(fresh, pipeline.agents["worker"], "Plan", prompt, root / "planning.log")
                     self.assertEqual((provider.call_args.kwargs["model"], provider.call_args.kwargs["reasoning_effort"]),
                                      (expected, effort))

@@ -132,7 +132,7 @@ def test_rpc_requires_approval_and_fresh_revision_and_append_preserves_existing_
     assert reply["result"]["revision"] == 1
     application.update_worker_mcp_connections("project", [server(id="other").to_dict()], expected_revision=1, approved=True, append=True)
     assert {item["id"] for item in application.worker_mcp_connections("project")["servers"]} == {"tool", "other"}
-    monkeypatch.setattr("ai_orchestrator.desktop_rpc.check_mcp_connection", Mock(return_value={"status": "connected"}))
+    monkeypatch.setattr("ai_orchestrator.application.project_settings.check_mcp_connection", Mock(return_value={"status": "connected"}))
     with pytest.raises(Exception, match="변경"):
         application.check_worker_mcp_connection("project", "tool", expected_revision=1)
     pipeline = application._pipeline("project")
@@ -158,9 +158,9 @@ def test_cli_uses_project_tool_overrides_only_with_an_explicit_registry(applicat
     application.registry.update_worker_mcp_servers("project", (selected,), expected_revision=0)
     constructor = Mock()
     constructor.return_value.list_statuses.return_value = []
-    monkeypatch.setattr("ai_orchestrator.cli.Pipeline", constructor)
+    monkeypatch.setattr("ai_orchestrator.application.runtime.Pipeline", constructor)
     monkeypatch.setattr("ai_orchestrator.cli.CodexSdkManager", Mock())
-    monkeypatch.setattr("ai_orchestrator.cli.current_claude_api_key", lambda: "")
+    monkeypatch.setattr("ai_orchestrator.application.runtime.current_claude_api_key", lambda: "")
     args = ["--config", str(application.registry.get("project").config_path), "status"]
     assert main(args) == 0
     assert constructor.call_args.args[0].worker_mcp_servers == ()
@@ -172,7 +172,7 @@ def test_manual_probe_does_not_interrupt_a_tool_in_use_or_report_a_changed_confi
     selected = server()
     application.update_worker_mcp_connections("project", [selected.to_dict()], expected_revision=0, approved=True)
     probe = Mock(return_value={"status": "connected"})
-    monkeypatch.setattr("ai_orchestrator.desktop_rpc.check_mcp_connection", probe)
+    monkeypatch.setattr("ai_orchestrator.application.project_settings.check_mcp_connection", probe)
     with worker_mcp_lease((selected,)):
         result = application.check_worker_mcp_connection("project", selected.id, expected_revision=1)
     assert result["status"] == "error" and "사용 중" in result["message"]
@@ -230,15 +230,15 @@ def test_pipeline_propagates_tools_only_to_worker_calls_and_redacts_claude_outpu
     selected = server(bearer_token_env_var="FIXTURE_MCP_TOKEN")
     agent = AgentConfig("worker", ("general",), ("claude", "-p", "--allowedTools", "Read,Write"), provider_id="claude", model="sonnet")
     pipeline = Pipeline(Config(tmp_path / "cfg.toml", ProjectConfig(tmp_path), ExecutionConfig(), (agent,), worker_mcp_servers=(selected,)))
-    monkeypatch.setattr(pipeline, "_resolve_executable", lambda command: command)
-    monkeypatch.setattr("ai_orchestrator.pipeline.check_mcp_connection", lambda *args: {"status": "connected"})
+    monkeypatch.setattr(pipeline._common_runtime.provider_probes, "resolve_executable", lambda command: command)
+    monkeypatch.setattr("ai_orchestrator.execution.invocation.check_mcp_connection", lambda *args: {"status": "connected"})
     process = Mock(returncode=0)
     process.communicate.return_value = ("done fixture-sensitive-token", None)
     spawn = Mock(return_value=process)
-    monkeypatch.setattr("ai_orchestrator.pipeline.subprocess.Popen", spawn)
+    monkeypatch.setattr("ai_orchestrator.execution.provider_runner.subprocess.Popen", spawn)
     values = dict(agent=agent, command_template=agent.command, replacements={"{run_id}": "run"}, cwd=tmp_path,
                   prompt="implement", prompt_path="prompt", log_path=tmp_path / "worker.log", action="execute", task_id="task")
-    assert pipeline._invoke_provider_command(**values) == "done [REDACTED]"
+    assert pipeline._common_runtime.provider.invoke(**values) == "done [REDACTED]"
     assert "--strict-mcp-config" in spawn.call_args.args[0]
     assert "fixture-sensitive-token" not in json.dumps(spawn.call_args.args[0])
     assert "fixture-sensitive-token" not in values["log_path"].read_text()
@@ -246,13 +246,13 @@ def test_pipeline_propagates_tools_only_to_worker_calls_and_redacts_claude_outpu
     sdk.run_turn.return_value = "done"
     codex = replace(agent, command=(), provider_id="codex")
     pipeline._codex_sdk = sdk
-    pipeline._invoke_provider_command(**{**values, "agent": codex})
+    pipeline._common_runtime.provider.invoke(**{**values, "agent": codex})
     assert sdk.run_turn.call_args.args[0].mcp_servers == (selected,)
-    pipeline._invoke_provider_command(**{**values, "agent": codex, "action": "review"})
+    pipeline._common_runtime.provider.invoke(**{**values, "agent": codex, "action": "review"})
     assert sdk.run_turn.call_args.args[0].mcp_servers == ()
-    monkeypatch.setattr("ai_orchestrator.pipeline.check_mcp_connection", lambda *args: {"status": "error", "message": "도구 연결 실패"})
+    monkeypatch.setattr("ai_orchestrator.execution.invocation.check_mcp_connection", lambda *args: {"status": "error", "message": "도구 연결 실패"})
     with pytest.raises(PipelineError, match="도구 연결 실패"):
-        pipeline._invoke_provider_command(**values)
+        pipeline._common_runtime.provider.invoke(**values)
     queued, updates, results, failures = threading.Event(), [], [], []
     sdk.run_turn.reset_mock()
 
@@ -263,7 +263,7 @@ def test_pipeline_propagates_tools_only_to_worker_calls_and_redacts_claude_outpu
 
     def execute_when_ready():
         try:
-            results.append(pipeline._invoke_provider_command(
+            results.append(pipeline._common_runtime.provider.invoke(
                 **{**values, "agent": codex}, progress_callback=report, invocation_id="invocation",
             ))
         except Exception as exc:

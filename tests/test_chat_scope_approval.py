@@ -1,3 +1,8 @@
+
+from ai_orchestrator.persistence.run_lookup import find_task
+
+from ai_orchestrator.execution import scope_contract_digest
+from ai_orchestrator.planning.conversation import task_plan_draft
 import json
 import sys
 from copy import deepcopy
@@ -28,7 +33,7 @@ def accept(pipeline, run_id, message, task_id=""):
 def offer(pipeline, run_id):
     parent = accept(pipeline, run_id, "막힌 작업을 고쳐서 계속해")
     output = json.dumps({"action": "ask", "message": "필요한 두 파일의 경로 추가가 필요합니다.", "authorized": False})
-    with patch.object(pipeline, "_invoke_planning_agent", return_value=output):
+    with patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=output):
         result = pipeline.decide_project_chat(run_id, parent["request_id"])
     assert result["phase"] == "needs_input"
     assert result["payload"]["scope_proposal"]["paths"] == list(PATHS)
@@ -39,7 +44,7 @@ def consent_decision(pipeline, run_id, parent, intent="approve", evidence=None):
     proposal = parent["payload"]["scope_consent_candidate"]["proposal"]
     output = json.dumps({"proposal_id": scope_proposal_id(proposal), "intent": intent,
                          "evidence": parent["payload"]["message"] if evidence is None else evidence})
-    with patch.object(pipeline, "_invoke_planning_agent", return_value=output) as invoke:
+    with patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=output) as invoke:
         result = pipeline.decide_project_chat(run_id, parent["request_id"])
     invoke.assert_called_once()
     return result
@@ -52,15 +57,20 @@ def blocked(tmp_path):
                                execution=ExecutionConfig(), agents=(agent,)))
     task = WorkTask("runner", "Runner MCP", ["general"], agent_id="worker", expected_paths=["contracts.txt"],
                     status=TaskStatus.FAILED, failed_action=TaskAction.EXECUTE, last_attempt_id="current")
-    task.error = TaskScopeReview("승인·임대 정보 전달이 필요합니다.", PATHS).error(pipeline._task_scope_contract_digest(task))
+    task.error = TaskScopeReview("승인·임대 정보 전달이 필요합니다.", PATHS).error(scope_contract_digest(task))
     task.action_results = [TaskActionResult("execute", attempt_id="current", status="failed", error=task.error)]
     state = RunState("run", "plan.md", "goal", str(tmp_path), "main", Stage.FAILED, tasks=[task],
                      failed_step=RunStep.AGENT_EXECUTION, plan_revision=1, plan_approved_revision=1)
     pipeline.store.save(state)
-    with patch.object(pipeline, "status_with_controls", side_effect=lambda _: (pipeline.store.load(state.id), control, integration)), \
-            patch.object(pipeline, "_configure_planning_profile", return_value=agent), \
-            patch.object(pipeline, "_planning_effort_scope"):
-        # The production decision serializes controls as dataclasses.
+    with (
+        patch.object(
+            type(pipeline._common_runtime.runs),
+            'status_with_controls',
+            side_effect=lambda _: (pipeline.store.load(state.id), control, integration),
+        ),
+        patch.object(type(pipeline._common_runtime.planning.profiles), 'configure', return_value=agent),
+        patch.object(type(pipeline._common_runtime.planning_policy), 'scope'),
+    ):
         from ai_orchestrator.models import IntegrationControl, IntegrationStatus, RunExecutionAction, RunExecutionControl, RunExecutionSituation
         control = RunExecutionControl(RunExecutionSituation.RESUMABLE, RunExecutionAction.RESUME, "failed", RunLockState.UNLOCKED)
         integration = IntegrationControl(IntegrationStatus.NOT_READY, "failed", "failed", False, False)
@@ -121,7 +131,7 @@ def test_forbidden_paths_never_become_a_narrow_scope_approval(blocked):
     pipeline, state = blocked
     state.tasks[0].forbidden_paths = ["src/**"]
     pipeline.store.save(state)
-    assert pipeline._chat_scope_proposal(state) is None
+    assert pipeline._common_runtime.scope_proposals.proposal(state) is None
     assert "scope_approval" not in accept(pipeline, state.id, "두 경로 추가 승인하고 계속해")["payload"]
 
 
@@ -135,16 +145,16 @@ def test_direct_approval_requires_all_exact_paths_and_preserves_approval_only(bl
 
 
 def legacy_approval_reply(pipeline, run_id, message="승인한다!"):
-    with patch.object(pipeline, "_chat_scope_was_offered", return_value=False):
+    with patch.object(pipeline._common_runtime.execution.control, 'chat_scope_was_offered', return_value=False):
         record = accept(pipeline, run_id, message)
     operation = pipeline.store.load_operation(run_id, record["request_id"])
-    operation.payload["fingerprint"] = pipeline._project_chat_fingerprint(pipeline.store.load(run_id))
+    operation.payload["fingerprint"] = pipeline._common_runtime.scope_proposals.fingerprint(pipeline.store.load(run_id))
     operation.payload["decision"] = {"action": "reply", "authorized": False,
         "message": "두 파일 추가 승인은 확인했습니다. 다만 현재 백엔드가 승인 반영 도구인 approve_scope를 제공하지 않아 "
                    "경로 추가와 재시도를 실행할 수 없습니다. 추가 승인을 요청할 필요는 없습니다."}
     operation.update("completed", status="succeeded")
     pipeline.store.save_operation(operation)
-    pipeline._record_execution_chat(run_id, "", operation.payload["decision"]["message"])
+    pipeline._common_runtime.execution.messages.record(run_id, "", operation.payload["decision"]["message"])
     return operation
 
 
@@ -192,7 +202,7 @@ def test_model_tool_unavailable_reply_keeps_the_current_scope_question(blocked):
     parent = accept(pipeline, state.id, "경로 추가는 어떻게 해?")
     output = json.dumps({"action": "reply", "authorized": False,
         "message": "백엔드가 approve_scope를 제공하지 않아 실행할 수 없습니다."})
-    with patch.object(pipeline, "_invoke_planning_agent", return_value=output):
+    with patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=output):
         result = pipeline.decide_project_chat(state.id, parent["request_id"])
     assert result["phase"] == "needs_input"
     assert result["payload"]["scope_proposal"]["paths"] == list(PATHS)
@@ -203,11 +213,11 @@ def test_model_authorized_flag_cannot_forge_user_scope_consent(blocked):
     pipeline, state = blocked
     parent = accept(pipeline, state.id, "왜 실패한 거야?")
     output = json.dumps({"action": "approve_scope", "message": "승인됐습니다", "task_id": "runner", "authorized": True})
-    with patch.object(pipeline, "_invoke_planning_agent", return_value=output):
+    with patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=output):
         decision = pipeline.decide_project_chat(state.id, parent["request_id"])
     assert decision["phase"] == "needs_input"
     assert decision["payload"]["decision"]["authorized"] is False
-    with patch.object(pipeline, "_apply_pending_task_changes") as apply:
+    with patch.object(pipeline._common_runtime.planning.lifecycle, 'apply_pending') as apply:
         pipeline.perform_project_chat(state.id, parent["request_id"], decision["payload"]["step_id"])
     apply.assert_not_called()
     assert pipeline.store.load(state.id).tasks[0].expected_paths == ["contracts.txt"]
@@ -228,7 +238,7 @@ def test_cancelled_or_changed_approval_never_dispatches_scope_apply(blocked, cha
         else:
             current.tasks[0].forbidden_paths = ["tests/**"]
         pipeline.store.save(current)
-    with patch.object(pipeline, "_apply_pending_task_changes") as apply:
+    with patch.object(pipeline._common_runtime.planning.lifecycle, 'apply_pending') as apply:
         try:
             pipeline.perform_project_chat(state.id, parent["request_id"], decision["payload"]["step_id"])
         except PipelineError:
@@ -257,11 +267,11 @@ def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_
         item.verify_commands = [[sys.executable, "-c", "pass"]]
     task.verify_commands = [[sys.executable, "-c", "from pathlib import Path; "
         + "; ".join(f"assert Path({path!r}).read_text() == 'valid approval and lease'" for path in PATHS)]]
-    pipeline.update_plan(state.id, [pipeline._task_plan_draft(item) for item in state.tasks])
+    pipeline.update_plan(state.id, [task_plan_draft(item) for item in state.tasks])
     state = pipeline.confirm_plan(state.id)
-    pipeline._find_task(state, "done").status = TaskStatus.COMPLETED
-    pipeline._find_task(state, "done").completed_commit = pipeline.git.head(pipeline.repo)
-    task = pipeline._find_task(state, task.id)
+    find_task(state, "done").status = TaskStatus.COMPLETED
+    find_task(state, "done").completed_commit = pipeline.git.head(pipeline.repo)
+    task = find_task(state, task.id)
     pipeline.store.save(state)
     calls = []
 
@@ -272,14 +282,14 @@ def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_
             return "기존 구현 완료"
         return "AI_TASK_SCOPE_REVIEW: " + json.dumps({"reason": "승인·임대 메타데이터 전달 누락", "paths": PATHS}, ensure_ascii=False)
 
-    with patch.object(pipeline, "_invoke_agent", side_effect=first):
+    with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=first):
         failed = pipeline.execute(state.id)
     assert failed.stage == Stage.FAILED
     assert calls == [task.id, task.id]
-    task = pipeline._find_task(failed, task.id)
+    task = find_task(failed, task.id)
     original = deepcopy(task)
-    original_done = deepcopy(pipeline._find_task(failed, "done"))
-    original_next = deepcopy(pipeline._find_task(failed, "next"))
+    original_done = deepcopy(find_task(failed, "done"))
+    original_next = deepcopy(find_task(failed, "next"))
     if outcome != "mcp_approval":
         offer(pipeline, state.id)
         if outcome == "legacy_approval":
@@ -309,7 +319,10 @@ def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_
         if outcome == "cancel_after_apply" and operation.action == "task_scope_approval" and operation.phase == "applied":
             pipeline.cancel_chat_control(state.id, parent["request_id"])
 
-    with patch.object(pipeline, "_invoke_agent", side_effect=fix), patch.object(pipeline.store, "save_operation", side_effect=save_and_cancel):
+    with (
+        patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=fix),
+        patch.object(pipeline.store, 'save_operation', side_effect=save_and_cancel),
+    ):
         if outcome == "mcp_approval":
             review = pipeline.task_retry_context(state.id, task.id)["scope_review"]
             args = {"review_id": review["review_id"], "request_id": str(uuid4())}
@@ -323,12 +336,12 @@ def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_
             result = pipeline.perform_project_chat(state.id, parent["request_id"], step_id)
             replay = pipeline.perform_project_chat(state.id, parent["request_id"], step_id)
     updated = pipeline.store.load(state.id)
-    target = pipeline._find_task(updated, task.id)
+    target = find_task(updated, task.id)
     assert target.expected_paths == [*original.expected_paths, *PATHS]
     for name in ("acceptance_criteria", "verify_commands", "forbidden_paths", "dependencies", "started_commit", "agent_id", "model"):
         assert getattr(target, name) == getattr(original, name)
-    assert pipeline._find_task(updated, "done") == original_done
-    actual_next = deepcopy(pipeline._find_task(updated, "next"))
+    assert find_task(updated, "done") == original_done
+    actual_next = deepcopy(find_task(updated, "next"))
     # Completing the dependency legitimately recalculates readiness; its contract and history stay unchanged.
     actual_next.readiness, actual_next.blocked_by = original_next.readiness, original_next.blocked_by
     assert actual_next == original_next
@@ -361,7 +374,7 @@ def test_approval_updates_plan_and_prompt_then_retries_only_the_failed_task(tmp_
     if outcome in {"complete", "legacy_approval"}:
         assert pipeline.advance_chat_control(state.id, parent["request_id"])["next_action"] == "decide"
         output = json.dumps({"action": "reply", "message": "두 경로를 반영하고 해당 작업의 검증을 통과했습니다.", "authorized": False})
-        with patch.object(pipeline, "_invoke_planning_agent", return_value=output) as model:
+        with patch.object(pipeline._common_runtime.planning.ai, 'invoke', return_value=output) as model:
             final = pipeline.decide_project_chat(state.id, parent["request_id"])
         model.assert_called_once()
         assert final["phase"] == "completed"

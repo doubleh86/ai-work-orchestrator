@@ -22,7 +22,7 @@ def pipeline(root: Path) -> Pipeline:
 
 
 def invoke(result: Pipeline, root: Path, context: UsageContext) -> str:
-    return result._invoke_provider_command(
+    return result._common_runtime.provider.invoke(
         agent=result.agents["planner"], command_template=(), replacements={"{run_id}": "group"},
         cwd=root, prompt="plan", prompt_path=str(root / "prompt.md"), log_path=root / "agent.log",
         action="planning", task_id="planning", model="gpt-6.1-sol", usage_context=context,
@@ -95,8 +95,8 @@ def test_purpose_from_planning_binding_ignores_execution_reservation(tmp_path: P
     result._codex_sdk.run_turn.return_value = "answer"
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Plan", encoding="utf-8")
-    with result._planning_effort_scope(state, purpose="recovery_planning"):
-        result._invoke_planning_agent(state, result.agents["planner"], "Plan", prompt_path, tmp_path / "agent.log")
+    with result._common_runtime.planning_policy.scope(state, purpose="recovery_planning"):
+        result._common_runtime.planning.ai.invoke(state, result.agents["planner"], "Plan", prompt_path, tmp_path / "agent.log")
     row = result.usage("group")["records"][0]
     assert row["purpose"] == "recovery_planning" and row["mode"] == "balanced"
     assert row["operation_request_id"] and row["policy_id"]

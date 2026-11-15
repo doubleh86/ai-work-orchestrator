@@ -7,6 +7,7 @@ AI Work Orchestrator 작업자가 먼저 확인할 문서를 안내한다.
 - 작업 시작: `AGENTS.md`, 있으면 로컬 참고용 `AGENTS.local.md`
 - 코드 작업: `Docs/CodeStyle.md`
 - 검증 범위·선택 명령·종료 기준: [검증 기준](Testing.md)
+- 별도로 요청받은 변경/전체 정적 코드 리뷰: [코드 리뷰 기준](CodeReview.md)
 - 모듈 구조와 의존 방향: `Docs/Architecture.md`
 - Git·worktree 운영: `Docs/RepositoryWorkflow.md`; 커밋 요청 시 `Docs/GitCommitConvention.md`
 - 계획 문서 필요 여부와 구현·검증 기록: `DevDocument/Plan/README.md`
@@ -20,10 +21,13 @@ AI Work Orchestrator 작업자가 먼저 확인할 문서를 안내한다.
 | 사용자 흐름·화면·사용성 제보 | `desktop/renderer/` | `README.md`, `Docs/Architecture.md` |
 | 기획을 구현 계약으로 구체화 | 해당 기능의 Python 코어·renderer | `Docs/Architecture.md`, [코드 작업 계획](../DevDocument/Plan/README.md) |
 | CLI 명령과 출력 | `src/ai_orchestrator/cli.py` | `README.md`, `Docs/Architecture.md` |
-| 단계 전이와 실행 조정 | `src/ai_orchestrator/pipeline.py` | `Docs/Architecture.md`, 계획 문서 |
-| 명세 파싱과 에이전트 배정 | `src/ai_orchestrator/planner.py` | `Docs/Architecture.md` |
-| Git과 외부 명령 | `src/ai_orchestrator/git.py` | `Docs/RepositoryWorkflow.md` |
-| 상태 모델과 저장 | `src/ai_orchestrator/models.py`, `store.py` | `Docs/Architecture.md` |
+| 단계 전이와 실행 조정 | `src/ai_orchestrator/pipeline.py` | `Docs/Architecture.md`, [Pipeline 재설계](../DevDocument/Design/Technical/2026-11-15-pipeline-orchestration-redesign.md), [이행 계획](../DevDocument/Plan/2026-11-15-pipeline-orchestration-redesign.md) |
+| 명세 파싱과 에이전트 배정 | `src/ai_orchestrator/planning/`, `planner.py` | `Docs/Architecture.md` |
+| 실행·검증·리뷰/복구 | `src/ai_orchestrator/execution/`, `pipeline.py` | `Docs/Architecture.md`, `Docs/Testing.md` |
+| 공용 기능과 RPC/MCP 진입점 | `src/ai_orchestrator/application/`, `rpc/`, `desktop_rpc.py`, `mcp_operations.py` | `Docs/Architecture.md` |
+| Git·통합·작업공간 | `src/ai_orchestrator/integration/`, `git.py` | `Docs/Architecture.md`, `Docs/RepositoryWorkflow.md` |
+| 상태 모델과 저장 | `src/ai_orchestrator/state/`, `persistence/`, `models.py`, `store.py` | `Docs/Architecture.md` |
+| 별도 코드 리뷰 | 요청된 diff·영역과 직접 소비자 | [코드 리뷰 기준](CodeReview.md) |
 | TOML 설정 | `src/ai_orchestrator/config.py` | `README.md` |
 | 커밋 메시지 | Git history | `Docs/GitCommitConvention.md` |
 

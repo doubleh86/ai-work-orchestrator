@@ -14,7 +14,7 @@ from dataclasses import asdict
 from pathlib import Path, PureWindowsPath
 from typing import Any, cast
 
-from .desktop_rpc import DesktopApplication
+from .application import OrchestratorApplication
 from .file_lock import exclusive_file_lock
 from .models import RunState, RunSummary, Stage, UserCheck, utc_now
 from .registry import RegisteredProject, RegistryError
@@ -65,7 +65,7 @@ class McpOperations:
     """Host-scoped orchestration tools over the same registry and Pipeline as the app."""
 
     def __init__(
-        self, application: DesktopApplication, *, allow_write: bool = False, allow_planning: bool = False,
+        self, application: OrchestratorApplication, *, allow_write: bool = False, allow_planning: bool = False,
         allow_control: bool = False, projects_root: Path | None = None,
     ):
         self.application = application

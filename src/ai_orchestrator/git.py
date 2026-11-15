@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .git_contracts import GitError as GitError, LOCAL_GIT_TIMEOUT_SECONDS as LOCAL_GIT_TIMEOUT_SECONDS
+
 import locale
 import hashlib
 import os
@@ -18,8 +20,6 @@ from typing import BinaryIO, Mapping, Sequence
 from .execution_control import CancellationSignal, ExecutionStopped
 
 
-class GitError(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +77,6 @@ def diagnose_dotnet(executable: str, cwd: Path) -> DotnetDiagnostic:
 
 
 REMOTE_GIT_TIMEOUT_SECONDS = 60
-LOCAL_GIT_TIMEOUT_SECONDS = 30
 _WINDOWS_BATCH_UNSAFE_ARGUMENT_CHARACTERS = frozenset('&|<>^()%!"\r\n')
 _WINDOWS_WORKTREE_DELETE_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6)
 _WINDOWS_WORKTREE_LOCK_ERROR_CODES = frozenset({5, 32, 33})

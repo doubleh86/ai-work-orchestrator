@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from .models import ConflictResolutionStatus, RunState, Stage, TaskStatus, UserNotificationEvent, WorkTask
+from ..models import ConflictResolutionStatus, RunState, Stage, TaskStatus, UserNotificationEvent, WorkTask
 
 
 def retry_wait_event(
@@ -42,7 +42,9 @@ def notification_events_for_state(state: RunState, *, project_key: str, deployme
                 _task_attention_event(state, project_key, task, "manual_task_required", task.last_attempt_id or task.started_commit or "waiting")
             )
         if task.status == TaskStatus.STOPPED:
-            events.append(_task_attention_event(state, project_key, task, "stopped_task_requires_action", task.stop_request_id or task.last_attempt_id))
+            events.append(_task_attention_event(
+                state, project_key, task, "stopped_task_requires_action", task.stop_request_id or task.last_attempt_id,
+            ))
 
     if state.stage == Stage.NEEDS_CLARIFICATION:
         events.append(

@@ -37,7 +37,7 @@ def test_completed_stages_never_resume_from_historical_execution_records(complet
     state.failure_message = "historical failure"
     record = ExecutionControlRecord(run_id=state.id, execution_id="old", scope="verification", owner_pid=123, phase=phase)
     before = state.to_dict()
-    control = pipeline._run_execution_control(state, RunLockStatus(run_id=state.id, state=RunLockState.UNLOCKED), record)
+    control = pipeline._common_runtime.runs.controls.execution_control(state, RunLockStatus(run_id=state.id, state=RunLockState.UNLOCKED), record)
     expected = RunExecutionSituation.STATUS_UNKNOWN if phase == "confirmation_required" else RunExecutionSituation.TASKS_COMPLETE
     assert control.situation == expected
     assert control.action == RunExecutionAction.NONE
@@ -57,7 +57,7 @@ def test_completed_run_lock_remains_authoritative_for_execution_and_merge(comple
     pipeline.git.current_branch.return_value = "main"
     pipeline.git.has_uncommitted_changes.return_value = False
     pipeline.git.branch_exists.return_value = True
-    execution = pipeline._run_execution_control(state, lock, record)
+    execution = pipeline._common_runtime.runs.controls.execution_control(state, lock, record)
     integration = pipeline._integration_control(state, lock)
     assert execution.action == RunExecutionAction.NONE
     assert execution.situation != RunExecutionSituation.RESUMABLE
@@ -75,7 +75,10 @@ def test_rejected_resume_does_not_replace_execution_evidence_or_run_tasks(comple
         ExecutionControlRecord(run_id=state.id, execution_id="preserved", scope="verification", owner_pid=123, phase="stopped")
     )
     before = {path.name: path.read_bytes() for path in pipeline.store.run_dir(state.id).glob("*.json")}
-    with patch.object(pipeline, "_execution_session") as session, patch.object(pipeline, "_resume") as resume:
+    with (
+        patch.object(type(pipeline._common_runtime.execution_control), 'owned_session') as session,
+        patch.object(pipeline._common_runtime.execution.flow, 'resume') as resume,
+    ):
         with pytest.raises(PipelineError, match="has no resumable failure"):
             pipeline.resume(state.id)
     session.assert_not_called()
@@ -91,7 +94,7 @@ def test_real_failure_and_interrupted_execution_still_offer_resume(completed_run
     for stage in [Stage.EXECUTING, Stage.FAILED]:
         state.stage = stage
         state.failed_step = RunStep.AGENT_EXECUTION if stage == Stage.FAILED else None
-        control = pipeline._run_execution_control(state, lock)
+        control = pipeline._common_runtime.runs.controls.execution_control(state, lock)
         assert control.action == RunExecutionAction.RESUME
 
 

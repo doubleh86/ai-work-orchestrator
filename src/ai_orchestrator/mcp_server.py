@@ -14,7 +14,7 @@ from mcp.shared.exceptions import McpError
 from mcp.types import Tool, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
-from .desktop_rpc import DesktopApplication
+from .application import OrchestratorApplication
 from .mcp_operations import McpOperations
 from .models import UserCheck
 from .registry import ProjectRegistry
@@ -377,7 +377,7 @@ def serve(
         serve_source_checkout(registry.path, name=_SERVER_NAME, instructions=_SERVER_INSTRUCTIONS)
         return
 
-    application = DesktopApplication(registry)
+    application = OrchestratorApplication(registry)
     operations = None
     try:
         if allow_control and projects_root is None:
