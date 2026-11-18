@@ -11175,7 +11175,7 @@ else:
             self.assertIn("Create `AGENTS.md` with exactly", prompt)
             self.assertIn(spec.agent_instructions.rendered_content.rstrip(), prompt)  # type: ignore[union-attr]
             self.assertEqual(len(spec.digest), 64)
-            pipeline._verify_bootstrap_spec_current(state)
+            pipeline._common_runtime.planning.bootstrap().verify_current(state)
 
             with self.assertRaisesRegex(PipelineError, "기술 구성 결정이 변경"):
                 pipeline.configure_bootstrap_agent_instructions(
@@ -11287,7 +11287,7 @@ else:
                 )
             (repo / "AGENTS.md").write_text("# Edited instructions\n", encoding="utf-8")
             with self.assertRaisesRegex(PipelineError, "AGENTS.md"):
-                pipeline._verify_bootstrap_spec_current(state)
+                pipeline._common_runtime.planning.bootstrap().verify_current(state)
 
     def test_greenfield_plan_accepts_only_questions_then_one_bootstrap_task(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

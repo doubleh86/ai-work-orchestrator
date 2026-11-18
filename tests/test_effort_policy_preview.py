@@ -33,7 +33,7 @@ class EffortPolicyPreviewTest(unittest.TestCase):
     def _task(task_id: str, source: ProfileSource, *, reviewer_agent_id: str = "") -> WorkTask:
         return WorkTask(
             task_id, task_id, ["general"], agent_id="worker", provider_id="codex", model="gpt-6-sol",
-            reasoning_effort="medium", profile_source=source, expected_paths=["src/**"], reviewer_agent_id=reviewer_agent_id,
+            reasoning_effort="medium", profile_source=source, expected_paths=[f"src/{task_id}.py"], reviewer_agent_id=reviewer_agent_id,
         )
 
     def test_preview_preserves_manual_and_legacy_profiles_without_writes(self) -> None:

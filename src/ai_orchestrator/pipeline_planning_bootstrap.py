@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 from .code_style import CodeStyleSnapshot, inspect_project_code_style
@@ -312,7 +313,7 @@ def build_planning_commands(
             ),
             command_with_session=command_with_claude_session,
             with_effort_mode_guidance=with_effort_mode_guidance,
-            record_progress=record_planning_progress,
+            record_progress=partial(record_planning_progress, state_lock=resources.state_lock),
             conversation_id=planning_conversation_id,
             invoke_provider=provider.invoke,
         )

@@ -130,7 +130,7 @@ class EffortExecutionBindingTest(unittest.TestCase):
                 remote = self._pipeline(root)
                 target = current.tasks[-1]
                 remote.update_task_execution_profile(
-                    current.id, target.id, agent_id="worker", model="gpt-6.1-sol", reasoning_effort="high",
+                    current.id, target.id, agent_id="worker", model="gpt-6.2-sol", reasoning_effort="high",
                     expected_profile=task_execution_profile_snapshot(target),
                 )
                 self.assertEqual(target.reasoning_effort, "medium")

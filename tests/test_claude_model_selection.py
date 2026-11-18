@@ -165,7 +165,7 @@ def test_automatic_claude_planning_is_pinned_and_matches_invocation_without_chan
                      planning_agent_id="worker", planning_provider_id="claude", planning_model="sonnet",
                      planning_profile_source=ProfileSource.ROUTING)
     pipeline.store.save(state)
-    pipeline._pin_automatic_planning_profile(state)
+    pipeline._common_runtime.planning.profiles.pin_automatic(state)
     assert (state.planning_model, state.planning_reasoning_effort) == ("opus", "high")
     prompt = tmp_path / "planning.md"
     prompt.write_text("fixture plan", encoding="utf-8")

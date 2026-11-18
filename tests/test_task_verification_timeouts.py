@@ -247,7 +247,7 @@ def test_policy_refresh_does_not_silently_change_an_existing_run(verification):
     pipeline, state, _, _ = verification
     state.task_verify_command_timeout_seconds = 300
     state.task_verify_total_timeout_seconds = 600
-    pipeline._ensure_verification_policy(state)
+    pipeline._common_runtime.execution.flow.ensure_verification(state)
     assert (state.task_verify_command_timeout_seconds, state.task_verify_total_timeout_seconds) == (300, 600)
     state.task_verify_command_timeout_seconds = 1200
     state.task_verify_total_timeout_seconds = 2400

@@ -58,7 +58,7 @@ def test_completed_run_lock_remains_authoritative_for_execution_and_merge(comple
     pipeline.git.has_uncommitted_changes.return_value = False
     pipeline.git.branch_exists.return_value = True
     execution = pipeline._common_runtime.runs.controls.execution_control(state, lock, record)
-    integration = pipeline._integration_control(state, lock)
+    integration = pipeline._common_runtime.runs.controls.integration_control(state, lock)
     assert execution.action == RunExecutionAction.NONE
     assert execution.situation != RunExecutionSituation.RESUMABLE
     assert not integration.can_verify
@@ -109,5 +109,5 @@ def test_verified_merge_eligibility_keeps_existing_backend_conditions(completed_
     lock = RunLockStatus(run_id=state.id, state=RunLockState.UNLOCKED)
     for stage, can_verify, can_merge in [(Stage.READY_TO_MERGE, True, False), (Stage.VERIFIED, False, True), (Stage.MERGED, False, False)]:
         state.stage = stage
-        control = pipeline._integration_control(state, lock)
+        control = pipeline._common_runtime.runs.controls.integration_control(state, lock)
         assert (control.can_verify, control.can_apply_main) == (can_verify, can_merge)

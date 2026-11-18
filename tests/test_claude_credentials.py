@@ -89,7 +89,9 @@ def test_auth_query_and_provider_selection_use_app_key_without_exposing_it(tmp_p
     assert execute.call_args.kwargs["env"]["ANTHROPIC_API_KEY"] == "fixture-key"
     execute.return_value = subprocess.CompletedProcess([], 1, json.dumps({"loggedIn": False}), "")
     with pytest.raises(PipelineError, match="Claude API 키 인증 상태"):
-        provider_connection.ensure_planning_provider_ready(pipeline.agents["worker"])
+        provider_connection.ensure_planning_provider_ready(
+            pipeline.agents["worker"], read_statuses=pipeline.provider_statuses, api_key="fixture-key",
+        )
     execute.return_value = subprocess.CompletedProcess([], 0, json.dumps({
         "loggedIn": True, "authMethod": "claude.ai", "email": "fixture-key", "subscriptionType": "pro",
     }), "")
