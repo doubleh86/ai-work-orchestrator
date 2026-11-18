@@ -27,7 +27,7 @@ def assign(selected_tasks, *, agents=AGENTS, routing=None, available=None, seque
 def test_auto_profiles_balance_by_provider_and_resolve_models_without_adding_review():
     selected = assign(tasks(6))
     assert [task.provider_id for task in selected] == ["codex", "claude"] * 3
-    assert [task.model for task in selected] == ["gpt-6.1-sol", "opus"] * 3
+    assert [task.model for task in selected] == ["gpt-6.2-astra", "opus"] * 3
     assert all(task.profile_source == ProfileSource.MODE for task in selected)
     assert all(task.review_status == ReviewStatus.NOT_REQUIRED and not task.reviewer_agent_id for task in selected)
     assert all(task.routing_reason == "connected provider workload balance" for task in selected)
@@ -63,8 +63,8 @@ def test_unavailable_agents_are_not_used_when_recommendation_is_empty():
 
 def test_manual_recommended_and_rule_profiles_are_preserved():
     manual = WorkTask("manual", "직접 선택", ["backend"], agent_id="codex", provider_id="codex",
-                      model="gpt-6.1-sol", reasoning_effort="high", profile_source=ProfileSource.MANUAL)
-    recommended = WorkTask("recommend", "추천", ["backend"], provider_id="codex", model="gpt-6.1-sol", reasoning_effort="max")
+                      model="gpt-6.2-sol", reasoning_effort="high", profile_source=ProfileSource.MANUAL)
+    recommended = WorkTask("recommend", "추천", ["backend"], provider_id="codex", model="gpt-6.2-sol", reasoning_effort="max")
     selected = assign([manual, recommended, *tasks(2)])
     assert [(task.provider_id, task.reasoning_effort) for task in selected[:2]] == [("codex", "high"), ("codex", "max")]
     assert manual.profile_source == ProfileSource.MANUAL

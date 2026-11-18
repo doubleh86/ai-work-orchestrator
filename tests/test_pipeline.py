@@ -2046,7 +2046,7 @@ class PipelineTest(unittest.TestCase):
                         pipeline.store.save(state)
                         original = deepcopy(state.tasks[0])
                         proposal = task_plan_draft(original)
-                        proposal.update(description="보강한 작업 설명", provider_id="codex", model="gpt-6.1-sol", reasoning_effort="medium")
+                        proposal.update(description="보강한 작업 설명", provider_id="codex", model="gpt-6.2-sol", reasoning_effort="medium")
                         output = "AI_PLAN_RESULT: " + json.dumps({"summary": state.summary, "server_work": False,
                                                                  "tasks": [proposal], "questions": []}, ensure_ascii=False)
                         with (
@@ -6630,7 +6630,7 @@ class PipelineTest(unittest.TestCase):
             original = deepcopy(state.tasks)
             instruction = "코덱스만 쓰는 걸로 테스크를 변경 해줘"
             proposal = task_plan_draft(state.tasks[0])
-            proposal.update(provider_id="codex", model="gpt-6.1-sol", reasoning_effort="medium",
+            proposal.update(provider_id="codex", model="gpt-6.2-sol", reasoning_effort="medium",
                             verify_commands=[[sys.executable, "-c", "pass"]])
             output = "AI_PLAN_RESULT: " + json.dumps({"summary": state.summary, "server_work": False,
                                                        "tasks": [proposal], "questions": []}, ensure_ascii=False)
@@ -6650,7 +6650,7 @@ class PipelineTest(unittest.TestCase):
                 candidate_digest=preview["candidate_digest"],
             )["run"]
             self.assertEqual((applied.tasks[0].agent_id, applied.tasks[0].provider_id), (codex.id, "codex"))
-            self.assertEqual(applied.tasks[0].model, "gpt-6.1-sol")
+            self.assertEqual(applied.tasks[0].model, "gpt-6.2-sol")
             self.assertEqual(applied.tasks[0].status, TaskStatus.PENDING)
             self.assertEqual(applied.stage, Stage.PLANNED)
 

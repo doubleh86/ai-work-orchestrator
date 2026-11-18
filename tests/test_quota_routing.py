@@ -223,16 +223,20 @@ def test_fallback_keeps_codex_code_failure_escalation_and_snapshot_evidence(quot
         task,
         TaskVerificationFailure(task.id, ['check'], 'assertion failed', tmp_path / 'check.log'),
     )
-    assert task.model == "gpt-6.1-sol"
+    assert task.model == "gpt-6.2-sol"
     pipeline._common_runtime.execution.policy.validate_effort_execution_snapshot(state, policy)
 
 
 def test_dispatch_invokes_the_replacement_only_after_saving_selection(quota_run, monkeypatch, tmp_path):
     pipeline, state, usage, reader, policy = quota_run
-    for name in ["_ensure_verification_policy", "_require_confirmed_profiles", "_ensure_execution_workspace_ready", "_prepare_tasks",
-                 "_merge_task_dependencies", "_record_task_start_commit", "_preflight_task_environment", "_advance_completed_tasks"]:
-        monkeypatch.setattr(pipeline, name, Mock())
-    monkeypatch.setattr(pipeline._common_runtime.execution.flow, 'apply_queued_changes_after_batch', lambda state: None)
+    flow = pipeline._common_runtime.execution.flow
+    monkeypatch.setattr(flow, "ensure_verification", Mock())
+    monkeypatch.setattr(type(flow.policy), "require_confirmed_profiles", Mock())
+    monkeypatch.setattr(type(flow.workspace), "ensure_execution_workspace_ready", Mock())
+    monkeypatch.setattr(flow, "preparation", Mock())
+    monkeypatch.setattr(flow, "prepare_task_for_dispatch", Mock())
+    monkeypatch.setattr("ai_orchestrator.execution.flow.advance_completed_tasks", Mock())
+    monkeypatch.setattr(flow, "apply_queued_changes_after_batch", lambda state: None)
     invocations = []
 
     def run_task(current, task, action):

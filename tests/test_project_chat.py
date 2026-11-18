@@ -84,7 +84,7 @@ def test_question_and_scope_change_finish_without_execution(project_chat):
 @pytest.fixture
 def failed_profile_task(project_chat):
     pipeline, state, invoke, control, integration = project_chat
-    codex = AgentConfig(id="codex-general", capabilities=("general",), command=(), provider_id="codex", model="gpt-6.1-sol")
+    codex = AgentConfig(id="codex-general", capabilities=("general",), command=(), provider_id="codex", model="gpt-6.2-sol")
     pipeline.config = replace(pipeline.config, agents=(*pipeline.config.agents, codex))
     pipeline.agents[codex.id] = codex
     pipeline._codex_sdk = object()
@@ -105,7 +105,7 @@ def failed_profile_task(project_chat):
 
 def test_chat_saves_named_failed_task_profile_without_plan_approval_or_execution(failed_profile_task):
     pipeline, state, invoke = failed_profile_task
-    parent = accept(pipeline, state, "실패한 훅 인수 작업만 Codex(gpt-6.1-sol/high)로 바꿔줘")
+    parent = accept(pipeline, state, "실패한 훅 인수 작업만 Codex(gpt-6.2-sol/high)로 바꿔줘")
     decision = pipeline.decide_project_chat(state.id, parent["request_id"])
     with patch.object(pipeline._common_runtime.execution.flow, 'execute') as execute:
         assert perform(pipeline, state, decision)["status"] == "succeeded"
@@ -114,23 +114,23 @@ def test_chat_saves_named_failed_task_profile_without_plan_approval_or_execution
     invoke.assert_not_called()
     saved = pipeline.store.load(state.id)
     task = saved.tasks[0]
-    assert (task.provider_id, task.model, task.reasoning_effort) == ("codex", "gpt-6.1-sol", "high")
+    assert (task.provider_id, task.model, task.reasoning_effort) == ("codex", "gpt-6.2-sol", "high")
     assert (task.status, task.last_attempt_id) == (TaskStatus.FAILED, "previous-claude-attempt")
     assert task.expected_paths == ["docs/result.md"] and task.verify_commands == [["git", "diff", "--check"]]
     assert saved.tasks[1] == state.tasks[1]
     assert saved.plan_revision == saved.plan_approved_revision == 1
-    assert "Codex · gpt-6.1-sol · high" in saved.planning_messages[-1].text
+    assert "Codex · gpt-6.2-sol · high" in saved.planning_messages[-1].text
 
 
 def test_chat_changes_profile_before_explicit_combined_retry(failed_profile_task):
     pipeline, state, invoke = failed_profile_task
-    message = "‘[선택] 실제 앱 훅 설치·관측·해제 인수’ 실행 AI를 Codex(gpt-6.1-sol/high)로 바꾸고 계속해줘"
+    message = "‘[선택] 실제 앱 훅 설치·관측·해제 인수’ 실행 AI를 Codex(gpt-6.2-sol/high)로 바꾸고 계속해줘"
     parent = accept(pipeline, state, message)
     decision = pipeline.decide_project_chat(state.id, parent["request_id"])
 
     def execute_saved(current, **kwargs):
         assert kwargs["recover_saved_profiles"] is True
-        assert (current.tasks[0].provider_id, current.tasks[0].model, current.tasks[0].reasoning_effort) == ("codex", "gpt-6.1-sol", "high")
+        assert (current.tasks[0].provider_id, current.tasks[0].model, current.tasks[0].reasoning_effort) == ("codex", "gpt-6.2-sol", "high")
         assert pipeline.store.load(state.id).tasks[0].provider_id == "codex"
         assert current.tasks[1] == state.tasks[1]
         current.tasks[0].status = TaskStatus.COMPLETED
@@ -148,7 +148,7 @@ def test_chat_changes_profile_before_explicit_combined_retry(failed_profile_task
 @pytest.mark.parametrize("condition", ["unavailable", "new_attempt"])
 def test_chat_does_not_recover_with_old_profile_when_change_cannot_be_saved(failed_profile_task, condition):
     pipeline, state, invoke = failed_profile_task
-    parent = accept(pipeline, state, "실패 작업을 Codex(gpt-6.1-sol/high)로 바꾸고 계속해줘")
+    parent = accept(pipeline, state, "실패 작업을 Codex(gpt-6.2-sol/high)로 바꾸고 계속해줘")
     decision = pipeline.decide_project_chat(state.id, parent["request_id"])
     if condition == "new_attempt":
         current = pipeline.store.load(state.id)

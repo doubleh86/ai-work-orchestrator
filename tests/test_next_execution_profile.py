@@ -198,7 +198,7 @@ def test_queued_profile_can_be_changed_again_and_rejects_old_visible_snapshot(pr
         visible = save(pipeline, state)
         with pytest.raises(PipelineError, match="최신 설정"):
             save(pipeline, state)
-        updated = save(pipeline, visible, agent_id="codex", model="gpt-6.1-sol", reasoning_effort="medium")
+        updated = save(pipeline, visible, agent_id="codex", model="gpt-6.2-sol", reasoning_effort="medium")
         assert updated.tasks[-1].reasoning_effort == "medium"
         assert state.tasks[-1].reasoning_effort == "high"
 

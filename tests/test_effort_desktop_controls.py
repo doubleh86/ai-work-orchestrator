@@ -29,7 +29,7 @@ def pipeline(tmp_path: Path) -> Pipeline:
     result._codex_sdk.account_status.return_value = CodexSdkAccountStatus(True, "chatgpt", "로그인됨")
     task = WorkTask(
         "t01", "Update app", ["general"], agent_id="worker", provider_id="codex", model="gpt-6.1-sol",
-        reasoning_effort="medium", profile_source=ProfileSource.ROUTING, expected_paths=["src/**"],
+        reasoning_effort="medium", profile_source=ProfileSource.ROUTING, expected_paths=["src/app.py"],
         description="Change app", acceptance_criteria=["Works"], verify_commands=[[sys.executable, "-c", "pass"]],
     )
     result.store.save(RunState(
