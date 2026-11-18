@@ -202,9 +202,12 @@ class PipelineTest(unittest.TestCase):
                 stage=Stage.PUSHED, tasks=[WorkTask("done", "완료", ["general"], status=TaskStatus.COMPLETED)],
             )
             pipeline.store.save(source)
-            question = pipeline._parse_result_revision_proposal(
+            from ai_orchestrator.planning import parse_result_revision_proposal, result_revision_available_paths
+
+            question = parse_result_revision_proposal(
                 source,
                 'AI_RESULT_REVISION_PROPOSAL: {"summary":"","reason":"","task_ids":[],"paths":[],"question":"어느 문구를 바꿀까요?"}',
+                available_paths=result_revision_available_paths,
             )
             self.assertEqual(question["status"], "needs_clarification")
             self.assertEqual(question["task_ids"], [])
