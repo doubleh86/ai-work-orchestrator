@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections import Counter
 
+from ..codex_model_preferences import CODEX_MODEL_PRESETS, codex_model_order, enabled_codex_models
 from ..config import AgentConfig, RoutingConfig, supported_models, supported_reasoning_efforts
+from ..model_selection import automatic_claude_profile, select_claude_model, select_codex_model
 from ..models import EffortMode, ProfileSource, ReviewStatus, WorkTask
-from ..model_selection import AUTOMATIC_CODEX_MODELS, CODEX_SOL_MODEL, automatic_claude_profile, select_claude_model, select_codex_model
 from .contracts import Plan, PlanningError
 
 
@@ -17,12 +18,13 @@ def assign_plan_agents(
     additional_models: dict[str, tuple[str, ...]] | None = None,
     sequential: bool = False,
     effort_mode: EffortMode | None = None,
+    preserved_profile_ids: frozenset[str] = frozenset(),
 ) -> Plan:
     if plan.questions:
         raise PlanningError("cannot assign agents while clarification is required")
     assign_agents(
         plan.tasks, agents, routing or RoutingConfig(), execution_agent_ids=execution_agent_ids,
-        additional_models=additional_models, sequential=sequential, effort_mode=effort_mode,
+        additional_models=additional_models, sequential=sequential, effort_mode=effort_mode, preserved_profile_ids=preserved_profile_ids,
     )
     return plan
 
@@ -91,6 +93,8 @@ def assign_task_agent_overrides(
         task.provider_id = selected.provider_id
         if overridden:
             task.model = selected.model
+            if selected.provider_id == "codex" and (not task.model or task.model in CODEX_MODEL_PRESETS):
+                task.model = codex_model_order(preferred=task.model)[0]
         if changed:
             task.routing_reason = "user selected execution provider"
             task.routing_confidence = 1.0
@@ -114,6 +118,7 @@ def assign_agents(
     additional_models: dict[str, tuple[str, ...]] | None = None,
     sequential: bool = False,
     effort_mode: EffortMode | None = None,
+    preserved_profile_ids: frozenset[str] = frozenset(),
 ) -> None:
     assigned: Counter[str] = Counter()
     provider_assignments: Counter[str] = Counter()
@@ -142,27 +147,30 @@ def assign_agents(
                 task, routing, execution_agents, assigned, provider_assignments, sequential=sequential,
             )
         selected = _select_agent(task, selectable_agents, assigned, provider_id=provider_id, purpose="execution", sequential=sequential)
-        available_models = supported_models(
-            selected.provider_id, tuple(agent.model for agent in agents if agent.provider_id == selected.provider_id and agent.model)
-        )
-        available_models += (additional_models or {}).get(selected.provider_id, ())
-        if selected.provider_id == "codex" and not manual:
-            available_models = AUTOMATIC_CODEX_MODELS
-        if recommended_model and recommended_model not in available_models:
+        codex_models = enabled_codex_models() if selected.provider_id == "codex" else None
+        if codex_models is not None and not manual:
+            available_models = codex_models
+        else:
+            configured = tuple(agent.model for agent in agents if agent.provider_id == selected.provider_id and agent.model)
+            extra_models = (additional_models or {}).get(selected.provider_id, ())
+            available_models = supported_models(selected.provider_id, (*configured, *extra_models))
+        saved_codex_model = manual and task.id in preserved_profile_ids and codex_models is not None and recommended_model in CODEX_MODEL_PRESETS
+        if recommended_model and recommended_model not in available_models and not saved_codex_model:
             available = ", ".join(available_models) or "provider default only"
             raise PlanningError(
                 f"task {task.id} recommends unsupported model for {selected.provider_id}: {recommended_model}; available: {available}"
             )
         selected_model = recommended_model if manual else recommended_model or selected.model
         if manual and selected.provider_id == "codex" and not selected_model:
-            selected_model = CODEX_SOL_MODEL
+            selected_model = codex_model_order(enabled=codex_models)[0]
         if recommended_effort:
-            supported_efforts = supported_reasoning_efforts(selected.provider_id, selected_model)
+            effort_model = recommended_model if codex_models is not None and not manual else selected_model
+            supported_efforts = supported_reasoning_efforts(selected.provider_id, effort_model)
             if recommended_effort not in supported_efforts:
                 available = ", ".join(supported_efforts) or "provider default only"
                 raise PlanningError(
                     f"task {task.id} recommends unsupported reasoning effort for "
-                    f"{selected.provider_id}/{selected_model or 'default model'}: "
+                    f"{selected.provider_id}/{effort_model or 'default model'}: "
                     f"{recommended_effort}; available: {available}"
                 )
         task.agent_id = selected.id
@@ -173,7 +181,9 @@ def assign_agents(
         task.routing_reason = reason
         task.routing_confidence = confidence
         if selected.provider_id == "codex" and not manual:
-            decision = select_codex_model(effort_mode or EffortMode.BALANCED, purpose="task", task=task, reasoning_effort=recommended_effort)
+            decision = select_codex_model(
+                effort_mode or EffortMode.BALANCED, purpose="task", task=task, reasoning_effort=recommended_effort, enabled=codex_models,
+            )
             task.model, task.reasoning_effort = decision.model, decision.reasoning_effort
             task.profile_source = ProfileSource.MODE
             task.effort_baseline_reasoning = recommended_effort

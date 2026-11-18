@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .codex_model_preferences import CODEX_MODEL_PRESETS, codex_model_order, enabled_codex_models
 from .models import WorkspaceLocation, WorkspaceLocationSource
 from .worker_mcp import WorkerMcpError, WorkerMcpServer, parse_mcp_servers
 
@@ -112,7 +113,6 @@ def resolve_workspace_location(project: ProjectConfig) -> WorkspaceLocation:
 
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 CLAUDE_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-CODEX_MODEL_PRESETS = ("gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna")
 CLAUDE_MODEL_PRESETS = ("fable", "opus", "sonnet", "claude-opus-5-5", "claude-fable-5", "claude-opus-5", "claude-sonnet-5")
 NVIDIA_MODEL_PRESETS = ("nvidia/nemotron-3-super-120b-a12b",)
 CODEX_SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
@@ -140,6 +140,7 @@ def create_default_config(path: str | Path, repo: str | Path, *, main_branch: st
 def _default_config_text(repo: Path, *, main_branch: str = "main") -> str:
     repo_value = json.dumps(str(repo), ensure_ascii=False)
     branch_value = json.dumps(main_branch.strip() or "main", ensure_ascii=False)
+    codex_model_value = json.dumps(codex_model_order()[0])
     return f"""[project]
 repo = {repo_value}
 main_branch = {branch_value}
@@ -174,7 +175,7 @@ max_review_cycles = 2
 [[agents]]
 id = "codex-general"
 provider = "codex"
-model = "gpt-6.1-sol"
+model = {codex_model_value}
 capabilities = [
   "general", "planning", "architecture", "backend", "api", "database",
   "frontend", "mobile", "infra", "security", "qa", "docs", "review",
@@ -213,7 +214,8 @@ def supported_models(provider_id: str, configured_models: tuple[str, ...] = ()) 
     provider = provider_id.strip().casefold()
     presets: tuple[str, ...] = ()
     if provider == "codex":
-        presets = CODEX_MODEL_PRESETS
+        presets = enabled_codex_models()
+        configured = tuple(model for model in configured if model.casefold() not in CODEX_MODEL_PRESETS or model in presets)
     elif provider == "claude":
         presets = CLAUDE_MODEL_PRESETS
     elif provider == "nvidia":

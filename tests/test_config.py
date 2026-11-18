@@ -34,7 +34,7 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual({agent.provider_id for agent in config.agents}, {"codex", "claude"})
             codex = next(agent for agent in config.agents if agent.provider_id == "codex")
             self.assertEqual(codex.command, ())
-            self.assertEqual(codex.model, "gpt-6.1-sol")
+            self.assertEqual(codex.model, "gpt-6.2-sol")
             self.assertEqual(codex.review_command, ())
             self.assertEqual(codex.sandbox_mode, "workspace-write")
             self.assertEqual(codex.approval_mode, "auto-review")
@@ -81,7 +81,7 @@ class ConfigTest(unittest.TestCase):
     def test_reports_provider_model_presets_with_configured_model_first(self) -> None:
         self.assertEqual(
             supported_models("codex", ("project-codex",)),
-            ("project-codex", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"),
+            ("project-codex", "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6-luna"),
         )
         self.assertIn("claude-opus-5", supported_models("claude"))
         self.assertIn("claude-opus-5-5", supported_models("claude"))
@@ -92,10 +92,15 @@ class ConfigTest(unittest.TestCase):
         self.assertNotIn("gpt-6-astra", supported_models("codex"))
         self.assertIn("gpt-6-luna", supported_models("codex"))
         self.assertEqual(supported_models("codex", ("gpt-5.6-sol",))[0], "gpt-5.6-sol")
-        self.assertEqual(supported_models("codex", ("gpt-6-astra",)).count("gpt-6-astra"), 1)
+        for model in ("gpt-6-astra", "gpt-6.1-sol"):
+            self.assertNotIn(model, supported_models("codex", (model,)))
+            self.assertNotIn(model.upper(), supported_models("codex", (f" {model.upper()} ",)))
+            self.assertEqual(supported_models("custom", (model,)), (model,))
         self.assertEqual(supported_models("custom", ("local-model",)), ("local-model",))
 
     def test_reports_provider_and_model_reasoning_efforts(self) -> None:
+        for model in ("gpt-6.2-sol", "gpt-6.2-astra"):
+            self.assertEqual(supported_reasoning_efforts("codex", model), ("low", "medium", "high", "xhigh", "max", "ultra"))
         self.assertEqual(supported_reasoning_efforts("codex", "gpt-6-astra"), ("low", "medium", "high", "xhigh", "max"))
         self.assertEqual(supported_reasoning_efforts("codex", "gpt-5.6-sol"), ("low", "medium", "high", "xhigh", "max", "ultra"))
         self.assertEqual(supported_reasoning_efforts("codex", "gpt-5.6-terra"), ("low", "medium", "high", "xhigh", "max", "ultra"))

@@ -84,6 +84,8 @@ const QUICK_REQUEST_METHODS = new Set<RpcMethod>([
   "providers.execution",
   "providers.status",
   "providers.accountUsage",
+  "providers.codexModels",
+  "providers.updateCodexModels",
   "runs.list",
   "runs.activeGroups",
   "runs.attentionItems",

@@ -58,7 +58,7 @@ class EffortPlanningBindingTest(unittest.TestCase):
                 self.assertEqual(pipeline.effort_control(state.id)["planning_request_status"], "started")
                 self.assertTrue(binding.started_at)
                 self.assertEqual(kwargs["usage_context"].operation_request_id, binding.planning_request_id)
-                self.assertEqual(kwargs["model"], "gpt-6.1-sol")
+                self.assertEqual(kwargs["model"], "gpt-6.2-astra")
                 self.assertEqual((kwargs["agent"].review_sandbox_mode, kwargs["agent"].review_approval_mode), ("read-only", "deny-all"))
                 self.assertIn("Saved archive cleanup evidence", kwargs["prompt"])
                 self.assertIn("소유권을 확인할 수 없는 ignored 파일", kwargs["prompt"])

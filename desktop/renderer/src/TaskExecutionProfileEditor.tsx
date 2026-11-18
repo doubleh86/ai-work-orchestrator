@@ -94,7 +94,7 @@ export function TaskExecutionProfileEditor({ task, run, options, busy, onSave, o
         }}>
         {!selected ? <option value="" disabled>{options.length ? `현재 설정 · ${task.model || "자동 선택"} · 다시 선택 필요` : "사용 가능한 모델 없음"}</option> : null}
         {options.map((item) => <option key={profileKey(item.agent_id, item.model)} value={profileKey(item.agent_id, item.model)}>
-          {item.model || (item.provider_id === "codex" ? "자동 · gpt-6.1-sol" : "자동 선택")} · {item.provider_id === "codex" ? "Codex" : item.provider_id === "nvidia" ? "NVIDIA" : item.provider_id}
+          {item.model || "자동 선택"} · {item.provider_id === "codex" ? "Codex" : item.provider_id === "nvidia" ? "NVIDIA" : item.provider_id}
         </option>)}
       </select></label>
       <label><span className="task-profile-label">추론 강도</span><select aria-label={`${task.title} 다음 실행 추론 강도`}

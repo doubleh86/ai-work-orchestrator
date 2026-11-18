@@ -3,9 +3,7 @@ from __future__ import annotations
 from ..application import OrchestratorApplication
 from ..application.errors import ApplicationError as RpcError
 from .contracts import RPC_VERSION, RequestScope, RpcRequest, RpcRoute
-from .parameters import (
-    required_string,
-)
+from .parameters import required_string, string_list
 
 def handle_connections(application: OrchestratorApplication, request: RpcRequest) -> object:
     method, values = request.method, request.params
@@ -21,6 +19,12 @@ def handle_connections(application: OrchestratorApplication, request: RpcRequest
         return register_external_connection(required_string(values, "client"), application.registry.path)
     if method == "auth.codex.status":
         return application.codex_auth_status()
+    if method == "providers.codexModels":
+        return application.codex_model_settings()
+    if method == "providers.updateCodexModels":
+        return application.update_codex_model_settings(
+            string_list(values, "models", required=True), expected_models=string_list(values, "expectedModels", required=True),
+        )
     if method == "auth.claude.status":
         return application.claude_auth_status()
     if method == "auth.claude.setExecutable":
@@ -60,6 +64,8 @@ ROUTES: dict[str, RpcRoute] = {
     "auth.claude.setExecutable": RpcRoute(RequestScope.GLOBAL, handle_connections),
     "auth.claude.clearExecutable": RpcRoute(RequestScope.GLOBAL, handle_connections),
     "providers.accountUsage": RpcRoute(RequestScope.GLOBAL, handle_connections),
+    "providers.codexModels": RpcRoute(RequestScope.GLOBAL, handle_connections),
+    "providers.updateCodexModels": RpcRoute(RequestScope.GLOBAL, handle_connections),
     "auth.codex.start": RpcRoute(RequestScope.GLOBAL, handle_connections),
     "auth.codex.apiKey": RpcRoute(RequestScope.GLOBAL, handle_connections),
     "auth.codex.get": RpcRoute(RequestScope.GLOBAL, handle_connections),

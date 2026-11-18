@@ -4,7 +4,7 @@ import json
 
 from ..config import AgentConfig, supported_models, supported_reasoning_efforts
 from ..models import PlanningMode
-from ..model_selection import AUTOMATIC_CODEX_MODELS
+from ..codex_model_preferences import codex_model_order, enabled_codex_models
 from .contracts import PLAN_MARKER, PlanningError, PlanningSourceDocument
 
 
@@ -55,7 +55,7 @@ def execution_profile_guidance(
         capacity = sum(agent.max_tasks for agent in provider_agents)
         capacity_label = "sequential execution; agents can be reused without a total Task limit" if sequential else f"total Task capacity {capacity}"
         configured_models = tuple(agent.model for agent in provider_agents if agent.model)
-        models = AUTOMATIC_CODEX_MODELS if provider_id == "codex" else supported_models(provider_id, configured_models)
+        models = enabled_codex_models() if provider_id == "codex" else supported_models(provider_id, configured_models)
         lines.append(f"- Provider `{provider_id}`: capabilities {', '.join(capabilities) or 'general'}; {capacity_label}.")
         if models:
             models_by_efforts: dict[tuple[str, ...], list[str]] = {}
@@ -133,7 +133,7 @@ def planning_prompt(
     instruction_documents = repository_instruction_documents or []
     profile_example = (
         '"provider_id":"","model":"","reasoning_effort":""' if balance_providers else
-        '"provider_id":"codex","model":"gpt-6.1-sol","reasoning_effort":"medium"'
+        f'"provider_id":"codex","model":"{codex_model_order()[0]}","reasoning_effort":"medium"'
     )
     example = (
         f'{PLAN_MARKER} {{"summary":"알림 기능 구현 계획","server_work":true,'

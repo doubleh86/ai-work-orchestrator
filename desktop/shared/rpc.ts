@@ -1,5 +1,7 @@
 export const RPC_METHODS = [
   "system.hello",
+  "providers.codexModels",
+  "providers.updateCodexModels",
   "connections.externalGuide",
   "connections.registerExternal",
   "runs.resultArtifact",

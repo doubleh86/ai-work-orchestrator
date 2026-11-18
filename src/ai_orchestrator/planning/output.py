@@ -68,6 +68,7 @@ def validated_planning_plan(
             execution_agent_ids={execution_agent.id for execution_agent in execution_agents},
             additional_models=additional_models(),
             effort_mode=effort_mode(),
+            preserved_profile_ids=frozenset(manual_profiles),
         )
     return plan
 

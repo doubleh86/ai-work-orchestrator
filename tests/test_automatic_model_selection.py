@@ -10,7 +10,9 @@ from unittest.mock import Mock, patch
 
 from ai_orchestrator.config import AgentConfig, Config, ExecutionConfig, PlanningConfig, ProjectConfig, RoutingConfig
 from ai_orchestrator.effort_policy import resolve_reasoning_profile
-from ai_orchestrator.model_selection import CODEX_LUNA_MODEL, CODEX_SOL_MODEL, CODEX_TERRA_MODEL, select_codex_model, small_codex_task
+from ai_orchestrator.model_selection import (
+    CODEX_ASTRA_MODEL, CODEX_LUNA_MODEL, CODEX_SOL_MODEL, CODEX_TERRA_MODEL, select_codex_model, small_codex_task,
+)
 from ai_orchestrator.models import EffortMode, ProfileSource, RiskLevel, RunState, Stage, TaskAction, TaskActionResult, WorkTask
 from ai_orchestrator.pipeline import Pipeline, PipelineError, TaskVerificationFailure
 from ai_orchestrator.planner import Plan, PlanningError, assign_plan_agents
@@ -31,21 +33,27 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             with self.subTest(mode=mode):
                 self.assertEqual(select_codex_model(mode, purpose="task", task=task).model, expected)
 
-    def test_sensitive_unknown_and_unbounded_tasks_always_keep_sol(self) -> None:
-        for change in [dict(risk_level=RiskLevel.MEDIUM), dict(description="권한 검사 계약 수정"),
-                       dict(expected_paths=["src/**"]), dict(expected_paths=[]), dict(capabilities=["backend"]),
-                       dict(title="일반 기능 변경", description="기능을 구현한다.", acceptance_criteria=[]),
+    def test_sensitive_unknown_and_unbounded_tasks_use_astra(self) -> None:
+        for change in [dict(description="권한 검사 계약 수정"), dict(title="모듈 설계 변경"),
+                       dict(expected_paths=["src/**"]), dict(expected_paths=[]), dict(capabilities=["architecture"]),
                        dict(expected_paths=["src/auth/Button.tsx"]), dict(risk_level=RiskLevel.HIGH)]:
             for mode in EffortMode:
                 with self.subTest(change=change, mode=mode):
-                    self.assertEqual(select_codex_model(mode, purpose="task", task=replace(small_task(), **change)).model, CODEX_SOL_MODEL)
+                    self.assertEqual(select_codex_model(mode, purpose="task", task=replace(small_task(), **change)).model, CODEX_ASTRA_MODEL)
 
-    def test_prerequisite_and_conflicting_tasks_keep_sol_even_when_the_edit_looks_small(self) -> None:
+    def test_ordinary_implementation_uses_sol_62(self) -> None:
+        task = replace(small_task(), title="일반 기능 변경", description="기능을 구현한다.",
+                       acceptance_criteria=[], capabilities=["backend"], risk_level=RiskLevel.MEDIUM)
+        for mode in EffortMode:
+            with self.subTest(mode=mode):
+                self.assertEqual(select_codex_model(mode, purpose="task", task=task).model, "gpt-6.2-sol")
+
+    def test_prerequisite_and_conflicting_tasks_use_astra_even_when_the_edit_looks_small(self) -> None:
         for change in [dict(is_prerequisite=True), dict(conflict_group="shared-layout")]:
             for mode in EffortMode:
                 with self.subTest(change=change, mode=mode):
                     decision = select_codex_model(mode, purpose="task", task=replace(small_task(), **change))
-                    self.assertEqual(decision.model, CODEX_SOL_MODEL)
+                    self.assertEqual(decision.model, CODEX_ASTRA_MODEL)
 
     def test_balanced_terra_keeps_high_but_reserves_higher_reasoning_for_sol(self) -> None:
         for effort, model, expected_effort in [("", CODEX_TERRA_MODEL, "medium"), ("high", CODEX_TERRA_MODEL, "high"),
@@ -70,12 +78,12 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             restored = pipeline.store.load(state.id)
             pipeline._common_runtime.execution.policy.validate_effort_execution_snapshot(restored, snapshot)
 
-    def test_planning_analysis_and_conflicts_keep_sol_in_every_mode(self) -> None:
+    def test_planning_analysis_and_conflicts_use_astra_in_every_mode(self) -> None:
         for mode in EffortMode:
             for purpose in ["planning", "chat", "recovery", "conflict_resolution"]:
                 with self.subTest(mode=mode, purpose=purpose):
                     result = select_codex_model(mode, purpose=purpose, task=small_task())
-                    self.assertEqual((result.model, result.reasoning_effort), (CODEX_SOL_MODEL, "high"))
+                    self.assertEqual((result.model, result.reasoning_effort), (CODEX_ASTRA_MODEL, "high"))
 
     def test_manual_legacy_and_other_provider_profiles_are_preserved(self) -> None:
         for provider, source in [("codex", ProfileSource.MANUAL), ("codex", ProfileSource.LEGACY),
@@ -260,18 +268,33 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             pipeline, state = self.bound_pipeline(Path(directory), mode=EffortMode.BALANCED)
             saved = pipeline.store.load_effort_policy(state.id)
             current = saved.policy(state.active_policy_id)
-            old = replace(current, task_profiles=tuple((task_id, replace(profile, model=CODEX_SOL_MODEL))
+            old = replace(current, task_profiles=tuple((task_id, replace(profile, model="gpt-6.1-sol"))
                                                       for task_id, profile in current.task_profiles))
             saved = replace(saved, prepared_policies=tuple(old if item.policy_id == old.policy_id else item
                                                            for item in saved.prepared_policies))
-            state.tasks[0].model = CODEX_SOL_MODEL
+            state.tasks[0].model = "gpt-6.1-sol"
             restored = RunState.from_dict(state.to_dict())
             with patch.object(pipeline.store, "load_effort_policy", return_value=saved), \
                     patch.object(pipeline, "preview_effort_mode", side_effect=AssertionError("started policy must stay fixed")):
                 request_id = pipeline._common_runtime.execution.policy.begin_effort_execution(restored, agent_overrides=None, model_overrides=None,
                                                               reasoning_effort_overrides=None)
             self.assertEqual(request_id, state.active_execution_request_id)
-            self.assertEqual(restored.tasks[0].model, CODEX_SOL_MODEL)
+            self.assertEqual(restored.tasks[0].model, "gpt-6.1-sol")
+
+    def test_saved_61_sol_promotion_remains_valid_after_model_update(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline, state = self.bound_pipeline(Path(directory))
+            task = state.tasks[0]
+            self.record_failure(task)
+            pipeline._common_runtime.execution.profiles.promote_automatic_model(state, task, TaskVerificationFailure(
+                task.id, ["test"], "AssertionError", Path(directory) / "test.log",
+            ))
+            self.assertGreaterEqual(task.model_escalation_result_index, 0)
+            task.model = "gpt-6.1-sol"
+            restored = RunState.from_dict(state.to_dict())
+            snapshot = pipeline.store.load_effort_policy(state.id).policy(state.active_policy_id)
+            pipeline._common_runtime.execution.policy.validate_effort_execution_snapshot(restored, snapshot)
+            self.assertEqual(restored.tasks[0].model, "gpt-6.1-sol")
 
     def test_legacy_state_has_no_promotion_and_completed_profiles_do_not_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -327,12 +350,12 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             pipeline._common_runtime.planning.lifecycle.apply_plan(state, plan)
             preview = pipeline.preview_effort_mode(state.id, "balanced", expected_revision=0)
             self.assertFalse(preview.requires_plan_review)
-            self.assertEqual((state.planning_model, state.planning_reasoning_effort), (CODEX_SOL_MODEL, "high"))
+            self.assertEqual((state.planning_model, state.planning_reasoning_effort), (CODEX_ASTRA_MODEL, "high"))
             prompt = root / "planning.md"
             prompt.write_text("Plan", encoding="utf-8")
             with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="planned") as provider:
                 pipeline._common_runtime.planning.ai.invoke(state, worker, "Plan", prompt, root / "planning.log")
-                self.assertEqual(provider.call_args.kwargs["model"], CODEX_SOL_MODEL)
+                self.assertEqual(provider.call_args.kwargs["model"], CODEX_ASTRA_MODEL)
 
     def test_planning_without_a_selected_mode_closes_the_sdk_default_but_keeps_manual_choice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -343,7 +366,7 @@ class AutomaticModelSelectionTest(unittest.TestCase):
             pipeline.store.save(fresh)
             prompt = root / "planning.md"
             prompt.write_text("Plan", encoding="utf-8")
-            for source, expected, effort in [(ProfileSource.ROUTING, CODEX_SOL_MODEL, "high"),
+            for source, expected, effort in [(ProfileSource.ROUTING, CODEX_ASTRA_MODEL, "high"),
                                              (ProfileSource.MANUAL, "gpt-5.6-luna", "medium")]:
                 with self.subTest(source=source), patch.object(pipeline._common_runtime.provider, 'invoke', return_value="planned") as provider:
                     fresh.planning_profile_source = source

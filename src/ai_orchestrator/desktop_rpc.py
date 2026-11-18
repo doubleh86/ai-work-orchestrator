@@ -86,6 +86,7 @@ _STATUS_RPC_METHODS = frozenset(
         "auth.codex.status",
         "auth.claude.status",
         "providers.accountUsage",
+        "providers.codexModels",
         "auth.codex.get",
         "projects.list",
         "runs.activeGroups",

@@ -121,7 +121,7 @@ class FakeCodex:
         self.account_response = _account_response("chatgpt")
         self.account_error: Exception | None = None
         self.models_calls = 0
-        self.models_response = SimpleNamespace(data=[_model("gpt-5.6-luna", default=True), _model("gpt-6.1-sol")])
+        self.models_response = SimpleNamespace(data=[_model("gpt-5.6-luna", default=True), _model("gpt-6.2-sol")])
         self.close_count = 0
         self.login_handle = login_handle or FakeLoginHandle(blocked=False)
         self.browser_login_count = 0
@@ -297,26 +297,27 @@ def test_manager_reuses_sdk_client_and_maps_turn_options(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("conversation_id", ["", "planning:astra"])
-def test_manager_passes_explicit_astra_profile_without_catalog_entry(tmp_path: Path, conversation_id: str) -> None:
+@pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-sol", "gpt-6.2-astra"])
+def test_manager_passes_explicit_astra_profile_without_catalog_entry(tmp_path: Path, conversation_id: str, model: str) -> None:
     client = FakeCodex()
     profiles: list[CodexSdkExecutionProfile] = []
     manager = CodexSdkManager(client_factory=FakeClientFactory([client]))  # type: ignore[arg-type]
 
     try:
         result = manager.run_turn(
-            request(tmp_path, model="gpt-6-astra", reasoning_effort="medium", conversation_id=conversation_id, profile_callback=profiles.append)
+            request(tmp_path, model=model, reasoning_effort="medium", conversation_id=conversation_id, profile_callback=profiles.append)
         )
     finally:
         manager.close()
 
     assert result == "structured plan"
     assert client.models_calls == 0
-    assert client.thread_start_calls[0]["model"] == "gpt-6-astra"
+    assert client.thread_start_calls[0]["model"] == model
     _, turn_options = client.thread.turn_calls[0]
-    assert turn_options["model"] == "gpt-6-astra"
+    assert turn_options["model"] == model
     assert turn_options["effort"].value == "medium"  # type: ignore[union-attr]
     assert profiles == [
-        CodexSdkExecutionProfile(model="gpt-6-astra", reasoning_effort="medium", model_automatic=False, reasoning_effort_automatic=False)
+        CodexSdkExecutionProfile(model=model, reasoning_effort="medium", model_automatic=False, reasoning_effort_automatic=False)
     ]
 
 
@@ -349,8 +350,14 @@ def test_manager_does_not_fallback_when_astra_execution_fails(tmp_path: Path) ->
     assert client.models_calls == 0
 
 
-def test_manager_resolves_and_reports_automatic_execution_profile(tmp_path: Path) -> None:
+@pytest.mark.parametrize("automatic_model", ["gpt-6.2-sol", "gpt-6.1-sol"])
+def test_manager_resolves_and_reports_automatic_execution_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, automatic_model: str,
+) -> None:
     client = FakeCodex()
+    if automatic_model == "gpt-6.1-sol":
+        monkeypatch.setattr("ai_orchestrator.codex_model_preferences.enabled_codex_models", lambda: ("gpt-6.1-sol",))
+        client.models_response.data.append(_model("gpt-6.1-sol"))
     profiles: list[CodexSdkExecutionProfile] = []
     manager = CodexSdkManager(client_factory=FakeClientFactory([client]))  # type: ignore[arg-type]
 
@@ -359,22 +366,22 @@ def test_manager_resolves_and_reports_automatic_execution_profile(tmp_path: Path
 
     assert result == "structured plan"
     assert client.models_calls == 1
-    assert client.thread_start_calls[0]["model"] == "gpt-6.1-sol"
+    assert client.thread_start_calls[0]["model"] == automatic_model
     _, turn_options = client.thread.turn_calls[0]
-    assert turn_options["model"] == "gpt-6.1-sol"
+    assert turn_options["model"] == automatic_model
     assert turn_options["effort"].value == "high"  # type: ignore[union-attr]
     assert profiles == [
-        CodexSdkExecutionProfile(model="gpt-6.1-sol", reasoning_effort="high", model_automatic=True, reasoning_effort_automatic=True)
+        CodexSdkExecutionProfile(model=automatic_model, reasoning_effort="high", model_automatic=True, reasoning_effort_automatic=True)
     ]
     log = (tmp_path / "planning.log").read_text(encoding="utf-8")
     assert '"event": "execution-profile"' in log
-    assert '"effective_model": "gpt-6.1-sol"' in log
+    assert f'"effective_model": "{automatic_model}"' in log
 
 
 @pytest.mark.parametrize("effort", ["", "low", "ultra"])
 def test_manual_terra_reaches_sdk_with_catalog_default_or_explicit_effort(tmp_path: Path, effort: str) -> None:
     client = FakeCodex()
-    client.models_response = SimpleNamespace(data=[_model("gpt-6.1-sol", default=True), _model("gpt-6.1-terra", reasoning_effort="low")])
+    client.models_response = SimpleNamespace(data=[_model("gpt-6.2-sol", default=True), _model("gpt-6.1-terra", reasoning_effort="low")])
     profiles: list[CodexSdkExecutionProfile] = []
     manager = CodexSdkManager(client_factory=FakeClientFactory([client]))  # type: ignore[arg-type]
     try:
@@ -394,7 +401,7 @@ def test_automatic_model_cannot_fall_back_to_a_legacy_sdk_default(tmp_path: Path
     client.models_response = SimpleNamespace(data=[_model("gpt-5.6-luna", default=True)])
     manager = CodexSdkManager(client_factory=FakeClientFactory([client]))  # type: ignore[arg-type]
     try:
-        with pytest.raises(CodexSdkError, match="gpt-6.1-sol"):
+        with pytest.raises(CodexSdkError, match="gpt-6.2-sol"):
             manager.run_turn(request(tmp_path, model="", reasoning_effort=""))
         assert client.thread_start_calls == []
     finally:
@@ -438,7 +445,7 @@ def test_manager_resolves_automatic_profile_once_for_named_conversation(tmp_path
 
     assert client.models_calls == 1
     assert len(client.thread_start_calls) == 1
-    assert [profile.model for profile in profiles] == ["gpt-6.1-sol", "gpt-6.1-sol"]
+    assert [profile.model for profile in profiles] == ["gpt-6.2-sol", "gpt-6.2-sol"]
 
 
 def test_manager_restarts_named_conversation_when_model_changes(tmp_path: Path) -> None:

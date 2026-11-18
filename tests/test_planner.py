@@ -396,7 +396,7 @@ class PlannerTest(unittest.TestCase):
 
     def test_assigns_planning_recommended_execution_profile(self) -> None:
         task = structured_task("ranking-api", capabilities=["backend"])
-        task.update(provider_id="codex", model="gpt-6.1-sol", reasoning_effort="high")
+        task.update(provider_id="codex", model="gpt-6.2-sol", reasoning_effort="high", expected_paths=["src/ranking-api/handler.py"])
         payload = {"summary": "랭킹 API", "server_work": True, "tasks": [task], "questions": []}
         agents = (
             AgentConfig("backend-ai", ("backend",), ("codex", "exec", "-"), 2, provider_id="codex", model="gpt-6-luna"),
@@ -408,11 +408,11 @@ class PlannerTest(unittest.TestCase):
         task_plan = plan.tasks[0]
         self.assertEqual(task_plan.agent_id, "backend-ai")
         self.assertEqual(task_plan.provider_id, "codex")
-        self.assertEqual(task_plan.model, "gpt-6.1-sol")
+        self.assertEqual(task_plan.model, "gpt-6.2-sol")
         self.assertEqual(task_plan.reasoning_effort, "high")
         self.assertEqual(task_plan.profile_source, ProfileSource.MODE)
         serialized = structured_plan_dict(plan)["tasks"][0]
-        self.assertEqual(serialized["model"], "gpt-6.1-sol")
+        self.assertEqual(serialized["model"], "gpt-6.2-sol")
         self.assertEqual(serialized["reasoning_effort"], "high")
 
     def test_manual_execution_profile_keeps_exact_agent_and_registered_model(self) -> None:
@@ -422,7 +422,7 @@ class PlannerTest(unittest.TestCase):
         task = WorkTask("manual", "사용자가 선택한 작업", ["general"], agent_id=selected.id, provider_id="nvidia",
                         model="vendor/registered-model", profile_source=ProfileSource.MANUAL, routing_reason="user selection",
                         routing_confidence=1.0)
-        new_task = WorkTask("new", "새 자동 배정 작업", ["general"], provider_id="codex", model=codex.model)
+        new_task = WorkTask("new", "새 자동 배정 작업", ["general"], provider_id="codex")
         plan = Plan("수동 선택 보존", False, [task, new_task])
         assign_plan_agents(plan, (codex, selected, other), sequential=True, additional_models={"nvidia": (task.model,)})
         self.assertEqual((task.agent_id, task.model, task.profile_source, task.routing_reason),
@@ -459,7 +459,7 @@ class PlannerTest(unittest.TestCase):
 
     def test_ai_output_cannot_declare_a_trusted_manual_profile(self) -> None:
         draft = structured_task("new")
-        draft.update(provider_id="codex", model="gpt-6.1-sol", agent_id="injected", profile_source="manual")
+        draft.update(provider_id="codex", model="gpt-6.2-sol", agent_id="injected", profile_source="manual")
         plan = parse_structured_plan("AI_PLAN_RESULT: " + json.dumps({"summary": "새 작업", "server_work": False, "tasks": [draft], "questions": []}))
         codex = AgentConfig("codex", ("general",), (), 1, provider_id="codex", model="gpt-6.1-sol")
         assign_plan_agents(plan, (codex,))
@@ -468,12 +468,13 @@ class PlannerTest(unittest.TestCase):
 
     def test_manual_codex_model_and_reasoning_remain_exact_and_default_model_is_pinned(self) -> None:
         codex = AgentConfig("selected", ("general",), (), 1, provider_id="codex", model="gpt-6.1-sol")
-        for model in ("", "gpt-6.1-sol", "gpt-6.1-terra"):
+        for model, preserved in (("", False), ("gpt-6.1-sol", True), ("gpt-6.1-terra", False)):
             with self.subTest(model=model):
                 task = WorkTask("manual", "수동 Codex", ["general"], agent_id=codex.id, provider_id="codex", model=model,
                                 reasoning_effort="high", profile_source=ProfileSource.MANUAL)
-                assign_plan_agents(Plan("수동 Codex 보존", False, [task]), (codex,))
-                self.assertEqual((task.model, task.reasoning_effort, task.profile_source), (model or "gpt-6.1-sol", "high", ProfileSource.MANUAL))
+                assign_plan_agents(Plan("수동 Codex 보존", False, [task]), (codex,),
+                                   preserved_profile_ids=frozenset({task.id}) if preserved else frozenset())
+                self.assertEqual((task.model, task.reasoning_effort, task.profile_source), (model or "gpt-6.2-sol", "high", ProfileSource.MANUAL))
 
     def test_automatic_profile_cannot_reintroduce_a_configured_model_outside_the_allowlist(self) -> None:
         task = structured_task("ranking-api", capabilities=["backend"])
@@ -488,7 +489,7 @@ class PlannerTest(unittest.TestCase):
 
     def test_rejects_unsupported_recommended_execution_profile(self) -> None:
         task = structured_task("ranking-api", capabilities=["backend"])
-        task.update(provider_id="codex", model="gpt-6.1-sol", reasoning_effort="ultra")
+        task.update(provider_id="codex", model="gpt-6-luna", reasoning_effort="ultra")
         payload = {"summary": "랭킹 API", "server_work": True, "tasks": [task], "questions": []}
         agents = (
             AgentConfig("backend-ai", ("backend",), ("codex", "exec", "-"), 2, provider_id="codex"),
@@ -701,13 +702,13 @@ class PlannerTest(unittest.TestCase):
 
         self.assertIn("## Execution profile catalog", prompt)
         self.assertIn("Provider `codex`", prompt)
-        self.assertIn("`gpt-6.1-sol`", prompt)
+        self.assertIn("`gpt-6.2-sol`", prompt)
         self.assertIn("`gpt-6-luna`", prompt)
         terra = next(line for line in prompt.splitlines() if "`gpt-6.1-terra`" in line)
         self.assertIn("`ultra`", terra)
-        sol = next(line for line in prompt.splitlines() if "`gpt-6.1-sol`" in line and "reasoning" in line)
-        self.assertIn("`gpt-6-luna`", sol)
-        self.assertNotIn("`ultra`", sol)
+        luna = next(line for line in prompt.splitlines() if "`gpt-6-luna`" in line and "reasoning" in line)
+        self.assertNotIn("`ultra`", luna)
+        self.assertNotIn("`gpt-6.1-sol`", prompt)
         self.assertNotIn("gpt-5.6", prompt)
         self.assertIn("total Task capacity 2", prompt)
         self.assertNotIn("backend-ai", prompt)

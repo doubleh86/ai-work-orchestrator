@@ -5,6 +5,7 @@ import { ClaudeConnectionPanel } from "./ClaudeConnectionPanel";
 import { CodexApiKeyConnection } from "./CodexApiKeyConnection";
 import { NvidiaConnectionPanel } from "./NvidiaConnectionPanel";
 import { AccountUsageControl } from "./AccountUsageControl";
+import { CodexModelSettings } from "./CodexModelSettings";
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : "연결 상태를 확인하지 못했습니다.";
 
@@ -16,7 +17,8 @@ export function MakerWorkers({ active }: { active: boolean }) {
       <p>여러 AI를 함께 연결하고 태스크마다 다른 모델을 사용할 수 있습니다.</p></div><AccountUsageControl /></div>
     <p role="status" className="maker-worker-hint">{notice || "작업 AI를 연결하세요"} · 모델은 태스크 상세에서, 기획·제어는 ‘새 채팅’에서 진행하세요.</p>
     <div className="maker-provider-grid">
-      <section className="maker-panel"><h2>Codex</h2><CodexWorker active={active} onChanged={changed} /></section>
+      <section className="maker-panel"><h2>Codex</h2><CodexWorker active={active} onChanged={changed} />
+        {active ? <CodexModelSettings /> : null}</section>
       <section className="maker-panel"><h2>Claude</h2><ClaudeConnectionPanel visible={active} onChanged={changed} /></section>
       <section className="maker-panel maker-provider-wide"><h2>NVIDIA</h2>
         <NvidiaConnectionPanel visible={active} onChanged={changed} /></section>

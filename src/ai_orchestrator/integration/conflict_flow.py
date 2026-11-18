@@ -16,7 +16,7 @@ from ..git import GitWorkspace
 from ..integration import ConflictCandidateBuilder, ConflictInspector, ConflictResolutionProfile, ConflictResolutionRecords, ConflictResolutionService
 from ..integration.workspace_access import WorkspaceAccess
 from ..integration.workspace_flows import WorkspaceFlows
-from ..model_selection import CODEX_SOL_MODEL
+from ..codex_model_preferences import codex_model_order
 from ..models import ConflictResolutionCandidate, RunState
 from ..persistence.integration_records import ConflictFlowRecords
 
@@ -52,7 +52,7 @@ class ConflictFlow:
     ) -> ConflictResolutionProfile:
         selected_agent_id = agent_id.strip() or state.planning_agent_id or self.planning_settings().agent_id
         agent = self.availability.require(selected_agent_id, "execute")
-        selected_model = model.strip() or (CODEX_SOL_MODEL if agent.provider_id == "codex" else agent.model)
+        selected_model = model.strip() or (codex_model_order()[0] if agent.provider_id == "codex" else agent.model)
         selected_effort = normalize_reasoning_effort(reasoning_effort)
         validate_reasoning_effort(agent, selected_effort, selected_model)
         return ConflictResolutionProfile(agent, selected_model, selected_effort)

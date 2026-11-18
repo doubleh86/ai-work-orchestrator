@@ -72,11 +72,18 @@ class PlanDraftValidator:
                     instruction_paths=plan.instruction_paths,
                 )
             existing = {task.id: task for task in state.tasks}
+            preserved_profile_ids: set[str] = set()
             for task in assignable_plan.tasks:
                 previous = existing.get(task.id)
                 selected = (task.provider_id, task.model, task.reasoning_effort)
                 unchanged = previous is not None and selected == (previous.provider_id, previous.model, previous.reasoning_effort)
                 preserve = unchanged and previous.profile_source in {ProfileSource.MANUAL, ProfileSource.LEGACY}
+                if preserve:
+                    preserved_profile_ids.add(task.id)
+                elif unchanged and task.provider_id == "codex" and previous.profile_source == ProfileSource.MODE:
+                    # An existing automatic profile is a result, not a new recommendation.
+                    task.model = ""
+                    task.reasoning_effort = previous.effort_baseline_reasoning or ""
                 if preserve or (not unchanged and any(selected)):
                     task.profile_source = ProfileSource.MANUAL
                     task.agent_id = (previous.agent_id if previous and previous.provider_id == task.provider_id
@@ -89,6 +96,7 @@ class PlanDraftValidator:
                 additional_models={"nvidia": self.registered_models()},
                 effort_mode=initial_effort_mode or self.selected_mode(state.id),
                 sequential=self.shared_workspace(state),
+                preserved_profile_ids=frozenset(preserved_profile_ids),
             )
             drafts = {str(draft.get("id", "")).strip(): draft for draft in task_drafts}
             for task in plan.tasks:

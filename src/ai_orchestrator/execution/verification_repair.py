@@ -15,7 +15,7 @@ from ..config import AgentConfig
 from ..errors import PipelineError
 from ..execution_control import CancellationSignal, ExecutionStopped
 from ..git_contracts import GitError
-from ..model_selection import CODEX_SOL_MODEL
+from ..codex_model_preferences import codex_model_order
 from ..models import OperationRecord, RunState, VerificationAttempt, WorkTask
 from ..usage import UsageContext
 
@@ -106,7 +106,7 @@ Verification log tail:
             )
             self.save_state(state)
 
-        repair_model = CODEX_SOL_MODEL if agent.provider_id == "codex" else agent.model
+        repair_model = codex_model_order()[0] if agent.provider_id == "codex" else agent.model
         command_template = self.command(agent, repair_model)
         self.invoke(
             agent=agent,

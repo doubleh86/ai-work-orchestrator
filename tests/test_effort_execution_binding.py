@@ -34,14 +34,14 @@ class EffortExecutionBindingTest(unittest.TestCase):
     @staticmethod
     def _state(root: Path) -> RunState:
         task = WorkTask(
-            "t01", "Update app", ["general"], agent_id="worker", provider_id="codex", model="gpt-6.1-sol",
+            "t01", "Update app", ["general"], agent_id="worker", provider_id="codex", model="gpt-6.2-sol",
             reasoning_effort="medium", profile_source=ProfileSource.MODE, effort_baseline_reasoning="medium",
-            expected_paths=["src/**"],
+            expected_paths=["src/main.py"],
         )
         return RunState(
             "run-policy", "plan.md", "digest", str(root), "main", stage=Stage.PLANNED,
             summary="Plan", plan_revision=1, plan_approved_revision=1, tasks=[task],
-            planning_agent_id="worker", planning_provider_id="codex",
+            planning_agent_id="worker", planning_provider_id="codex", planning_model="gpt-6.2-astra",
             planning_reasoning_effort="high", planning_profile_source=ProfileSource.MODE,
             planning_effort_baseline_reasoning="medium",
         )
@@ -113,8 +113,8 @@ class EffortExecutionBindingTest(unittest.TestCase):
             pipeline = self._selected_pipeline(root)
             state = pipeline.store.load("run-policy")
             state.tasks.append(WorkTask(
-                "t02", "다음 작업", ["general"], agent_id="worker", provider_id="codex", model="gpt-6.1-sol",
-                reasoning_effort="medium", profile_source=ProfileSource.MODE, effort_baseline_reasoning="medium", expected_paths=["src/**"],
+                "t02", "다음 작업", ["general"], agent_id="worker", provider_id="codex", model="gpt-6.2-sol",
+                reasoning_effort="medium", profile_source=ProfileSource.MODE, effort_baseline_reasoning="medium", expected_paths=["src/main.py"],
             ))
             pipeline.store.save(state)
             seen = []

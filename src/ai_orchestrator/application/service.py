@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..account_usage import AccountUsage, read_claude_quota
+from ..codex_model_preferences import CODEX_MODEL_PRESETS, CodexModelPreferenceError, enabled_codex_models, save_codex_models
 from ..codex_sdk import CodexSdkManager, read_codex_quota
 from ..code_style import ProjectCodeStylePreference
 from ..config import create_default_config, load_config
@@ -74,6 +75,16 @@ class OrchestratorApplication:
 
     def codex_auth_status(self) -> object:
         return self.codex_sdk.login_status()
+
+    def codex_model_settings(self) -> dict[str, object]:
+        return {"models": list(CODEX_MODEL_PRESETS), "enabled_models": list(enabled_codex_models())}
+
+    def update_codex_model_settings(self, models: list[str], *, expected_models: list[str]) -> dict[str, object]:
+        try:
+            enabled = save_codex_models(models, expected_models=expected_models)
+        except CodexModelPreferenceError as exc:
+            raise ApplicationError("invalid_params", str(exc)) from exc
+        return {"models": list(CODEX_MODEL_PRESETS), "enabled_models": list(enabled)}
 
     def claude_auth_status(self) -> object:
         return Pipeline.claude_connection_status()

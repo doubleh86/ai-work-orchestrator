@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, ContextManager
 
-from ..model_selection import CODEX_LUNA_MODEL, CODEX_SOL_MODEL, CODEX_TERRA_MODEL
+from ..codex_model_preferences import CODEX_ASTRA_MODELS, CODEX_LUNA_MODEL, CODEX_SOL_MODELS, CODEX_TERRA_MODEL, enabled_codex_models
 from ..models import EffortPolicyState, EffortProfileSnapshot, ProfileSource, ResolvedEffortPolicy, RunState, TaskAction, WorkTask
 from .errors import TaskVerificationFailure
 
@@ -19,8 +19,9 @@ def automatic_model_escalation_matches(task: WorkTask, expected: EffortProfileSn
     return bool(
         expected.provider_id == "codex" and expected.model in {CODEX_LUNA_MODEL, CODEX_TERRA_MODEL}
         and expected.profile_source == ProfileSource.MODE
-        and (task.agent_id, task.provider_id, task.model, task.reasoning_effort, task.profile_source)
-        == (expected.agent_id, "codex", CODEX_SOL_MODEL, "high", ProfileSource.MODE)
+        and task.model in (*CODEX_SOL_MODELS, *CODEX_ASTRA_MODELS)
+        and (task.agent_id, task.provider_id, task.reasoning_effort, task.profile_source)
+        == (expected.agent_id, "codex", "high", ProfileSource.MODE)
         and evidence.action == TaskAction.VERIFY and evidence.status == "failed"
         and evidence.verification_failure_kind == "command_failed"
     )
@@ -44,6 +45,10 @@ class AutomaticModelEscalation:
         )
         if any(marker in failure.output.casefold() for marker in environment_errors):
             return
+        enabled = enabled_codex_models()
+        target = next((model for model in (*CODEX_SOL_MODELS, *CODEX_ASTRA_MODELS) if model in enabled), "")
+        if not target:
+            return
         saved = self.load_policy(state.id)
         policy = saved.policy(state.active_policy_id)
         binding = saved.binding(state.active_execution_request_id)
@@ -57,13 +62,13 @@ class AutomaticModelEscalation:
             expected = EffortProfileSnapshot.from_dict(receipt["quota_fallback"])
         with self.state_lock:
             previous = (task.model, task.reasoning_effort, task.model_escalation_policy_id, task.model_escalation_result_index)
-            task.model, task.reasoning_effort = CODEX_SOL_MODEL, "high"
+            task.model, task.reasoning_effort = target, "high"
             task.model_escalation_policy_id = policy.policy_id
             task.model_escalation_result_index = len(task.action_results) - 1
             if not automatic_model_escalation_matches(task, expected, policy):
                 task.model, task.reasoning_effort, task.model_escalation_policy_id, task.model_escalation_result_index = previous
                 return
             source_label = "6.1 Terra" if previous[0] == CODEX_TERRA_MODEL else "Luna"
-            task.model_selection_reason = f"코드 검증 실패 수정 · {source_label}에서 6.1 Sol로 1회 승격"
+            task.model_selection_reason = f"코드 검증 실패 수정 · {source_label}에서 {target}로 1회 변경"
             state.add_event("model_selection", f"{task.id}: {task.model_selection_reason}")
             self.save_state(state)

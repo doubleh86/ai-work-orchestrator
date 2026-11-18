@@ -22,7 +22,7 @@ from ..execution import (
 )
 from ..execution.provider_choices import ConnectedProviderQueries, ProviderAvailability
 from ..integration import uses_shared_workspace
-from ..model_selection import CODEX_SOL_MODEL
+from ..codex_model_preferences import codex_model_order
 from ..models import EffortProfileSnapshot, ProfileSource, ResolvedEffortPolicy, RunLockState, RunState, Stage, WorkTask
 from ..persistence.execution_records import ExecutionProfilesRecords
 from ..persistence.run_lookup import RunLookup, find_task
@@ -177,7 +177,7 @@ class ExecutionProfiles:
             model = normalize_model(raw_model)
             task = tasks[task_id]
             if not model and task.provider_id == "codex":
-                model = CODEX_SOL_MODEL
+                model = codex_model_order()[0]
             task.model = model
             task.model_selection_reason = ""
             task.profile_source = ProfileSource.MANUAL

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Callable
 
 from .account_usage import AccountUsage, codex_quota_summary
 from .app_paths import application_config_root
+from .codex_model_preferences import codex_model_order
 from .execution_control import CancellationSignal, ExecutionStopped
 from .usage import CodexUsageTracker, TokenCounts, UsageObservation
 from .worker_mcp import WorkerMcpServer, codex_mcp_config, redact_mcp_data, redact_mcp_output, secret_values
@@ -1096,10 +1097,15 @@ def _resolve_execution_profile(client: Codex, request: CodexSdkTurnRequest) -> C
         raise CodexSdkError("failed to read the Codex SDK model catalog") from exc
 
     if model_automatic:
-        matching_models = [model for model in models if "gpt-6.1-sol" in {model.id, model.model}]
-        if len(matching_models) != 1:
-            raise CodexSdkError("자동 선택에 필요한 gpt-6.1-sol을 사용할 수 없습니다. 모델 연결 상태를 확인해 주세요.")
-        selected_model = matching_models[0]
+        preferred_models = codex_model_order()
+        selected_model = None
+        for preferred in preferred_models:
+            matches = [model for model in models if preferred in {model.id, model.model}]
+            if len(matches) == 1:
+                selected_model = matches[0]
+                break
+        if selected_model is None:
+            raise CodexSdkError(f"설정에서 선택한 Codex 모델을 사용할 수 없습니다: {', '.join(preferred_models)}")
     else:
         selected_model = next((model for model in models if request.model in {model.id, model.model}), None)
         if selected_model is None:

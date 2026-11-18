@@ -64,6 +64,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .maker-provider-wide { grid-column: 1 / -1; }
 .maker-form-stack, .maker-worker-connection, .ai-auth-content, .nvidia-connection, .ai-connection-options__body, .project-settings-body { display: grid; gap: 16px; min-width: 0; }
 .maker-form-stack { padding-top: 12px; }
+.maker-codex-model-settings { margin-top: 16px; }
+.maker-codex-model-list { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.maker-codex-model-list label { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; }
 .maker-actions, .ai-auth-actions, .nvidia-connection__actions, .project-settings-actions, .work-task-plan-actions, .task-record-actions__buttons, .conflict-resolution__controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .maker-actions { margin-top: 14px; }
 .maker-connection-state, .ai-auth-state { border-radius: 9px; background: #f4f2fc; padding: 14px; }

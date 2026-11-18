@@ -109,7 +109,7 @@ Tools (only choose actions listed in available_actions):
   completion criteria, paths, dependencies, models or checks. Use for small implementation
   adjustments only. Changes to those contracts require ask and the existing plan-review flow.
   An execution-AI-only change is a task setting, not a plan amendment. The app can save a
-  direct command such as '실패 작업을 Codex(gpt-6.1-sol/high)로 바꿔줘'. If the request did
+  direct command that specifies the desired provider, enabled model ID, and reasoning effort. If the request did
   not match, ask for a concrete task and execution profile. Do not claim you queued a
   change or run repair with the old profile when the current request asks to change it.
 When a task error starts with task_scope_review_required, distinguish explanation from action.

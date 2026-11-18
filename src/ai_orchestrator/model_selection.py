@@ -3,13 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+from .codex_model_preferences import (
+    CODEX_ASTRA_MODEL, CODEX_LUNA_MODEL, CODEX_SOL_MODEL, CODEX_TERRA_MODEL, DEFAULT_CODEX_MODELS, codex_model_order,
+)
+from .config import supported_reasoning_efforts
 from .models import EffortMode, ProfileSource, RiskLevel, WorkTask
 
 
-CODEX_SOL_MODEL = "gpt-6.1-sol"
-CODEX_TERRA_MODEL = "gpt-6.1-terra"
-CODEX_LUNA_MODEL = "gpt-6-luna"
-AUTOMATIC_CODEX_MODELS = (CODEX_SOL_MODEL, CODEX_TERRA_MODEL, CODEX_LUNA_MODEL)
+AUTOMATIC_CODEX_MODELS = DEFAULT_CODEX_MODELS
 CLAUDE_SONNET_MODEL = "sonnet"
 CLAUDE_OPUS_MODEL = "opus"
 AUTOMATIC_CLAUDE_MODELS = (CLAUDE_SONNET_MODEL, CLAUDE_OPUS_MODEL)
@@ -34,6 +35,16 @@ class ModelSelection:
     reason: str
 
 
+def _enabled_codex_selection(decision: ModelSelection, enabled: tuple[str, ...] | None) -> ModelSelection:
+    models = codex_model_order(preferred=decision.model, enabled=enabled)
+    model = next((item for item in models if decision.reasoning_effort in supported_reasoning_efforts("codex", item)), models[0])
+    efforts = supported_reasoning_efforts("codex", model)
+    effort = decision.reasoning_effort if decision.reasoning_effort in efforts else efforts[-1]
+    if model == decision.model and effort == decision.reasoning_effort:
+        return decision
+    return ModelSelection(model, effort, f"사용할 모델 설정에 따라 {model} 선택")
+
+
 def small_codex_task(task: WorkTask) -> bool:
     """Require affirmative, bounded evidence before using the smaller model."""
     text = " ".join((task.title, task.description, *task.acceptance_criteria)).casefold()
@@ -52,30 +63,38 @@ def small_codex_task(task: WorkTask) -> bool:
 
 
 def select_codex_model(
-    mode: EffortMode, *, purpose: str, task: WorkTask | None = None, reasoning_effort: str = "",
+    mode: EffortMode, *, purpose: str, task: WorkTask | None = None, reasoning_effort: str = "", enabled: tuple[str, ...] | None = None,
 ) -> ModelSelection:
     if purpose != "task":
-        return ModelSelection(CODEX_SOL_MODEL, "high", "기획·원인 판단은 6.1 Sol 유지")
-    if (mode == EffortMode.ECONOMY and task is not None and small_codex_task(task)
-            and reasoning_effort not in {"xhigh", "max", "ultra"}):
-        return ModelSelection(CODEX_LUNA_MODEL, "high", "절약 · 범위가 명확한 낮은 위험의 작은 수정")
+        return _enabled_codex_selection(ModelSelection(CODEX_ASTRA_MODEL, "high", "기획·원인 판단은 6.2 Astra"), enabled)
     if task is not None:
         text = " ".join((task.title, task.description, *task.acceptance_criteria, *task.expected_paths)).casefold()
-        important = task.risk_level == RiskLevel.HIGH or any(word in text for word in _SENSITIVE_WORDS)
+        important = bool(
+            task.risk_level == RiskLevel.HIGH or task.is_prerequisite or task.conflict_group
+            or set(task.capabilities) & {"architecture", "security", "concurrency", "migration"}
+            or any(word in text for word in (*_SENSITIVE_WORDS, "architecture", "아키텍처", "설계", "복잡", "대규모", "cross-module"))
+            or not task.expected_paths or len(task.expected_paths) >= 6
+            or any(any(mark in path for mark in ("*", "?", "..")) for path in task.expected_paths)
+        )
     else:
         important = True
-    if (mode == EffortMode.BALANCED and task is not None and small_codex_task(task)
+    if (mode == EffortMode.ECONOMY and not important and task is not None and small_codex_task(task)
+            and reasoning_effort not in {"xhigh", "max", "ultra"}):
+        return _enabled_codex_selection(ModelSelection(CODEX_LUNA_MODEL, "high", "절약 · 범위가 명확한 낮은 위험의 작은 수정"), enabled)
+    if (mode == EffortMode.BALANCED and not important and task is not None and small_codex_task(task)
             and reasoning_effort not in {"xhigh", "max", "ultra"}):
         decision = ModelSelection(CODEX_TERRA_MODEL, "medium", "균형 · 6.1 Terra로 범위가 명확한 낮은 위험의 작은 수정")
+    elif important:
+        decision = ModelSelection(CODEX_ASTRA_MODEL, "xhigh" if mode == EffortMode.FOCUSED else "high",
+                                  "중요 계약·설계·불확실한 작업은 6.2 Astra")
     elif mode == EffortMode.FOCUSED:
-        decision = ModelSelection(CODEX_SOL_MODEL, "xhigh" if important else "high", "집중 · 6.1 Sol 추론 강화")
+        decision = ModelSelection(CODEX_SOL_MODEL, "high", "집중 · 6.2 Sol 추론 강화")
     else:
-        decision = ModelSelection(CODEX_SOL_MODEL, "high" if important else "medium",
-                                  "중요 계약·불확실한 작업은 6.1 Sol" if important else "일반 구현은 6.1 Sol")
+        decision = ModelSelection(CODEX_SOL_MODEL, "medium", "일반 구현은 6.2 Sol")
     efforts = ("low", "medium", "high", "xhigh", "max", "ultra")
     if mode != EffortMode.ECONOMY and reasoning_effort in efforts and efforts.index(reasoning_effort) > efforts.index(decision.reasoning_effort):
-        return ModelSelection(decision.model, reasoning_effort, f"{decision.reason} · 권장 추론 유지")
-    return decision
+        decision = ModelSelection(decision.model, reasoning_effort, f"{decision.reason} · 권장 추론 유지")
+    return _enabled_codex_selection(decision, enabled)
 
 
 def automatic_codex_profile(source: ProfileSource, model: str) -> bool:

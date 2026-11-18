@@ -1546,24 +1546,60 @@ def test_provider_profiles_expand_models_and_reasoning(tmp_path: Path, role: str
             pipeline_class.return_value.execution_provider_choices.assert_called_once_with(["general"])
 
     models = {profile["model"] for profile in profiles}  # type: ignore[index]
-    assert models == {"", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"}
-    updated_sol = next(profile for profile in profiles if profile["model"] == "gpt-6.1-sol")  # type: ignore[index]
-    assert "medium" in updated_sol["reasoning_efforts"]  # type: ignore[operator]
-    assert "max" in updated_sol["reasoning_efforts"]  # type: ignore[operator]
-    assert "ultra" not in updated_sol["reasoning_efforts"]  # type: ignore[operator]
+    assert models == {"", "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6-luna"}
+    for model in ("gpt-6.2-sol", "gpt-6.2-astra"):
+        profile = next(profile for profile in profiles if profile["model"] == model)
+        assert profile["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max", "ultra"]
     terra = next(profile for profile in profiles if profile["model"] == "gpt-6.1-terra")  # type: ignore[index]
     assert terra["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max", "ultra"]
     assert terra["agent_id"] == "planner"
 
 
-def test_configured_astra_model_remains_selectable_with_automatic_option() -> None:
+@pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6.1-sol"])
+def test_excluded_configured_codex_model_cannot_return_through_automatic_option(model: str) -> None:
     from ai_orchestrator.desktop_rpc import _expanded_provider_choices
 
-    profiles = _expanded_provider_choices([ProviderChoice("codex", "planner", model="gpt-6-astra", is_default=True)])
+    profiles = _expanded_provider_choices([ProviderChoice("codex", "planner", model=model, is_default=True)])
     models = {profile["model"] for profile in profiles}
-    assert "gpt-6-astra" in models
-    assert "" in models
-    assert "gpt-6.1-sol" in models
+    assert models == {"gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6-luna"}
+
+
+def test_codex_model_settings_persist_and_drive_new_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ai_orchestrator.config import AgentConfig
+    from ai_orchestrator.desktop_rpc import _expanded_provider_choices
+    from ai_orchestrator.model_selection import select_codex_model
+    from ai_orchestrator.models import EffortMode, RiskLevel, WorkTask
+    from ai_orchestrator.planner import execution_profile_guidance
+
+    monkeypatch.setattr("ai_orchestrator.codex_model_preferences.application_config_root", lambda: tmp_path)
+    application = DesktopApplication(ProjectRegistry(tmp_path / "projects.json"))
+    service = RpcService(application)
+    old_models = ["gpt-6.1-sol", "gpt-6-astra"]
+
+    def save(models: list[str], expected: list[str]) -> dict[str, object]:
+        return handle_request(service, {"id": 1, "method": "providers.updateCodexModels", "params": {"models": models, "expectedModels": expected}})
+
+    try:
+        initial = service.dispatch("providers.codexModels")
+        assert set(old_models) <= set(initial["models"])
+        assert set(old_models).isdisjoint(initial["enabled_models"])
+        assert save([], initial["enabled_models"])["error"]["code"] == "invalid_params"
+        assert save(["unknown-model"], initial["enabled_models"])["error"]["code"] == "invalid_params"
+        assert save(old_models, initial["enabled_models"])["result"]["enabled_models"] == old_models
+        assert save(initial["enabled_models"][:1], initial["enabled_models"])["error"]["code"] == "invalid_params"
+        assert service.dispatch("providers.codexModels")["enabled_models"] == old_models
+        choices = _expanded_provider_choices([ProviderChoice("codex", "worker", model="gpt-6.2-sol")])
+        assert {item["model"] for item in choices} == set(old_models)
+        guidance = execution_profile_guidance((AgentConfig("worker", ("general",), (), provider_id="codex", model="gpt-6.2-sol"),))
+        assert all(model in guidance for model in old_models)
+        assert "gpt-6.2-sol" not in guidance
+        task = WorkTask("impl", "Update feature", ["general"], expected_paths=["src/app.py"], risk_level=RiskLevel.MEDIUM)
+        assert select_codex_model(EffortMode.BALANCED, purpose="task", task=task).model == "gpt-6.1-sol"
+        important = WorkTask("design", "Review design", ["architecture"], expected_paths=["src/app.py"], risk_level=RiskLevel.HIGH)
+        selected = select_codex_model(EffortMode.FOCUSED, purpose="task", task=important, reasoning_effort="ultra")
+        assert (selected.model, selected.reasoning_effort) == ("gpt-6-astra", "max")
+    finally:
+        application.close()
 
 
 def test_claude_provider_profiles_are_available_for_new_selection() -> None:
