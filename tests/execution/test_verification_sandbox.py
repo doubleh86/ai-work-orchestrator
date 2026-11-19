@@ -41,6 +41,7 @@ def test_verification_launches_in_an_app_owned_profile(tmp_path, monkeypatch):
     assert policy["filesystem"][str(state)] == "deny"
     assert policy["filesystem"][":root"] == "deny"
     environment = launch.call_args.kwargs["base_environment"]
+    assert launch.call_args.kwargs["non_interactive"] is True
     assert environment["MSBUILDUSESERVER"] == "0"
     assert {"GITHUB_TOKEN", "UNRELATED_VAR"}.isdisjoint(environment)
     assert not launcher_cwd.exists()

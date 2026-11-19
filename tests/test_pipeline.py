@@ -1922,7 +1922,6 @@ class PipelineTest(unittest.TestCase):
                     })
                 else:
                     self.assertIsNone(environment)
-                self.assertTrue(call.kwargs["non_interactive"])
                 self.assertGreater(call.kwargs["timeout_seconds"], 0)
 
     def test_sdk_planning_assigns_more_tasks_than_agent_max_tasks(self) -> None:
@@ -2342,11 +2341,17 @@ class PipelineTest(unittest.TestCase):
                 state = pipeline.execute(state.id, manual=True)
                 (Path(state.tasks[0].worktree) / "result.txt").write_text("done", encoding="utf-8")
                 state = pipeline.complete_task(state.id, state.tasks[0].id)
-                state.tasks[0].verify_commands = [
-                    ["git", "commit", "--allow-empty", "-m", "unexpected"]
-                ]
+                state.tasks[0].verify_commands = [[sys.executable, "-c", "pass"]]
                 pipeline.store.save(state)
-                with self.assertRaisesRegex(PipelineError, "HEAD changed during verification"):
+
+                def verify(command, cwd, **_kwargs):
+                    git(cwd, "commit", "--allow-empty", "-m", "Concurrent fixture commit")
+                    return subprocess.CompletedProcess(command, 0, "passed")
+
+                with (
+                    patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=verify),
+                    self.assertRaisesRegex(PipelineError, "HEAD changed during verification"),
+                ):
                     pipeline.verify(state.id)
                 failed = pipeline.store.load(state.id)
                 self.assertEqual(failed.stage, Stage.FAILED)
@@ -3657,15 +3662,22 @@ class PipelineTest(unittest.TestCase):
     def test_automatic_task_repair_rejects_head_mutation_even_when_verification_failed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
-            state.tasks[0].verify_commands = [[sys.executable, "-c",
-                "import subprocess; subprocess.run(['git','commit','--allow-empty','-m','not allowed'],check=True); raise SystemExit(1)"]]
+            state.tasks[0].verify_commands = [[sys.executable, "-c", "raise SystemExit(1)"]]
             pipeline.store.save(state)
 
             def invoke(_state, current, *_args):
                 (Path(current.worktree) / "result.txt").write_text("implemented", encoding="utf-8")
                 return "implemented"
 
-            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as agent:
+            def verify(command, cwd, **_kwargs):
+                # Simulate a concurrent change outside the sandbox. Verification itself cannot write Git metadata.
+                git(cwd, "commit", "--allow-empty", "-m", "Concurrent fixture commit")
+                return subprocess.CompletedProcess(command, 1, "verification failed")
+
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as agent,
+                patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=verify),
+            ):
                 failed = pipeline.execute(state.id)
             self.assertEqual(agent.call_count, 1)
             self.assertEqual(failed.tasks[0].failed_action, TaskAction.VERIFY)
@@ -8859,21 +8871,20 @@ else:
             state.begin_verification(2)
             pipeline.store.save(state)
             observed: list[tuple[str, str, int, int]] = []
-            invocations: list[tuple[bool, int]] = []
+            invocations: list[int] = []
 
             def capture_progress(
                 command: tuple[str, ...],
                 cwd: Path,
                 *,
-                check: bool,
-                non_interactive: bool,
                 timeout_seconds: int,
                 cancel_signal: object | None = None,
                 environment_overrides: dict[str, str] | None = None,
             ) -> subprocess.CompletedProcess[str]:
-                del cwd, check, cancel_signal
+                del cancel_signal
+                self.assertEqual(cwd, root)
                 self.assertIsNone(environment_overrides)
-                invocations.append((non_interactive, timeout_seconds))
+                invocations.append(timeout_seconds)
                 saved = pipeline.store.load(state.id)
                 observed.append(
                     (
@@ -8890,7 +8901,7 @@ else:
                 pipeline._common_runtime.execution.verification.run_verification_commands(state, root, commands)
 
             self.assertEqual(observed, [("running_command", "python first.py", 1, 2), ("running_command", "git status --short", 2, 2)])
-            self.assertEqual(invocations, [(True, INTEGRATION_VERIFICATION_COMMAND_TIMEOUT_SECONDS), (True, LOCAL_GIT_TIMEOUT_SECONDS)])
+            self.assertEqual(invocations, [INTEGRATION_VERIFICATION_COMMAND_TIMEOUT_SECONDS, LOCAL_GIT_TIMEOUT_SECONDS])
 
     def test_integration_verification_restores_missing_npm_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -8922,15 +8933,13 @@ else:
                 command: tuple[str, ...],
                 cwd: Path,
                 *,
-                check: bool,
-                non_interactive: bool,
                 timeout_seconds: int,
                 cancel_signal: object | None = None,
                 environment_overrides: dict[str, str] | None = None,
             ) -> subprocess.CompletedProcess[str]:
-                del cwd, check, cancel_signal
+                del cancel_signal
+                self.assertEqual(cwd, root)
                 self.assertIsNone(environment_overrides)
-                self.assertTrue(non_interactive)
                 self.assertEqual(timeout_seconds, INTEGRATION_VERIFICATION_COMMAND_TIMEOUT_SECONDS)
                 invocations.append(tuple(command))
                 return subprocess.CompletedProcess(command, 0, "passed\n", "")
@@ -9053,7 +9062,6 @@ else:
                     pipeline._common_runtime.execution.verification.run_verification_commands(state, root, (("python", "slow.py"),))
 
             self.assertEqual(run.call_args.kwargs["timeout_seconds"], INTEGRATION_VERIFICATION_COMMAND_TIMEOUT_SECONDS)
-            self.assertTrue(run.call_args.kwargs["non_interactive"])
             verify_log = pipeline.store.run_dir(state.id) / "logs" / "verify.log"
             self.assertIn("command timed out", verify_log.read_text(encoding="utf-8"))
 
