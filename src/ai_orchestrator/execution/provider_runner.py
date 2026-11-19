@@ -22,7 +22,7 @@ from ..nvidia_agent import (
 from ..process_environment import runtime_environment
 from ..provider_executable import resolve_provider_executable
 from ..usage import UsageObservation
-from ..windows_paths import process_working_directory
+from ..windows_paths import process_working_directory, without_extended_prefix
 from ..worker_mcp import WorkerMcpServer, configure_claude_mcp, redact_mcp_output, secret_values
 from .provider_commands import configure_claude_tools
 
@@ -122,10 +122,11 @@ class ProviderRunner:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         timeout = self.options.agent_timeout_seconds if timeout_seconds is None else timeout_seconds
         private_state = (self.options.state_root or self.repo / ".ai-orchestrator").resolve()
+        comparable_state = without_extended_prefix(private_state)
         planning_source = replacements.get("{planning_source}", "") if action == "planning" else ""
         if planning_source:
-            source = Path(planning_source).resolve()
-            if source.is_relative_to(private_state) or private_state.is_relative_to(source):
+            source = without_extended_prefix(Path(planning_source).resolve())
+            if source.is_relative_to(comparable_state) or comparable_state.is_relative_to(source):
                 raise ProviderRunError("실행 기록 폴더를 포함하지 않는 기획 자료 경로를 선택해 주세요.")
         if agent.provider_id == "codex":
             if self._codex_sdk is None:
@@ -205,8 +206,8 @@ class ProviderRunner:
                 raise ProviderRunError(NVIDIA_SETUP)
             environment = nvidia_environment(environment, model=model or agent.model, action=action, api_key=api_key)
         elif agent.provider_id == "claude":
-            work = cwd.resolve()
-            protected = f"./{private_state.relative_to(work).as_posix()}" if private_state.is_relative_to(work) else ""
+            work = without_extended_prefix(cwd.resolve())
+            protected = f"./{comparable_state.relative_to(work).as_posix()}" if comparable_state.is_relative_to(work) else ""
             configure_claude_tools(
                 command, action, worker_mcp=bool(servers), planning_source=planning_source, private_state_path=protected,
             )

@@ -26,6 +26,15 @@ def filesystem_path(path: Path, *, reserve: int = 0) -> Path:
     return Path(_EXTENDED_PREFIX + value)
 
 
+def without_extended_prefix(path: Path) -> Path:
+    value = str(path)
+    if os.name == "nt" and value.startswith(_EXTENDED_PREFIX + "UNC\\"):
+        return Path("\\\\" + value[len(_EXTENDED_PREFIX + "UNC\\"):])
+    if os.name == "nt" and value.startswith(_EXTENDED_PREFIX):
+        return Path(value[len(_EXTENDED_PREFIX):])
+    return path
+
+
 @contextmanager
 def process_working_directory(path: Path) -> Iterator[Path]:
     if os.name != "nt" or (_windows_length(path) < _MAX_PATH and not str(path).startswith(_EXTENDED_PREFIX)):
@@ -35,12 +44,7 @@ def process_working_directory(path: Path) -> Iterator[Path]:
     from _winapi import CreateJunction
 
     # CreateProcessW cannot start in an extended-length working directory.
-    value = str(path)
-    if value.startswith(_EXTENDED_PREFIX + "UNC\\"):
-        value = "\\\\" + value[len(_EXTENDED_PREFIX + "UNC\\"):]
-    elif value.startswith(_EXTENDED_PREFIX):
-        value = value[len(_EXTENDED_PREFIX):]
-    working = Path(os.path.abspath(value))
+    working = Path(os.path.abspath(without_extended_prefix(path)))
     if _windows_length(working) < _MAX_PATH:
         yield working
         return

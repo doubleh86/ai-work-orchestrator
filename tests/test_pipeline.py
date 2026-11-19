@@ -2276,16 +2276,22 @@ class PipelineTest(unittest.TestCase):
     def test_task_verification_rejects_new_commit_even_in_allowed_scope(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pipeline, state = self._scope_test_run(Path(directory))
-            state.tasks[0].verify_commands = [
-                ["git", "commit", "--allow-empty", "-m", "unexpected"]
-            ]
+            state.tasks[0].verify_commands = [[sys.executable, "-c", "pass"]]
             pipeline.store.save(state)
 
             def implement(_state, task, *_args):
                 (Path(task.worktree) / "result.txt").write_text("done", encoding="utf-8")
                 return "implemented"
 
-            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement):
+            def verify(command, cwd, **_kwargs):
+                # Simulate a concurrent Git change outside verification.
+                git(cwd, "commit", "--allow-empty", "-m", "Concurrent fixture commit")
+                return subprocess.CompletedProcess(command, 0, "passed")
+
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement),
+                patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=verify),
+            ):
                 failed = pipeline.execute(state.id)
             self.assertEqual(failed.stage, Stage.FAILED)
             self.assertEqual(failed.tasks[0].failed_action, TaskAction.VERIFY)
@@ -2801,11 +2807,8 @@ class PipelineTest(unittest.TestCase):
 
     def test_scope_verify_retry_rejects_changes_without_rerunning_worker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            pipeline, state = self._scope_test_run(root)
-            verify_script = root / "verify.py"
-            verify_script.write_text("raise SystemExit(1)\n", encoding="utf-8")
-            state.tasks[0].verify_commands = [[sys.executable, str(verify_script)]]
+            pipeline, state = self._scope_test_run(Path(directory))
+            state.tasks[0].verify_commands = [[sys.executable, "-c", "pass"]]
             pipeline.store.save(state)
 
             def implement(_state, task, *_args):
@@ -2813,20 +2816,31 @@ class PipelineTest(unittest.TestCase):
                 result.write_text((result.read_text(encoding="utf-8") if result.exists() else "") + "allowed", encoding="utf-8")
                 return "done"
 
-            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement) as worker:
+            def verify(command, _cwd, **_kwargs):
+                return subprocess.CompletedProcess(command, 1, "verification failed")
+
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=implement) as worker,
+                patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=verify) as check,
+            ):
                 failed = pipeline.execute(state.id)
                 task = failed.tasks[0]
                 baseline = task.started_commit
                 self.assertEqual(task.failed_action, TaskAction.VERIFY)
                 self.assertEqual(worker.call_count, 4)
-                verify_script.write_text("from pathlib import Path\nPath('outside.txt').write_text('outside')\n", encoding="utf-8")
+                def verify_with_scope_change(command, cwd, **_kwargs):
+                    (cwd / "outside.txt").write_text("outside", encoding="utf-8")
+                    return subprocess.CompletedProcess(command, 0, "passed")
+
+                check.side_effect = verify_with_scope_change
                 rejected = pipeline.retry_task(state.id, task.id)
                 self.assertEqual(rejected.stage, Stage.FAILED)
                 self.assertEqual(rejected.tasks[0].failed_action, TaskAction.VERIFY)
                 self.assertIn("outside.txt", rejected.tasks[0].error)
                 self.assertEqual(worker.call_count, 4)
                 (Path(task.worktree) / "outside.txt").unlink()
-                verify_script.write_text("pass\n", encoding="utf-8")
+                check.side_effect = None
+                check.return_value = subprocess.CompletedProcess(state.tasks[0].verify_commands[0], 0, "passed")
                 complete = pipeline.retry_task(state.id, task.id)
                 self.assertEqual(complete.stage, Stage.READY_TO_MERGE)
                 self.assertEqual(complete.tasks[0].started_commit, baseline)
@@ -3337,10 +3351,13 @@ class PipelineTest(unittest.TestCase):
             def prepare(command, *_args):
                 return (sys.executable, str(fake_dotnet), *command[1:]) if VerificationRunner.is_dotnet_command(command) else command
 
+            def verify(command, cwd, **kwargs):
+                return run_command(command, cwd, check=False, non_interactive=True, **kwargs)
+
             with (
                 patch.dict(os.environ, parent_environment),
                 patch.object(pipeline._common_runtime.execution.verification_commands, 'prepare_verification_command', side_effect=prepare),
-                patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", wraps=run_command) as verification,
+                patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=verify) as verification,
                 patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as worker,
             ):
                 completed = pipeline.execute(state.id)
@@ -3512,25 +3529,19 @@ class PipelineTest(unittest.TestCase):
 
     def test_task_recorded_implementation_reuses_commit_and_reviews_without_empty_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            pipeline, state = self._scope_test_run(root)
+            pipeline, state = self._scope_test_run(Path(directory))
             reviewer = replace(pipeline.agents["reviewer"], provider_id="review-local")
             pipeline.agents[reviewer.id] = reviewer
             pipeline.config = replace(pipeline.config, agents=tuple(
                 reviewer if agent.id == reviewer.id else agent for agent in pipeline.config.agents
             ))
             task = state.tasks[0]
-            checker = root / "verify.py"
-            checker.write_text(
-                "from pathlib import Path\nimport sys\nassert Path('result.txt').read_text()=='implemented'\n"
-                "marker=Path(sys.argv[1])\nfirst=not marker.exists()\nmarker.write_text('checked')\nsys.exit(1 if first else 0)\n",
-                encoding="utf-8",
-            )
-            task.verify_commands = [[sys.executable, str(checker), str(root / "checked")]]
+            task.verify_commands = [[sys.executable, "-c", "pass"]]
             task.reviewer_agent_id = reviewer.id
             task.reviewer_provider_id = reviewer.provider_id
             pipeline.store.save(state)
             actions = []
+            verification_codes = iter((1, 0))
 
             def invoke(_state, current, _agent, _prompt, _log, action):
                 actions.append(action)
@@ -3540,7 +3551,14 @@ class PipelineTest(unittest.TestCase):
                     (Path(current.worktree) / "result.txt").write_text("implemented", encoding="utf-8")
                 return "existing implementation is unchanged"
 
-            with patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke):
+            def verify(command, cwd, **_kwargs):
+                self.assertEqual((cwd / "result.txt").read_text(encoding="utf-8"), "implemented")
+                return subprocess.CompletedProcess(command, next(verification_codes), "")
+
+            with (
+                patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke),
+                patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=verify),
+            ):
                 completed = pipeline.execute(state.id)
             self.assertEqual(completed.stage, Stage.READY_TO_MERGE, completed.tasks[0].error)
             self.assertEqual(actions, [TaskAction.EXECUTE, TaskAction.REVIEW, TaskAction.EXECUTE, TaskAction.REVIEW])

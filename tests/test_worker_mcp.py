@@ -94,7 +94,7 @@ def test_workspace_substitution_and_provider_permission_limits_are_explicit(tmp_
 def application(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    config = create_default_config(repo / "orchestrator.toml", repo)
+    config = create_default_config(tmp_path / "orchestrator.toml", repo)
     registry = ProjectRegistry(tmp_path / "registry.json")
     registry.add("project", repo, config)
     app = DesktopApplication(registry)
@@ -225,6 +225,9 @@ def test_codex_mcp_error_and_logs_do_not_leak_environment_credentials(tmp_path, 
 
 
 def test_pipeline_propagates_tools_only_to_worker_calls_and_redacts_claude_output(tmp_path, monkeypatch):
+    # On Windows the state path uses extended syntax before the project path does.
+    tmp_path = tmp_path / ("project" + "x" * max(0, 128 - len(str(tmp_path))))
+    tmp_path.mkdir()
     monkeypatch.setattr("ai_orchestrator.worker_mcp.application_config_root", lambda: tmp_path / "user")
     monkeypatch.setenv("FIXTURE_MCP_TOKEN", "fixture-sensitive-token")
     selected = server(bearer_token_env_var="FIXTURE_MCP_TOKEN")
