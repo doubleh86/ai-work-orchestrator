@@ -47,6 +47,8 @@ const allowedMethods = new Set<RpcMethod>([
   "providers.execution",
   "providers.status",
   "providers.accountUsage",
+  "providers.codexModels",
+  "providers.updateCodexModels",
   "planning.refreshIndex",
   "runs.list",
   "runs.activeGroups",

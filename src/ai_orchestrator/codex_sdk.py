@@ -207,6 +207,26 @@ class CodexSdkTurnRequest:
     retry_callback: Callable[[str | None], None] | None = field(default=None, compare=False, repr=False)
     mcp_servers: tuple[WorkerMcpServer, ...] = field(default=(), repr=False)
     project_root: Path | None = None
+    planning_state_root: Path | None = None
+    planning_source_root: Path | None = None
+
+
+def planning_read_config(request: CodexSdkTurnRequest) -> dict[str, object] | None:
+    if request.planning_state_root is None:
+        return None
+    profile = f"orchestrator-planning-{uuid.uuid4().hex}"
+    paths = {":root": "deny", ":minimal": "read", str(request.cwd.resolve()): "read"}
+    if request.planning_source_root is not None:
+        paths[str(request.planning_source_root.resolve())] = "read"
+    paths[str(request.planning_state_root.resolve())] = "deny"
+    return {
+        "default_permissions": profile,
+        "permissions": {profile: {"filesystem": paths, "network": {"enabled": False}}},
+        # The orchestrator has already loaded repository instructions as input.
+        "project_doc_max_bytes": 0,
+        "project_root_markers": [],
+        "features": {"apps": False, "plugins": False},
+    }
 
 
 @dataclass(slots=True)
@@ -276,6 +296,8 @@ class _SdkConversation:
     execution_profile: CodexSdkExecutionProfile
     sandbox_mode: str
     approval_mode: str
+    planning_state_root: Path | None = None
+    planning_source_root: Path | None = None
     turn_lock: threading.Lock = field(default_factory=threading.Lock)
     usage_total: TokenCounts | None = field(default_factory=lambda: TokenCounts(0, 0, 0, 0, 0, 0))
     usage_epoch: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -737,18 +759,20 @@ class CodexSdkManager:
         conversation: _SdkConversation | None = None
         healthy = False
         try:
-            sandbox = _sandbox(request.sandbox_mode)
+            planning_config = planning_read_config(request)
+            sandbox = None if planning_config is not None else _sandbox(request.sandbox_mode)
             approval = _approval_mode(request.approval_mode)
             if request.conversation_id:
-                conversation = self._conversation_for(request, approval, sandbox)
+                conversation = self._conversation_for(request, approval, sandbox, planning_config)
                 client = conversation.client
                 thread = conversation.thread
                 execution_profile = conversation.execution_profile
             else:
                 client = self._acquire_client()
                 execution_profile = _resolve_execution_profile(client, request)
-                tool_options = ({"config": codex_mcp_config(request.mcp_servers, request.cwd, request.project_root or request.cwd)}
-                                if request.mcp_servers else {})
+                tool_options = {"config": planning_config} if planning_config is not None else {}
+                if request.mcp_servers and planning_config is None:
+                    tool_options["config"] = codex_mcp_config(request.mcp_servers, request.cwd, request.project_root or request.cwd)
                 thread = client.thread_start(
                     approval_mode=approval,
                     cwd=str(request.cwd.resolve()),
@@ -822,7 +846,7 @@ class CodexSdkManager:
 
     def _run_turn_with_backoff(
         self, operation: _TurnOperation, request: CodexSdkTurnRequest, thread: CodexThread,
-        conversation: _SdkConversation | None, profile: CodexSdkExecutionProfile, approval: ApprovalMode, sandbox: Sandbox,
+        conversation: _SdkConversation | None, profile: CodexSdkExecutionProfile, approval: ApprovalMode, sandbox: Sandbox | None,
     ) -> TurnResult:
         from openai_codex import CodexError
         from openai_codex.types import ReasoningEffort
@@ -913,15 +937,23 @@ class CodexSdkManager:
                 operation.retry_until = 0.0
                 operation.last_activity_at = time.monotonic()
 
-    def _conversation_for(self, request: CodexSdkTurnRequest, approval: ApprovalMode, sandbox: Sandbox) -> _SdkConversation:
+    def _conversation_for(
+        self, request: CodexSdkTurnRequest, approval: ApprovalMode, sandbox: Sandbox | None,
+        planning_config: dict[str, object] | None = None,
+    ) -> _SdkConversation:
         with self._conversation_lock:
             existing = self._conversations.get(request.conversation_id)
-            if existing is not None and existing.matches(
-                cwd=request.cwd,
-                model=request.model,
-                sandbox_mode=request.sandbox_mode,
-                approval_mode=request.approval_mode,
-                reasoning_effort=request.reasoning_effort,
+            if (
+                existing is not None
+                and existing.planning_state_root == request.planning_state_root
+                and existing.planning_source_root == request.planning_source_root
+                and existing.matches(
+                    cwd=request.cwd,
+                    model=request.model,
+                    sandbox_mode=request.sandbox_mode,
+                    approval_mode=request.approval_mode,
+                    reasoning_effort=request.reasoning_effort,
+                )
             ):
                 return existing
             if existing is not None:
@@ -937,6 +969,7 @@ class CodexSdkManager:
                     model=execution_profile.model,
                     sandbox=sandbox,
                     service_name="ai_work_orchestrator",
+                    **({"config": planning_config} if planning_config is not None else {}),
                 )
             except Exception:
                 self._discard_client(client)
@@ -950,6 +983,8 @@ class CodexSdkManager:
                 execution_profile=execution_profile,
                 sandbox_mode=request.sandbox_mode,
                 approval_mode=request.approval_mode,
+                planning_state_root=request.planning_state_root,
+                planning_source_root=request.planning_source_root,
             )
             self._conversations[request.conversation_id] = conversation
             return conversation

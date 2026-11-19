@@ -2,12 +2,52 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Callable
 
 from ..config import AgentConfig
 from ..errors import PipelineError
 from ..nvidia_agent import nvidia_command
+
+
+CLAUDE_FILE_ACTIONS = frozenset({"execute", "revise", "conflict_resolution"})
+_CLAUDE_LEGACY_ALLOW_OPTIONS = frozenset({"--allowedTools", "--allowed-tools"})
+_CLAUDE_MANAGED_OPTIONS = frozenset({
+    "--tools", "--settings", "--setting-sources", "--permission-mode", "--restricted", "--add-dir",
+    "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--mcp-config", "--strict-mcp-config",
+    "--plugin-dir", "--plugin-url", "--agent", "--agents", "--bare", "--safe-mode", "--",
+})
+
+
+def configure_claude_tools(
+    command: list[str], action: str, *, worker_mcp: bool, planning_source: str = "", private_state_path: str = "",
+) -> None:
+    # 적용 중인 프로젝트 설정에도 예전 도구 허용 규칙이 남아있을 수 있다.
+    options = iter(command[1:])
+    configured = [command[0]]
+    for option in options:
+        name, separator, _ = option.partition("=")
+        if name in _CLAUDE_LEGACY_ALLOW_OPTIONS:
+            if not separator and next(options, "").startswith("-"):
+                raise PipelineError(f"Claude 도구 옵션에 값이 없습니다 {name}")
+            continue
+        if name in _CLAUDE_MANAGED_OPTIONS:
+            raise PipelineError(f"Claude 명령의 도구 권한은 오케스트레이터에서 관리합니다 {name}")
+        configured.append(option)
+    can_edit = action in CLAUDE_FILE_ACTIONS
+    tools = "Read,Glob,Grep,Edit,Write" if can_edit else "Read,Glob,Grep"
+    denied = ["Edit(.git)", "Edit(.git/**)"]
+    if private_state_path:
+        denied.extend((f"Read({private_state_path})", f"Read({private_state_path}/**)"))
+    settings = {"disableAllHooks": True, "permissions": {"deny": denied}}
+    configured.extend(("--restricted", "--tools", tools, "--allowedTools", tools, "--permission-mode", "dontAsk",
+                       "--settings", json.dumps(settings)))
+    if action == "planning" and planning_source:
+        configured.extend(("--add-dir", planning_source))
+    if not worker_mcp:
+        configured.extend(("--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'))
+    command[:] = configured
 
 
 def agent_command(agent: AgentConfig, action: str) -> tuple[str, ...]:

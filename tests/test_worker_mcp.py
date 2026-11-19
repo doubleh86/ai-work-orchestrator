@@ -239,9 +239,21 @@ def test_pipeline_propagates_tools_only_to_worker_calls_and_redacts_claude_outpu
     values = dict(agent=agent, command_template=agent.command, replacements={"{run_id}": "run"}, cwd=tmp_path,
                   prompt="implement", prompt_path="prompt", log_path=tmp_path / "worker.log", action="execute", task_id="task")
     assert pipeline._common_runtime.provider.invoke(**values) == "done [REDACTED]"
-    assert "--strict-mcp-config" in spawn.call_args.args[0]
+    argv = spawn.call_args.args[0]
+    assert "--restricted" in argv and "--strict-mcp-config" in argv
+    assert set(argv[argv.index("--tools") + 1].split(",")) == {"Read", "Glob", "Grep", "Edit", "Write"}
+    assert "mcp__tool__*" in argv[argv.index("--allowedTools") + 1]
     assert "fixture-sensitive-token" not in json.dumps(spawn.call_args.args[0])
     assert "fixture-sensitive-token" not in values["log_path"].read_text()
+    for action in ("planning", "review"):
+        pipeline._common_runtime.provider.invoke(**{**values, "action": action})
+        argv = spawn.call_args.args[0]
+        assert set(argv[argv.index("--tools") + 1].split(",")) == {"Read", "Glob", "Grep"}
+        assert set(argv[argv.index("--allowedTools") + 1].split(",")) == {"Read", "Glob", "Grep"}
+        assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        assert settings["disableAllHooks"] is True
+        assert "Read(./.ai-orchestrator/**)" in settings["permissions"]["deny"]
     sdk = Mock()
     sdk.run_turn.return_value = "done"
     codex = replace(agent, command=(), provider_id="codex")

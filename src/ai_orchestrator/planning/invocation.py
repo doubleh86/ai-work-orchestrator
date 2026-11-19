@@ -112,7 +112,7 @@ class PlanningInvocation:
             decision = resolve_reasoning_profile(
                 mode=EffortMode.BALANCED, provider_id=agent.provider_id, model=model, reasoning_effort=reasoning_effort,
                 profile_source=state.planning_profile_source, baseline_reasoning_effort=state.planning_effort_baseline_reasoning,
-                purpose="planning",
+                purpose="planning", configured_model=agent.model,
             )
             if decision.unsupported_effects:
                 raise PipelineError("automatic Planning model requires its original profile baseline")
@@ -132,6 +132,10 @@ class PlanningInvocation:
             "{task_id}": "planning",
             "{run_id}": state.id,
         }
+        if agent.provider_id in {"claude", "codex"} and state.spec_path:
+            source = Path(state.spec_path)
+            if source.is_absolute() and source.is_dir() and not source.is_relative_to(self.repo):
+                replacements["{planning_source}"] = str(source)
         if agent.provider_id == "codex" and sdk_available:
             state.add_event("planning", "planning transport selected: codex SDK")
             persist(state)

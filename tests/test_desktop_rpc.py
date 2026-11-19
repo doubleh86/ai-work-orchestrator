@@ -712,11 +712,11 @@ def test_main_change_rpc_rejects_invalid_selection_mode() -> None:
         )
 
 def test_desktop_application_reuses_and_closes_codex_sdk_manager(tmp_path: Path) -> None:
-    registry = Mock()
-    project = Mock(repo=tmp_path, config_path=tmp_path / "orchestrator.toml", worker_mcp_servers=None)
+    registry = Mock(path=tmp_path / "projects.json")
+    project = Mock(repo=tmp_path / "repo", config_path=tmp_path / "orchestrator.toml", worker_mcp_servers=None)
     registry.get.return_value = project
     config = Mock()
-    config.project.repo = tmp_path
+    config.project.repo = project.repo
     codex_sdk = Mock()
     application = DesktopApplication(registry, codex_sdk=codex_sdk)
 
@@ -829,11 +829,11 @@ def test_run_status_includes_backend_execution_control() -> None:
 
 
 def test_desktop_application_reuses_single_codex_sdk_manager(tmp_path: Path) -> None:
-    registry = Mock()
-    project = Mock(repo=tmp_path, config_path=tmp_path / "orchestrator.toml", worker_mcp_servers=None)
+    registry = Mock(path=tmp_path / "projects.json")
+    project = Mock(repo=tmp_path / "repo", config_path=tmp_path / "orchestrator.toml", worker_mcp_servers=None)
     registry.get.return_value = project
     config = Mock()
-    config.project.repo = tmp_path
+    config.project.repo = project.repo
     codex_sdk = Mock()
 
     with patch("ai_orchestrator.application.service.CodexSdkManager", return_value=codex_sdk) as manager_factory:
@@ -1660,11 +1660,11 @@ command = []
 
 
 def _write_config(repo: Path) -> Path:
-    config_path = repo / "orchestrator.toml"
+    config_path = repo.parent / "orchestrator.toml"
     config_path.write_text(
-        """
+        f"""
 [project]
-repo = "."
+repo = {json.dumps(str(repo))}
 
 [[agents]]
 id = "manual"

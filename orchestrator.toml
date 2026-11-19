@@ -70,11 +70,8 @@ max_tasks = 12
 command = [
   "claude", "-p", "Follow the task instructions provided through standard input.",
   "--model", "sonnet", "--output-format", "text", "--max-turns", "30",
-  "--allowedTools", "Read,Write,Edit,Glob,Grep,Bash",
-  "--disallowedTools", "Bash(git commit:*),Bash(git merge:*),Bash(git push:*)",
 ]
 review_command = [
   "claude", "-p", "Follow the review instructions provided through standard input.",
   "--model", "sonnet", "--output-format", "text", "--max-turns", "15",
-  "--allowedTools", "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git status:*)",
 ]

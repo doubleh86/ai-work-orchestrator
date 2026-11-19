@@ -10,7 +10,6 @@ from typing import Callable
 from ..config import AgentConfig
 from ..effort_policy import resolve_reasoning_profile
 from ..errors import PipelineError
-from ..model_selection import automatic_claude_profile
 from ..models import EffortMode, ProfileSource, RunState
 
 
@@ -66,17 +65,17 @@ class PlanningProfiles:
         if (agent is None or agent.provider_id not in {"codex", "claude"}
                 or state.planning_profile_source in {ProfileSource.MANUAL, ProfileSource.LEGACY}):
             return
-        if agent.provider_id == "claude" and not automatic_claude_profile(state.planning_profile_source, state.planning_model or agent.model):
-            return
         mode = self.selected_mode(state.id) or EffortMode.BALANCED
         decision = resolve_reasoning_profile(
             mode=mode, provider_id=agent.provider_id, model=state.planning_model or agent.model,
             reasoning_effort=state.planning_reasoning_effort, profile_source=state.planning_profile_source,
-            baseline_reasoning_effort=state.planning_effort_baseline_reasoning, purpose="planning",
+            baseline_reasoning_effort=state.planning_effort_baseline_reasoning, purpose="planning", configured_model=agent.model,
         )
         if decision.unsupported_effects:
             raise PipelineError("automatic Planning model requires its original profile baseline")
-        if state.planning_profile_source != ProfileSource.MODE:
+        if decision.profile_source != ProfileSource.MODE:
+            state.planning_effort_baseline_reasoning = None
+        elif state.planning_profile_source != ProfileSource.MODE:
             state.planning_effort_baseline_reasoning = state.planning_reasoning_effort
         state.planning_model = decision.model
         state.planning_reasoning_effort = decision.reasoning_effort

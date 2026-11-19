@@ -15,6 +15,7 @@ from ..errors import PipelineError
 from ..git import GitRepositoryReadiness
 from ..git import inspect_git_readiness
 from ..models import RunState
+from ..windows_paths import filesystem_path
 
 
 class SourceIndexRefresh(Protocol):
@@ -66,7 +67,7 @@ class PlanningSourceIndexes:
 
         self.ensure_git_ready()
         self.ensure_repository(remaining_timeout())
-        root = Path(source_root).expanduser().resolve()
+        root = filesystem_path(Path(source_root).expanduser()).resolve()
         if not root.is_dir():
             raise DocumentIndexError(f"planning source directory not found: {root}")
         repository_root = self.repo.resolve()
@@ -88,7 +89,7 @@ class PlanningSourceIndexes:
         )
 
     def for_start(self, source_root: str | Path, *, base_commit: str) -> tuple[PlanningSourceIndex, bool]:
-        root = Path(source_root).expanduser().resolve()
+        root = filesystem_path(Path(source_root).expanduser()).resolve()
         repository_root = self.repo.resolve()
         cached = load_matching_planning_source_index(self.records_root, root, repository_root, base_commit)
         if cached is not None and root.is_relative_to(repository_root):
@@ -99,7 +100,7 @@ class PlanningSourceIndexes:
     def snapshot(self, state: RunState) -> PlanningSourceIndex | None:
         if not state.spec_path.strip():
             return None
-        source_root = Path(state.spec_path).expanduser().resolve()
+        source_root = filesystem_path(Path(state.spec_path).expanduser()).resolve()
         if not source_root.is_dir():
             return None
         snapshot_path = self.run_directory(state.id) / "planning-source-index.json"

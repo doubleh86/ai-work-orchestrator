@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -426,6 +427,30 @@ def test_manager_continues_and_closes_named_conversation(tmp_path: Path) -> None
     manager.close()
 
     assert client.close_count == 1
+
+
+def test_planning_turns_inherit_the_restricted_thread_profile(tmp_path: Path) -> None:
+    client = FakeCodex()
+    manager = CodexSdkManager(client_factory=FakeClientFactory([client]))  # type: ignore[arg-type]
+    private_state = tmp_path / ".ai-orchestrator"
+    source = tmp_path / "docs"
+    planned = replace(
+        request(tmp_path, conversation_id="planning:scoped"), planning_state_root=private_state, planning_source_root=source,
+    )
+    try:
+        assert manager.run_turn(planned) == "structured plan"
+        assert manager.run_turn(planned) == "structured plan"
+    finally:
+        manager.close()
+
+    start, = client.thread_start_calls
+    assert start["sandbox"] is None
+    config = start["config"]
+    profile = config["permissions"][config["default_permissions"]]
+    assert profile["filesystem"][str(private_state.resolve())] == "deny"
+    assert profile["filesystem"][str(source.resolve())] == "read"
+    assert profile["network"] == {"enabled": False}
+    assert all(turn["sandbox"] is None for _, turn in client.thread.turn_calls)
 
 
 def test_manager_resolves_automatic_profile_once_for_named_conversation(tmp_path: Path) -> None:

@@ -8,14 +8,21 @@ from typing import Callable, Protocol
 
 from ..code_style import ProjectCodeStylePreference, inspect_project_code_style
 from ..config import Config, load_config, resolve_workspace_location
-from ..registry import RegisteredProject, RegistryError
+from ..git import inspect_git_readiness
+from ..registry import ProjectRegistry, RegisteredProject, RegistryError
 from ..repository_maturity import inspect_repository_maturity
 from ..worker_mcp import WorkerMcpError, WorkerMcpServer, check_mcp_connection, parse_mcp_servers, worker_mcp_lease
 from .errors import ApplicationError
 
 
-def registered_project_config(project: RegisteredProject) -> Config:
-    config = load_config(project.config_path)
+def registered_project_config(project: RegisteredProject, registry: ProjectRegistry) -> Config:
+    if registry.path.is_relative_to(project.repo):
+        raise RegistryError("앱 등록 파일을 프로젝트 저장소 밖에 두어야 합니다.")
+    selected = project.config_path.resolve()
+    if project.config_path.is_relative_to(project.repo) or selected.is_relative_to(project.repo):
+        readiness = inspect_git_readiness(project.repo)
+        selected = registry.select_config_path(project.repo, main_branch=readiness.main_branch or "main")
+    config = load_config(selected)
     if config.project.repo != project.repo:
         raise RegistryError(f"registered project config changed repository: {project.name}")
     return config
@@ -32,6 +39,7 @@ class CodeStyleSettingsUpdate(Protocol):
 @dataclass(frozen=True, slots=True)
 class ProjectSettingsService:
     read_project: Callable[[str], RegisteredProject]
+    read_config: Callable[[RegisteredProject], Config]
     read_servers: Callable[[str, RegisteredProject], tuple[WorkerMcpServer, ...]]
     update_servers: WorkerMcpSettingsUpdate
     update_style: CodeStyleSettingsUpdate
@@ -80,7 +88,7 @@ class ProjectSettingsService:
 
     def workspace_location(self, project_name: str) -> object:
         project = self.read_project(project_name)
-        config = registered_project_config(project)
+        config = self.read_config(project)
         location = resolve_workspace_location(config.project)
         return {
             "repo": str(config.project.repo),
@@ -93,7 +101,7 @@ class ProjectSettingsService:
 
     def project_capabilities(self, project_name: str) -> object:
         project = self.read_project(project_name)
-        config = registered_project_config(project)
+        config = self.read_config(project)
         return {
             "deployment_configured": bool(config.execution.deploy_command),
             "repository_maturity": asdict(inspect_repository_maturity(project.repo)),

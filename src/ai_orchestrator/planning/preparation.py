@@ -15,6 +15,7 @@ from ..errors import PipelineError
 from ..models import EffortMode, ExecutionWorkspaceMode, PlanningMessage, PlanningMessageRole, PlanningMode, ProfileSource
 from ..models import RunState, Stage, WorkspaceLocation
 from ..planner import read_planning_document
+from ..windows_paths import filesystem_path
 
 DIRECTED_PLANNING_WITHOUT_SOURCE_DOCUMENT = """# Directed planning request
 
@@ -139,7 +140,7 @@ class PlanningPreparation:
         if planning_reasoning_effort and reasoning_agent_id:
             reasoning_agent = self.available_agent(reasoning_agent_id, "review")
             self.validate_effort(reasoning_agent, planning_reasoning_effort, planning_model or reasoning_agent.model)
-        path = Path(raw_spec_path).expanduser().resolve() if raw_spec_path else None
+        path = filesystem_path(Path(raw_spec_path).expanduser()).resolve() if raw_spec_path else None
         source_index: PlanningSourceIndex | None = None
         source_index_reused = False
         if prepared_source_index is not None:

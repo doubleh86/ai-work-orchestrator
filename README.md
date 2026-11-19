@@ -13,10 +13,11 @@ Codex·Claude 앱에서 만들 내용을 정하고, 여러 작업 AI로 제작�
 
 ## Windows에서 바로 실행하기
 
-[v0.7.3 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.7.3)에서 앱 ZIP 전체를 받아
+[v0.7.4 릴리스](https://github.com/doubleh86/ai-work-orchestrator/releases/tag/v0.7.4)에서 앱 ZIP 전체를 받아
 새 폴더에 압축을 풀고 `AI Work Orchestrator.exe`를 실행합니다. MCP만 사용할 때는 MCP 전용 ZIP을 받습니다.
 앱 실행에 Python·Node.js 설치는 필요하지 않습니다. Git과 작업 AI·프로젝트별 개발 도구는 별도로 준비합니다.
-v0.7.3 ZIP에는 Codex 모델 선택과 6.2 Sol·Astra 자동 배정을 포함합니다.
+v0.7.4에서는 Codex 모델 설정의 조회·저장을 고쳤습니다. 계획 확정 전에 검증 명령을 보여주며,
+자동 검증에는 작업 PC에 설치된 Codex CLI의 격리 기능이 필요합니다.
 
 ## 소스로 실행하기
 

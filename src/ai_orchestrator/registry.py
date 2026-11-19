@@ -12,6 +12,7 @@ from typing import Concatenate, Mapping, ParamSpec, TypeVar
 
 from .app_paths import application_config_root
 from .code_style import CodeStyleError, ProjectCodeStylePreference, normalize_custom_instruction_paths
+from .config import ConfigError, create_default_config
 from .file_lock import exclusive_file_lock
 from .worker_mcp import WorkerMcpError, WorkerMcpServer, parse_mcp_servers
 
@@ -103,7 +104,7 @@ class RegisteredProject:
         return cls(
             name=values["name"],
             repo=Path(values["repo"]).expanduser().resolve(),
-            config_path=Path(values["config_path"]).expanduser().resolve(),
+            config_path=Path(os.path.abspath(Path(values["config_path"]).expanduser())),
             created_at=values["created_at"],
             planning_source_dir=planning_source_dir,
             dotnet_executable=dotnet_executable,
@@ -141,9 +142,7 @@ class ProjectRegistry:
         repo_path = Path(repo).expanduser().resolve()
         if not repo_path.is_dir():
             raise RegistryError(f"project repository not found: {repo_path}")
-        selected_config = Path(config_path).expanduser().resolve() if config_path is not None else (repo_path / "orchestrator.toml").resolve()
-        if not selected_config.is_file():
-            raise RegistryError(f"project config not found: {selected_config}")
+        selected_config = self.select_config_path(repo_path, config_path)
         selected_planning_source = self._planning_source_path(planning_source_dir)
 
         projects = self._load()
@@ -167,6 +166,31 @@ class ProjectRegistry:
         identity = os.path.normcase(str(repo_path))
         digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
         return (self.path.parent / "project-configs" / digest / "orchestrator.toml").resolve()
+
+    def select_config_path(
+        self, repo: Path, config_path: str | Path | None = None, *, main_branch: str = "main",
+    ) -> Path:
+        if self.path.is_relative_to(repo):
+            raise RegistryError("앱 등록 파일을 프로젝트 저장소 밖에 두어야 합니다.")
+        # A repository checkout can change independently of any registration decision.
+        if config_path is not None:
+            selection = Path(os.path.abspath(repo / Path(config_path).expanduser()))
+            selected = selection.resolve()
+            if selection.is_relative_to(repo) or selected.is_relative_to(repo):
+                raise RegistryError("실행 설정 파일은 프로젝트 저장소 밖에서 선택해 주세요.")
+            if not selected.is_file():
+                raise RegistryError(f"project config not found: {selected}")
+            return selected
+        selected = self.managed_config_path(repo)
+        if selected.is_relative_to(repo):
+            raise RegistryError("프로젝트 설정을 저장하려면 앱 등록 파일을 프로젝트 저장소 밖에 두어야 합니다.")
+        with exclusive_file_lock(selected.with_suffix(".lock")):
+            if not selected.is_file():
+                try:
+                    create_default_config(selected, repo, main_branch=main_branch)
+                except ConfigError as exc:
+                    raise RegistryError(str(exc)) from exc
+        return selected
 
     @_serialized_write
     def update_planning_source(

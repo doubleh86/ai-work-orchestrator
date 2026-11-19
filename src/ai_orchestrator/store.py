@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from .usage import UsageObservation, UsageRecord
+from .windows_paths import filesystem_path
 
 from .persistence.atomic import write_json_atomic, write_text_atomic
 from .persistence.errors import PlanningCacheError, PlanningChatSidecarError, RunLockedError
@@ -49,7 +50,8 @@ ARCHIVE_MANIFEST_SCHEMA_VERSION = 1
 
 class StateStore:
     def __init__(self, root: Path, notification_sync: Callable[[RunState], None] | None = None):
-        self.root = root
+        # Atomic state and lock files add temporary names beneath the run directory.
+        self.root = filesystem_path(root, reserve=128)
         self.notification_sync = notification_sync
 
     def run_dir(self, run_id: str) -> Path:

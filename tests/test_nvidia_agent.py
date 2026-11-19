@@ -115,7 +115,7 @@ def test_manual_task_override_persists_nvidia_without_adding_a_reviewer(tmp_path
 
 
 def test_execution_and_review_have_explicit_tools_without_secret_config():
-    for action in ("execute", "review"):
+    for action in ("execute", "review", "planning"):
         environment = nvidia_environment({"NVIDIA_API_KEY": "test-key-not-real"}, model="nvidia/example", action=action)
         config = json.loads(environment["OPENCODE_CONFIG_CONTENT"])
         assert "test-key-not-real" not in environment["OPENCODE_CONFIG_CONTENT"]
@@ -125,12 +125,11 @@ def test_execution_and_review_have_explicit_tools_without_secret_config():
         assert permission["*"] == "deny" and permission["external_directory"] == "deny"
         assert permission["question"] == "deny" and permission["task"] == "deny"
         assert permission["read"]["**/.env.*"] == "deny"
-        assert permission["bash"]["*"] == "deny"
-        assert permission["bash"]["git diff*"] == "allow"
-        if action == "review":
-            assert permission["edit"] == "deny" and "python -m pytest*" not in permission["bash"]
+        assert permission["bash"] == "deny"
+        if action != "execute":
+            assert permission["edit"] == "deny"
         else:
-            assert permission["edit"]["*"] == "allow" and permission["bash"]["python -m pytest*"] == "allow"
+            assert permission["edit"]["*"] == "allow"
 
 
 @pytest.mark.parametrize("model", ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b"])

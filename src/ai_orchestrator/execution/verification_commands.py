@@ -10,10 +10,11 @@ from ..config import ExecutionConfig
 from ..errors import PipelineError
 from ..execution import VerificationCommandError, VerificationRunner
 from ..execution_control import CancellationSignal
-from ..git import GitError, GitWorkspace, LOCAL_GIT_TIMEOUT_SECONDS, run_command
+from ..git import GitError, GitWorkspace, LOCAL_GIT_TIMEOUT_SECONDS
 from ..models import RunState, Stage, TaskStatus, WorkTask
 from ..persistence.execution_records import VerificationCommandsRecords
 from .. import git as git_runtime
+from .verification_sandbox import VerificationSandbox
 
 
 @dataclass
@@ -22,6 +23,7 @@ class VerificationCommands:
     read_git: Callable[[], GitWorkspace]
     execution_settings: Callable[[], ExecutionConfig]
     read_dotnet_executable: Callable[[], str]
+    sandbox: VerificationSandbox
 
     @staticmethod
     def verification_resume_stage(state: RunState) -> Stage:
@@ -58,22 +60,25 @@ class VerificationCommands:
     ) -> list[str] | tuple[str, ...]:
         if not VerificationRunner.is_dotnet_command(command):
             return command
-        diagnostic = git_runtime.diagnose_dotnet(self.read_dotnet_executable() or command[0], cwd)
+
+        def execute_diagnostic(args: Sequence[str], directory: Path) -> subprocess.CompletedProcess[str]:
+            return self.sandbox.execute(args, directory, timeout_seconds=LOCAL_GIT_TIMEOUT_SECONDS, cancel_signal=None)
+
+        diagnostic = git_runtime.diagnose_dotnet(self.read_dotnet_executable() or command[0], cwd, execute=execute_diagnostic)
         write_diagnostic(diagnostic.log)
         if diagnostic.error:
             raise PipelineError(diagnostic.error)
         return (diagnostic.executable, *command[1:])
 
 
-    @staticmethod
     def execute_verification_command(
-        command: Sequence[str], cwd: Path, *, timeout_seconds: float,
+        self, command: Sequence[str], cwd: Path, *, timeout_seconds: float,
         cancel_signal: CancellationSignal | None, environment_overrides: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         try:
-            return run_command(
-                command, cwd, check=False, non_interactive=True, timeout_seconds=timeout_seconds,
+            return self.sandbox.execute(
+                command, cwd, timeout_seconds=timeout_seconds,
                 cancel_signal=cancel_signal, environment_overrides=environment_overrides,
             )
-        except GitError as exc:
+        except (GitError, OSError) as exc:
             raise VerificationCommandError(str(exc)) from exc

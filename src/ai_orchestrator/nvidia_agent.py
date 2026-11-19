@@ -89,18 +89,13 @@ def nvidia_environment(environment: Mapping[str, str], *, model: str, action: st
     """Configure tools without putting credentials into config or argv."""
     selected = model.strip() or NVIDIA_MODEL_PRESETS[0]
     file_rules = {"*": "allow"}
-    for pattern in ("*.env", "*.env.*", ".env", ".env.*", "**/.env", "**/.env.*", "*.pem", "*.key", "**/.git/**",
+    for pattern in ("*.env", "*.env.*", ".env", ".env.*", "**/.env", "**/.env.*", "*.pem", "*.key", ".git", "**/.git", "**/.git/**",
                     "**/.aws/**", "**/.ssh/**", "**/.codex/**", "**/auth.json", "**/credentials*", "**/secrets*"):
         file_rules[pattern] = "deny"
-    commands = {"*": "deny", "pwd": "allow", "git status*": "allow", "git diff*": "allow", "git log*": "allow",
-                "git ls-files*": "allow"}
-    if action != "review":
-        for pattern in ("dotnet build*", "dotnet test*", "dotnet restore*", "python -m pytest*", "python -m compileall*",
-                        "npm test*", "npm run build*", "npm run typecheck*", "node --test*"):
-            commands[pattern] = "allow"
     permission: dict[str, object] = {
         "*": "deny", "read": file_rules, "glob": "allow", "grep": "allow", "list": "allow",
-        "edit": "deny" if action == "review" else file_rules, "bash": commands, "external_directory": "deny",
+        "edit": file_rules if action in {"execute", "revise", "conflict_resolution"} else "deny",
+        "bash": "deny", "external_directory": "deny",
         "task": "deny", "question": "deny", "webfetch": "deny", "websearch": "deny", "skill": "deny",
     }
     model_settings: dict[str, object] = {"name": selected, "tool_call": True}

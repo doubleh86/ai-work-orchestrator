@@ -107,10 +107,8 @@ def automatic_claude_profile(source: ProfileSource, model: str) -> bool:
 
 
 def select_claude_model(
-    mode: EffortMode, *, purpose: str, task: WorkTask | None = None, reasoning_effort: str = "",
+    mode: EffortMode, *, task: WorkTask | None = None, reasoning_effort: str = "",
 ) -> ModelSelection:
-    if purpose != "task":
-        return ModelSelection(CLAUDE_OPUS_MODEL, "high", "기획·원인 판단은 Opus")
     important = task is None
     if task is not None:
         text = " ".join((task.title, task.description, *task.acceptance_criteria, *task.expected_paths)).casefold()

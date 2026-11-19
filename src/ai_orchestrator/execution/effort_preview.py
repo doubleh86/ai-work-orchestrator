@@ -42,6 +42,7 @@ class EffortPreviewBuilder:
                 profile_source=state.planning_profile_source,
                 baseline_reasoning_effort=state.planning_effort_baseline_reasoning,
                 purpose="planning",
+                configured_model=agent.model,
             )
         previews: list[EffortTaskPreview] = []
         manual_ids: list[str] = []

@@ -216,7 +216,7 @@ def test_file_lock_stops_auto_repair_preserves_evidence_and_allows_full_retry(tm
             'prepare_verification_command',
             side_effect=lambda command, *_: command,
         ),
-        patch('ai_orchestrator.execution.verification_commands.run_command', side_effect=command_result),
+        patch('ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute', side_effect=command_result),
         patch.object(pipeline._common_runtime.execution.verification, 'repair_verification_failure') as repair,
     ):
         with pytest.raises(PipelineError, match="실행 중인 앱"):

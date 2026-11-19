@@ -16,7 +16,9 @@ if TYPE_CHECKING:
 def build_provider_runtime(resources: PipelineResources, probes: ProviderConnectionProbes) -> ProviderRuntime[StoredStopSignal]:
     def runner() -> ProviderRunner:
         return ProviderRunner(
-            ProviderRuntimeOptions(resources.repo, resources.config.execution.agent_timeout_seconds, resources.config.worker_mcp_servers),
+            ProviderRuntimeOptions(
+                resources.repo, resources.config.execution.agent_timeout_seconds, resources.config.worker_mcp_servers, resources.store.root,
+            ),
             codex_sdk=resources.codex_sdk, claude_api_key=resources.claude_api_key, nvidia_api_key=resources.nvidia_api_key,
             nvidia_model_api_keys=resources.nvidia_model_api_keys, resolve_executable=lambda value: probes.resolve_executable(value),
             terminate_process=ProviderRunner.terminate_process,

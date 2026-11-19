@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
@@ -66,6 +67,18 @@ async def _ask_user_approval(ctx: Context, message: str) -> bool:
         related_request_id=ctx.request_id,
     )
     return response.action == "accept" and (response.content or {}).get("approve") is True
+
+
+def _plan_approval_message(project_name: str, review: dict[str, Any]) -> str:
+    tasks = review["tasks"]
+    checks = [
+        f"{task['id']}  {json.dumps(command, ensure_ascii=False)}"
+        for task in tasks for command in task.get("verify_commands", ())
+    ]
+    message = f"{project_name}의 ‘{review['summary']}’ 계획을 확정할까요? 작업 {len(tasks)}개"
+    if checks:
+        message += "\n\n실행할 검증 명령\n" + "\n".join(checks)
+    return message
 
 
 def build_server(operations: McpOperations) -> Server:
@@ -224,9 +237,8 @@ def build_server(operations: McpOperations) -> Server:
             pending = await to_thread.run_sync(operations.confirm_plan, project_name, run_id, request_id, review_id)
             if pending.get("status") != "confirmation_required":
                 return pending
-            review = pending["review"]
             try:
-                accepted = await _ask_user_approval(ctx, f"{project_name}의 ‘{review['summary']}’ 계획을 확정할까요? 작업 {len(review['tasks'])}개")
+                accepted = await _ask_user_approval(ctx, _plan_approval_message(project_name, pending["review"]))
             except McpError as exc:
                 raise ValueError("이 앱에서 확인을 열 수 없습니다. 오케스트레이터에서 계획을 확인해 주세요.") from exc
             if not accepted:

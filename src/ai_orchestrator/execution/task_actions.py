@@ -110,8 +110,15 @@ class TaskActionRunner:
             self.ensure_clean(worktree)
             before = self.git.head(worktree, non_interactive=True, timeout_seconds=LOCAL_GIT_TIMEOUT_SECONDS)
             prompt = self.review_prompt(state, task, cycle, manual_verification=manual_verification)
+            reviewer = self.agents[task.reviewer_agent_id]
+            if reviewer.provider_id in {"claude", "nvidia"}:
+                diff = self.git.committed_review_diff(worktree, state.main_branch, before)
+                limit = 64_000
+                prompt += "\n\n## Committed changes provided by the orchestrator\n" + diff[:limit]
+                if len(diff) > limit:
+                    prompt += "\n[Diff excerpt truncated. Use the file tools and report any gaps in review evidence.]\n"
             log_path = self.run_directory(state.id) / "logs" / f"{task.id}-review-{cycle}.log"
-            output = self.invoke(state, task, self.agents[task.reviewer_agent_id], prompt, log_path, TaskAction.REVIEW)
+            output = self.invoke(state, task, reviewer, prompt, log_path, TaskAction.REVIEW)
             check_stopped()
             after = self.git.head(worktree, non_interactive=True, timeout_seconds=LOCAL_GIT_TIMEOUT_SECONDS)
             if before != after:

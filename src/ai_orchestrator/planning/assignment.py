@@ -189,7 +189,7 @@ def assign_agents(
             task.effort_baseline_reasoning = recommended_effort
             task.model_selection_reason = decision.reason
         elif selected.provider_id == "claude" and automatic_claude_profile(task.profile_source, selected_model):
-            decision = select_claude_model(effort_mode or EffortMode.BALANCED, purpose="task", task=task, reasoning_effort=recommended_effort)
+            decision = select_claude_model(effort_mode or EffortMode.BALANCED, task=task, reasoning_effort=recommended_effort)
             task.model = decision.model
             task.reasoning_effort = recommended_effort if manual and recommended_effort else decision.reasoning_effort
             task.profile_source = ProfileSource.MANUAL if manual and recommended_effort else ProfileSource.MODE

@@ -39,7 +39,7 @@ import uuid
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock, call, patch
+from unittest.mock import ANY, Mock, call, patch
 
 from ai_orchestrator.config import AgentConfig, Config, ExecutionConfig, PlanningConfig, ProjectConfig, RoutingConfig
 from ai_orchestrator.code_style import CodeStyleSnapshot, ProjectCodeStylePreference, inspect_project_code_style, inspect_task_code_style
@@ -1686,7 +1686,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertTrue(current.progress_updated_at)
                 return subprocess.CompletedProcess(command, 0 if len(observations) == 1 else 1, "test output")
 
-            with patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=run_verification):
+            with patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=run_verification):
                 with self.assertRaisesRegex(PipelineError, "verification command failed"):
                     pipeline.complete_task(state.id, task.id)
             self.assertEqual([item[0] for item in observations], ["verifying_command", "verifying_command"])
@@ -1750,7 +1750,7 @@ class PipelineTest(unittest.TestCase):
                 ):
                     failed = pipeline.retry_task(state.id, task.id)
                 worker.assert_not_called()
-                diagnose.assert_called_once_with(pipeline.dotnet_executable, Path(task.worktree))
+                diagnose.assert_called_once_with(pipeline.dotnet_executable, Path(task.worktree), execute=ANY)
                 self.assertEqual(failed.stage, Stage.FAILED)
                 self.assertEqual(failed.tasks[0].failed_action, resume_action)
                 self.assertIn("No compatible SDK", pipeline.task_log(state.id, task.id))
@@ -1783,7 +1783,7 @@ class PipelineTest(unittest.TestCase):
             with (
                 patch('ai_orchestrator.git.diagnose_dotnet', return_value=DotnetDiagnostic(pipeline.dotnet_executable, 'SDK selected')),
                 patch(
-                    'ai_orchestrator.execution.verification_commands.run_command',
+                    'ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute',
                     return_value=subprocess.CompletedProcess([], 0, 'tests passed'),
                 ) as run,
                 patch.object(pipeline._common_runtime.execution.tasks, 'run_executor') as worker,
@@ -1810,7 +1810,7 @@ class PipelineTest(unittest.TestCase):
                     diagnostics.append,
                 )
 
-            diagnose.assert_called_once_with(pipeline.dotnet_executable, Path(task.worktree))
+            diagnose.assert_called_once_with(pipeline.dotnet_executable, Path(task.worktree), execute=ANY)
             self.assertEqual(selected, (pipeline.dotnet_executable, "build-server", "shutdown"))
             self.assertEqual(diagnostics, ["SDK selected"])
 
@@ -1860,7 +1860,7 @@ class PipelineTest(unittest.TestCase):
                 )
                 with (
                     patch('ai_orchestrator.git.diagnose_dotnet', return_value=diagnostic),
-                    patch('ai_orchestrator.execution.verification_commands.run_command') as run,
+                    patch('ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute') as run,
                 ):
                     with self.assertRaisesRegex(PipelineError, ".NET SDK 환경 오류"):
                         if integration:
@@ -1884,7 +1884,7 @@ class PipelineTest(unittest.TestCase):
             with (
                 patch('ai_orchestrator.git.diagnose_dotnet', return_value=diagnostic),
                 patch(
-                    'ai_orchestrator.execution.verification_commands.run_command',
+                    'ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute',
                     return_value=subprocess.CompletedProcess([], 1, 'test assertion failed'),
                 ) as run,
             ):
@@ -1906,7 +1906,7 @@ class PipelineTest(unittest.TestCase):
             with (
                 patch('ai_orchestrator.git.diagnose_dotnet', return_value=diagnostic),
                 patch(
-                    'ai_orchestrator.execution.verification_commands.run_command',
+                    'ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute',
                     return_value=subprocess.CompletedProcess([], 0, 'passed'),
                 ) as run,
             ):
@@ -3198,7 +3198,7 @@ class PipelineTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 1, output)
 
             with (patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke),
-                  patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=check)):
+                  patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=check)):
                 failed = pipeline.execute(state.id)
             self.assertEqual(calls, [state.tasks[0].id] * 2)
             self.assertEqual(failed.stage, Stage.FAILED)
@@ -3227,7 +3227,7 @@ class PipelineTest(unittest.TestCase):
                 ):
                     with (
                         patch(
-                            'ai_orchestrator.execution.verification_commands.run_command',
+                            'ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute',
                             return_value=subprocess.CompletedProcess([], 1, diagnostic),
                         ),
                     ):
@@ -3266,7 +3266,7 @@ class PipelineTest(unittest.TestCase):
 
             with (
                 patch("ai_orchestrator.git.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
-                patch("ai_orchestrator.execution.verification_commands.run_command", return_value=subprocess.CompletedProcess([], 1, diagnostic)),
+                patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", return_value=subprocess.CompletedProcess([], 1, diagnostic)),
                 patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as worker,
             ):
                 failed = pipeline.execute(state.id)
@@ -3287,7 +3287,7 @@ class PipelineTest(unittest.TestCase):
             with (
                 patch('ai_orchestrator.git.diagnose_dotnet', return_value=DotnetDiagnostic('dotnet', 'SDK selected')),
                 patch(
-                    'ai_orchestrator.execution.verification_commands.run_command',
+                    'ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute',
                     return_value=subprocess.CompletedProcess([], 0, 'verified'),
                 ) as verification,
                 patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent') as worker,
@@ -3335,7 +3335,7 @@ class PipelineTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, parent_environment),
                 patch.object(pipeline._common_runtime.execution.verification_commands, 'prepare_verification_command', side_effect=prepare),
-                patch("ai_orchestrator.execution.verification_commands.run_command", wraps=run_command) as verification,
+                patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", wraps=run_command) as verification,
                 patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as worker,
             ):
                 completed = pipeline.execute(state.id)
@@ -3387,7 +3387,7 @@ class PipelineTest(unittest.TestCase):
 
                 with (
                     patch("ai_orchestrator.git.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
-                    patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=verify),
+                    patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=verify),
                     patch.object(pipeline._common_runtime.execution.tasks, 'invoke_agent', side_effect=invoke) as worker,
                 ):
                     result = pipeline.execute(state.id)
@@ -3610,7 +3610,7 @@ class PipelineTest(unittest.TestCase):
             diagnostic = "error MSB4018: System.UnauthorizedAccessException: Access to the path 'obj/Debug/Manifest.json' is denied."
             with (
                 patch("ai_orchestrator.git.diagnose_dotnet", return_value=DotnetDiagnostic("dotnet", "SDK selected")),
-                patch("ai_orchestrator.execution.verification_commands.run_command", return_value=subprocess.CompletedProcess([], 1, diagnostic)),
+                patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", return_value=subprocess.CompletedProcess([], 1, diagnostic)),
                 patch.object(pipeline._common_runtime.execution.verification, 'repair_verification_failure') as repair,
             ):
                 with self.assertRaisesRegex(PipelineError, "산출물 쓰기 접근이 거부") as caught:
@@ -8886,7 +8886,7 @@ else:
                 return subprocess.CompletedProcess([], 0, "passed\n", "")
 
             commands = (("python", "first.py"), ("git", "status", "--short"))
-            with patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=capture_progress):
+            with patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=capture_progress):
                 pipeline._common_runtime.execution.verification.run_verification_commands(state, root, commands)
 
             self.assertEqual(observed, [("running_command", "python first.py", 1, 2), ("running_command", "git status --short", 2, 2)])
@@ -8936,7 +8936,7 @@ else:
                 return subprocess.CompletedProcess(command, 0, "passed\n", "")
 
             command = ("npm", "--prefix", "renderer", "run", "build")
-            with patch("ai_orchestrator.execution.verification_commands.run_command", side_effect=capture_command):
+            with patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", side_effect=capture_command):
                 pipeline._common_runtime.execution.verification.run_verification_commands(state, root, (command,))
 
             self.assertEqual(invocations, [("npm", "--prefix", "renderer", "ci"), command])
@@ -9045,7 +9045,7 @@ else:
 
             with (
                 patch(
-                    'ai_orchestrator.execution.verification_commands.run_command',
+                    'ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute',
                     side_effect=GitError('command timed out after 600 seconds: test'),
                 ) as run,
             ):
@@ -11611,7 +11611,7 @@ else:
             pipeline.store.save(state)
             (pipeline.store.run_dir(state.id) / "logs").mkdir(parents=True, exist_ok=True)
 
-            with patch("ai_orchestrator.execution.verification_commands.run_command", return_value=Mock(returncode=7, stdout="lint failed")):
+            with patch("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", return_value=Mock(returncode=7, stdout="lint failed")):
                 with self.assertRaisesRegex(PipelineError, "task verification command failed"):
                     pipeline._common_runtime.execution.tasks.perform_task_verification(state, task)
 

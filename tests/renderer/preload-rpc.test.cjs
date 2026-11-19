@@ -142,6 +142,17 @@ test('attention inbox reaches the read-only request channel without a selected p
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['orchestrator:request', 'runs.attentionItems', {}]]);
 });
 
+test('Codex model settings can load and save from the renderer without a selected project', async () => {
+  const { api, calls } = bridge();
+  const selection = { models: ['gpt-6.1-sol'], expectedModels: ['gpt-6.2-sol'] };
+  await api.request('providers.codexModels');
+  await api.request('providers.updateCodexModels', selection);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['orchestrator:request', 'providers.codexModels', {}],
+    ['orchestrator:request', 'providers.updateCodexModels', selection],
+  ]);
+});
+
 test('recovery preview reaches request IPC with its selected group', async () => {
   const { api, calls } = bridge();
   const params = { projectName: 'project', runId: 'failed' };

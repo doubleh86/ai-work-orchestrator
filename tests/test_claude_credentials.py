@@ -65,11 +65,14 @@ def test_claude_private_key_is_redacted_from_rpc_errors():
 def test_explicit_app_key_overrides_conflicting_auth_only_in_child_environment():
     original = {"ANTHROPIC_API_KEY": "old-key", "ANTHROPIC_BASE_URL": "https://gateway.invalid",
                 "ANTHROPIC_AUTH_TOKEN": "other-token", "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
-                "ANTHROPIC_CUSTOM_HEADERS": "example", "CLAUDE_CODE_USE_BEDROCK": "1", "KEEP": "value"}
+                "ANTHROPIC_CUSTOM_HEADERS": "example", "CLAUDE_CODE_USE_BEDROCK": "1",
+                "OPENAI_API_KEY": "different-provider", "GITHUB_TOKEN": "different-service", "PATH": "runtime-path"}
     environment = claude_environment("fixture-key", original)
-    assert environment == {"ANTHROPIC_API_KEY": "fixture-key", "KEEP": "value"}
+    assert environment == {"ANTHROPIC_API_KEY": "fixture-key", "PATH": "runtime-path"}
     assert original["ANTHROPIC_API_KEY"] == "old-key"
-    assert claude_environment(None, original) == original
+    assert claude_environment(None, original) == {
+        name: value for name, value in original.items() if name not in {"OPENAI_API_KEY", "GITHUB_TOKEN"}
+    }
 
 
 def test_auth_query_and_provider_selection_use_app_key_without_exposing_it(tmp_path, monkeypatch):

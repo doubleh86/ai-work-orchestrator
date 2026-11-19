@@ -15,9 +15,10 @@ import time
 from dataclasses import dataclass
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Mapping, Sequence
+from typing import BinaryIO, Callable, Mapping, Sequence
 
 from .execution_control import CancellationSignal, ExecutionStopped
+from .windows_paths import filesystem_path, process_working_directory
 
 
 
@@ -32,7 +33,10 @@ class DotnetDiagnostic:
 _DOTNET_SDK_VERSION_PATTERN = r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?"
 
 
-def diagnose_dotnet(executable: str, cwd: Path) -> DotnetDiagnostic:
+def diagnose_dotnet(
+    executable: str, cwd: Path, *,
+    execute: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]] | None = None,
+) -> DotnetDiagnostic:
     path = Path(executable).expanduser()
     if path.parent != Path(".") or path.is_absolute():
         selected = path if path.is_absolute() else cwd / path
@@ -46,7 +50,10 @@ def diagnose_dotnet(executable: str, cwd: Path) -> DotnetDiagnostic:
     for option in ("--list-sdks", "--version"):
         lines.append(f"$ {resolved} {option}")
         try:
-            result = run_command((resolved, option), cwd, check=False, non_interactive=True, timeout_seconds=LOCAL_GIT_TIMEOUT_SECONDS)
+            if execute is not None:
+                result = execute((resolved, option), cwd)
+            else:
+                result = run_command((resolved, option), cwd, check=False, non_interactive=True, timeout_seconds=LOCAL_GIT_TIMEOUT_SECONDS)
         except GitError as exc:
             lines.append(str(exc))
             return DotnetDiagnostic(resolved, "\n".join(lines), ".NET SDK 환경 진단 실패: 실행 오류 또는 제한시간 초과입니다. 검증 로그를 확인하세요.")
@@ -175,8 +182,20 @@ _INITIAL_COMMIT_GENERATED_ROOTS = frozenset(
 _INITIAL_COMMIT_SECRET_SUFFIXES = (".key", ".pem", ".p12", ".pfx")
 
 
+def _read_repository_root(
+    path: Path, *, non_interactive: bool, timeout_seconds: float | None,
+) -> tuple[subprocess.CompletedProcess[str], Path | None]:
+    with process_working_directory(path) as cwd:
+        result = run_command(
+            ["git", "rev-parse", "--show-toplevel"], cwd, check=False,
+            non_interactive=non_interactive, timeout_seconds=timeout_seconds,
+        )
+        root = filesystem_path(Path(result.stdout.strip())).resolve() if result.returncode == 0 else None
+    return result, root
+
+
 def inspect_git_readiness(selected_path: str | Path) -> GitRepositoryReadiness:
-    raw_path = Path(selected_path).expanduser()
+    raw_path = filesystem_path(Path(selected_path).expanduser())
     try:
         path = raw_path.resolve()
     except OSError as exc:
@@ -188,15 +207,11 @@ def inspect_git_readiness(selected_path: str | Path) -> GitRepositoryReadiness:
     if not shutil.which("git"):
         return GitRepositoryReadiness("git_unavailable", str(path), diagnostics=("Git 실행 파일을 찾지 못했습니다.",))
     try:
-        root_result = run_command(
-            ["git", "rev-parse", "--show-toplevel"],
-            path,
-            check=False,
-            non_interactive=True,
-            timeout_seconds=LOCAL_GIT_TIMEOUT_SECONDS,
-        )
+        root_result, repository_root = _read_repository_root(path, non_interactive=True, timeout_seconds=LOCAL_GIT_TIMEOUT_SECONDS)
     except GitError as exc:
         return GitRepositoryReadiness("git_unavailable", str(path), diagnostics=(str(exc),))
+    except OSError as exc:
+        return GitRepositoryReadiness("invalid", str(path), diagnostics=(f"Git 저장소 경로를 확인할 수 없습니다: {exc}",))
     if root_result.returncode != 0:
         diagnostic = root_result.stdout.strip()
         if "not a git repository" in diagnostic.casefold():
@@ -206,10 +221,6 @@ def inspect_git_readiness(selected_path: str | Path) -> GitRepositoryReadiness:
             str(path),
             diagnostics=(diagnostic or "Git 저장소 상태를 확인할 수 없습니다.",),
         )
-    try:
-        repository_root = Path(root_result.stdout.strip()).resolve()
-    except OSError as exc:
-        return GitRepositoryReadiness("invalid", str(path), diagnostics=(f"Git 저장소 루트를 확인할 수 없습니다: {exc}",))
     if repository_root != path:
         return GitRepositoryReadiness(
             "inside_other_repository",
@@ -496,13 +507,14 @@ def run_command(
     merge_stderr: bool = True,
     cancel_signal: CancellationSignal | None = None,
     environment_overrides: Mapping[str, str] | None = None,
+    base_environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     executable = Path(command[0]).name.casefold() if command else ""
     process_command, use_shell = _prepare_subprocess_command(command)
     selected_encoding = encoding or ("utf-8" if executable in {"git", "git.exe"} else None)
     environment = None
     if non_interactive:
-        environment = os.environ.copy()
+        environment = dict(os.environ if base_environment is None else base_environment)
         if executable in {"git", "git.exe"}:
             environment["GIT_TERMINAL_PROMPT"] = "0"
             environment["GCM_INTERACTIVE"] = "Never"
@@ -525,20 +537,22 @@ def run_command(
             raise _command_start_error(command, exc) from exc
     else:
         try:
-            result = subprocess.run(
-                process_command,
-                cwd=cwd,
-                input=input_text,
-                text=True,
-                encoding=selected_encoding,
-                errors="replace" if selected_encoding else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
-                check=False,
-                shell=use_shell,
-                timeout=timeout_seconds,
-                env=({**os.environ, **environment_overrides} if environment_overrides else None),
-            )
+            with process_working_directory(cwd) as process_cwd:
+                result = subprocess.run(
+                    process_command,
+                    cwd=process_cwd,
+                    input=input_text,
+                    text=True,
+                    encoding=selected_encoding,
+                    errors="replace" if selected_encoding else None,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+                    check=False,
+                    shell=use_shell,
+                    timeout=timeout_seconds,
+                    env=({**(os.environ if base_environment is None else base_environment), **(environment_overrides or {})}
+                         if base_environment is not None or environment_overrides else None),
+                )
         except subprocess.TimeoutExpired as exc:
             raise _timeout_error(command, timeout_seconds, exc.stdout, selected_encoding, error_output=exc.stderr) from exc
         except OSError as exc:
@@ -570,6 +584,7 @@ def _run_non_interactive_command(
         process_options["start_new_session"] = True
     selected_encoding = encoding or locale.getpreferredencoding(False)
     with ExitStack() as stack:
+        process_cwd = stack.enter_context(process_working_directory(cwd))
         output_stream = stack.enter_context(tempfile.TemporaryFile(mode="w+b"))
         error_stream = None if merge_stderr else stack.enter_context(tempfile.TemporaryFile(mode="w+b"))
         input_stream = None
@@ -580,7 +595,7 @@ def _run_non_interactive_command(
         try:
             process = subprocess.Popen(
                 process_command,
-                cwd=cwd,
+                cwd=process_cwd,
                 stdin=input_stream if input_stream is not None else subprocess.DEVNULL,
                 stdout=output_stream,
                 stderr=subprocess.STDOUT if error_stream is None else error_stream,
@@ -723,13 +738,10 @@ class GitWorkspace:
         self.main_branch = main_branch
 
     def ensure_repository(self, *, non_interactive: bool = False, timeout_seconds: float | None = None) -> None:
-        result = run_command(
-            ["git", "rev-parse", "--show-toplevel"], self.repo, check=False, non_interactive=non_interactive, timeout_seconds=timeout_seconds
-        )
+        result, top = _read_repository_root(self.repo, non_interactive=non_interactive, timeout_seconds=timeout_seconds)
         if result.returncode != 0:
             raise GitError(f"not a git repository: {self.repo}")
-        top = Path(result.stdout.strip()).resolve()
-        if top != self.repo.resolve():
+        if top != filesystem_path(self.repo).resolve():
             raise GitError(f"configured repo must be the git root: {self.repo} (root: {top})")
 
     def remote_configured(
@@ -1246,6 +1258,12 @@ class GitWorkspace:
 
     def head(self, worktree: Path, *, non_interactive: bool = False, timeout_seconds: float | None = None) -> str:
         return run_command(["git", "rev-parse", "HEAD"], worktree, non_interactive=non_interactive, timeout_seconds=timeout_seconds).stdout.strip()
+
+    def committed_review_diff(self, worktree: Path, main_branch: str, commit: str) -> str:
+        return run_command(
+            ["git", "diff", "--no-ext-diff", "--no-textconv", f"refs/heads/{main_branch}", commit, "--"],
+            worktree, non_interactive=True, timeout_seconds=LOCAL_GIT_TIMEOUT_SECONDS,
+        ).stdout
 
     def list_project_files(self, root: Path, *, non_interactive: bool = False, timeout_seconds: float | None = None) -> list[Path]:
         selected_root = root.expanduser().resolve()

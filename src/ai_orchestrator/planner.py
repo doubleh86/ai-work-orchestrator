@@ -16,6 +16,7 @@ from .models import (
     EffortMode, PlanningMode, ProfileSource, ReviewStatus, RiskLevel, TaskReadiness, TechStackComponents, TechStackOption, UserCheck, WorkTask,
 )
 from .model_selection import AUTOMATIC_CODEX_MODELS, CODEX_SOL_MODEL, automatic_claude_profile, select_claude_model, select_codex_model
+from .windows_paths import filesystem_path
 
 TAGGED_TASK = re.compile(r"^\s*[-*]\s+\[([^\]]+)\]\s+(.+?)\s*$")
 PLAIN_TASK = re.compile(r"^\s*[-*]\s+(?!\[[ xX]\]\s)(.+?)\s*$")
@@ -40,7 +41,7 @@ MEDIUM_RISK_CAPABILITIES = {"backend", "api", "mobile", "architecture"}
 
 
 def read_planning_document(path: str | Path) -> str:
-    document_path = Path(path).expanduser().resolve()
+    document_path = filesystem_path(Path(path).expanduser()).resolve()
     if document_path.is_dir():
         return _planning_directory_reference(document_path)
     return _read_planning_file(document_path)

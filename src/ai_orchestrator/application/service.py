@@ -7,7 +7,7 @@ from ..account_usage import AccountUsage, read_claude_quota
 from ..codex_model_preferences import CODEX_MODEL_PRESETS, CodexModelPreferenceError, enabled_codex_models, save_codex_models
 from ..codex_sdk import CodexSdkManager, read_codex_quota
 from ..code_style import ProjectCodeStylePreference
-from ..config import create_default_config, load_config
+from ..config import load_config
 from ..git import (
     create_initial_commit,
     initialize_git_repository,
@@ -34,6 +34,7 @@ class OrchestratorApplication:
         self._planning_indexes = PreparedPlanningIndexes()
         self._summary_queries = ProjectSummaryQueries(self._summary_project_names)
         self._settings = ProjectSettingsService(
+            read_config=lambda project: registered_project_config(project, self.registry),
             read_project=lambda name: self.registry.get(name),
             read_servers=self._project_worker_servers,
             update_servers=lambda name, servers, *, expected_revision: self.registry.update_worker_mcp_servers(
@@ -127,17 +128,7 @@ class OrchestratorApplication:
         readiness = inspect_git_readiness(repo_path)
         if readiness.kind != "ready":
             raise RegistryError(f"project repository is not ready: {readiness.kind}")
-        if config_path:
-            configured = Path(config_path).expanduser()
-            selected_config = configured.resolve() if configured.is_absolute() else (repo_path / configured).resolve()
-        else:
-            repository_config = repo_path / "orchestrator.toml"
-            if repository_config.is_file():
-                selected_config = repository_config
-            else:
-                selected_config = self.registry.managed_config_path(repo_path)
-                if not selected_config.is_file():
-                    create_default_config(selected_config, repo_path, main_branch=readiness.main_branch or "main")
+        selected_config = self.registry.select_config_path(repo_path, config_path, main_branch=readiness.main_branch or "main")
         config = load_config(selected_config)
         if config.project.repo != repo_path:
             raise RegistryError(f"registered repository does not match project.repo in config: {repo_path} != {config.project.repo}")
@@ -873,7 +864,7 @@ class OrchestratorApplication:
         project = self.registry.get(project_name)
         if expected_project is not None and project != expected_project:
             raise RegistryError("프로젝트 등록 정보가 변경됐습니다. 계획 컨텍스트를 다시 조회해 주세요.")
-        config = registered_project_config(project)
+        config = registered_project_config(project, self.registry)
         if project.worker_mcp_servers is not None:
             config = replace(config, worker_mcp_servers=project.worker_mcp_servers)
         return create_pipeline(

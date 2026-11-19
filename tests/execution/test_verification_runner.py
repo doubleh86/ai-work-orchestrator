@@ -126,7 +126,7 @@ def test_facade_preserves_failure_evidence_and_original_adapter_error(tmp_path: 
     if failure == "prepare_error":
         monkeypatch.setattr(pipeline._common_runtime.execution.verification_commands, 'prepare_verification_command', Mock(side_effect=source_error))
     execute = Mock(side_effect=source_error) if failure.endswith("error") else Mock(return_value=subprocess.CompletedProcess([], 1, "실패"))
-    monkeypatch.setattr("ai_orchestrator.execution.verification_commands.run_command", execute)
+    monkeypatch.setattr("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", execute)
     with pytest.raises(PipelineError) as caught:
         pipeline._common_runtime.execution.verification.run_verification_commands(state, tmp_path, (command,))
     if failure == "prepare_error":

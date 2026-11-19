@@ -233,7 +233,13 @@ function PlanDialog({ selection, run, onClose, onConfirmed }: { selection: Selec
   return <WorkDialog title="제작 계획 확인" className="maker-dialog" onClose={() => { if (!busy) onClose(); }}>
     <p>{makerRunTitle(run.summary) || "제작 계획을 확인해 주세요."}</p>
     <p className="maker-muted">총 {run.tasks.length}개 작업</p>
-    <ol className="maker-plan-list">{run.tasks.map(task => <li key={task.id}><h3>{makerRunTitle(task.title) || "이름 없는 작업"}</h3></li>)}</ol>
+    <ol className="maker-plan-list">{run.tasks.map(task => <li key={task.id}>
+      <h3>{makerRunTitle(task.title) || "이름 없는 작업"}</h3>
+      {task.verify_commands?.length ? <details open>
+        <summary>실행할 검증 명령</summary>
+        <ul>{task.verify_commands.map((command, index) => <li key={index}><code>{JSON.stringify(command)}</code></li>)}</ul>
+      </details> : null}
+    </li>)}</ol>
     {error ? <p role="alert">{error}</p> : null}
     {confirmed ? <p role="status">계획이 확정됐습니다. 대화 중인 AI에게 제작 시작을 요청하세요.</p>
       : <button className="maker-button maker-button--primary" disabled={busy || Boolean(run.archive)} onClick={() => void confirm()}>{busy ? "계획 확인 중…" : "이 계획으로 확정"}</button>}

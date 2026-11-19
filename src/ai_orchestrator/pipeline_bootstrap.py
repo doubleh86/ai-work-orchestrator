@@ -47,6 +47,7 @@ from .execution.preparation import TaskExecutionPreparation
 from .pipeline_provider_bootstrap import build_provider_runtime
 from .pipeline_planning_bootstrap import build_planning_commands
 from .store import StateStore
+from .windows_paths import filesystem_path
 from .pipeline_execution_bootstrap import ExecutionRuntime, build_execution_runtime
 from .pipeline_integration_bootstrap import IntegrationRuntime, build_integration_runtime
 
@@ -108,7 +109,7 @@ def build_pipeline_runtime(
     nvidia_api_key = current_nvidia_api_key()
     claude_api_key = current_claude_api_key()
     nvidia_model_api_keys = current_nvidia_model_keys()
-    repo = config.project.repo
+    repo = filesystem_path(config.project.repo)
     project_key = str(repo.expanduser().resolve())
     deployment_configured = bool(config.execution.deploy_command)
     resources = PipelineResources(

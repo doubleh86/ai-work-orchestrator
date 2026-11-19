@@ -19,9 +19,12 @@ from ..execution_control import CancellationSignal, ExecutionStopped
 from ..nvidia_agent import (
     NVIDIA_SETUP, NvidiaAgentError, NvidiaCompletionError, nvidia_environment, nvidia_key_configured, parse_nvidia_output, redact_nvidia_output,
 )
+from ..process_environment import runtime_environment
 from ..provider_executable import resolve_provider_executable
 from ..usage import UsageObservation
+from ..windows_paths import process_working_directory
 from ..worker_mcp import WorkerMcpServer, configure_claude_mcp, redact_mcp_output, secret_values
+from .provider_commands import configure_claude_tools
 
 CODEX_INPUT_LIMIT_CHARACTERS = 1_048_576
 AGENT_TERMINATION_TIMEOUT_SECONDS = 10
@@ -57,6 +60,7 @@ class ProviderRuntimeOptions:
     repo: Path
     agent_timeout_seconds: float
     mcp_servers: tuple[WorkerMcpServer, ...] = ()
+    state_root: Path | None = None
 
 
 class ProviderRunner:
@@ -117,6 +121,12 @@ class ProviderRunner:
             raise ProviderInputLimitError(f"Codex input exceeds the maximum length of {CODEX_INPUT_LIMIT_CHARACTERS} characters: {len(prompt)}")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         timeout = self.options.agent_timeout_seconds if timeout_seconds is None else timeout_seconds
+        private_state = (self.options.state_root or self.repo / ".ai-orchestrator").resolve()
+        planning_source = replacements.get("{planning_source}", "") if action == "planning" else ""
+        if planning_source:
+            source = Path(planning_source).resolve()
+            if source.is_relative_to(private_state) or private_state.is_relative_to(source):
+                raise ProviderRunError("실행 기록 폴더를 포함하지 않는 기획 자료 경로를 선택해 주세요.")
         if agent.provider_id == "codex":
             if self._codex_sdk is None:
                 raise ProviderRunError(f"agent {agent.id} requires the openai-codex SDK")
@@ -145,6 +155,8 @@ class ProviderRunner:
                         retry_callback=retry_callback,
                         mcp_servers=servers,
                         project_root=self.repo if servers else None,
+                        planning_state_root=private_state if action == "planning" else None,
+                        planning_source_root=Path(planning_source) if planning_source else None,
                     )
                 )
             except CodexSdkTimeout as exc:
@@ -173,9 +185,10 @@ class ProviderRunner:
             missing = command[0] if command else agent.id
             raise ProviderRunError(f"provider executable not found for {agent.id}: {missing}")
         command[0] = executable
-        if agent.provider_id == "nvidia":
-            command.extend(("--dir", str(cwd.resolve())))
-        environment = os.environ.copy()
+        if agent.provider_id == "claude":
+            environment = claude_environment(self._claude_api_key)
+        else:
+            environment = runtime_environment(extra=("NVIDIA_API_KEY",) if agent.provider_id == "nvidia" else ())
         environment.update(
             {
                 "AI_ORCHESTRATOR_RUN_ID": replacements["{run_id}"],
@@ -192,7 +205,11 @@ class ProviderRunner:
                 raise ProviderRunError(NVIDIA_SETUP)
             environment = nvidia_environment(environment, model=model or agent.model, action=action, api_key=api_key)
         elif agent.provider_id == "claude":
-            environment = claude_environment(self._claude_api_key, environment)
+            work = cwd.resolve()
+            protected = f"./{private_state.relative_to(work).as_posix()}" if private_state.is_relative_to(work) else ""
+            configure_claude_tools(
+                command, action, worker_mcp=bool(servers), planning_source=planning_source, private_state_path=protected,
+            )
             if servers:
                 environment.update(configure_claude_mcp(command, servers, cwd, self.repo))
         process_options: dict[str, object] = {}
@@ -200,70 +217,74 @@ class ProviderRunner:
             process_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             process_options["start_new_session"] = True
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            text=True,
-            encoding="utf-8",
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=environment,
-            **process_options,
-        )
-        try:
-            if cancel_signal is None:
-                output, _ = process.communicate(input=prompt, timeout=timeout)
-            else:
-                deadline = time.monotonic() + timeout
-                input_value: str | None = prompt
-                while True:
-                    if cancel_signal.is_set():
-                        self._terminate_agent_process(process)
-                        try:
-                            output, _ = process.communicate(timeout=AGENT_OUTPUT_DRAIN_TIMEOUT_SECONDS)
-                        except subprocess.TimeoutExpired:
-                            self.close_process_streams(process)
-                            output = ""
-                        output = output or ""
-                        output += "\n[ai-orchestrator] stopped by user request\n"
-                        if agent.provider_id == "nvidia":
-                            output = redact_nvidia_output(output, environment)
-                        elif agent.provider_id == "claude":
-                            output = redact_claude_output(output, self._claude_api_key)
-                        output = redact_mcp_output(output, mcp_redactions)
-                        log_path.write_text(output, encoding="utf-8")
-                        raise ExecutionStopped("사용자 요청에 따라 에이전트 실행을 중지했습니다.", request_id=cancel_signal.request_id)
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise subprocess.TimeoutExpired(command, timeout)
-                    try:
-                        output, _ = process.communicate(input=input_value, timeout=min(0.25, remaining))
-                        break
-                    except subprocess.TimeoutExpired:
-                        input_value = None
-                        continue
-        except subprocess.TimeoutExpired as exc:
-            output = self.timeout_expired_output(exc)
-            self._terminate_agent_process(process)
-            try:
-                drained_output, _ = process.communicate(timeout=AGENT_OUTPUT_DRAIN_TIMEOUT_SECONDS)
-                if drained_output:
-                    output = drained_output
-            except subprocess.TimeoutExpired as drain_exc:
-                drained_output = self.timeout_expired_output(drain_exc)
-                if drained_output:
-                    output = drained_output
-                self.close_process_streams(process)
-            output = output or ""
-            output += f"\n[ai-orchestrator] timed out after {timeout:g} seconds\n"
+        with process_working_directory(cwd) as process_cwd:
             if agent.provider_id == "nvidia":
-                output = redact_nvidia_output(output, environment)
-            elif agent.provider_id == "claude":
-                output = redact_claude_output(output, self._claude_api_key)
-            output = redact_mcp_output(output, mcp_redactions)
-            log_path.write_text(output, encoding="utf-8")
-            raise ProviderTimedOut(f"agent {agent.id} timed out after {timeout:g} seconds; see {log_path}")
+                directory = cwd.resolve() if process_cwd == cwd else process_cwd
+                command.extend(("--dir", str(directory)))
+            process = subprocess.Popen(
+                command,
+                cwd=process_cwd,
+                text=True,
+                encoding="utf-8",
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                **process_options,
+            )
+            try:
+                if cancel_signal is None:
+                    output, _ = process.communicate(input=prompt, timeout=timeout)
+                else:
+                    deadline = time.monotonic() + timeout
+                    input_value: str | None = prompt
+                    while True:
+                        if cancel_signal.is_set():
+                            self._terminate_agent_process(process)
+                            try:
+                                output, _ = process.communicate(timeout=AGENT_OUTPUT_DRAIN_TIMEOUT_SECONDS)
+                            except subprocess.TimeoutExpired:
+                                self.close_process_streams(process)
+                                output = ""
+                            output = output or ""
+                            output += "\n[ai-orchestrator] stopped by user request\n"
+                            if agent.provider_id == "nvidia":
+                                output = redact_nvidia_output(output, environment)
+                            elif agent.provider_id == "claude":
+                                output = redact_claude_output(output, self._claude_api_key)
+                            output = redact_mcp_output(output, mcp_redactions)
+                            log_path.write_text(output, encoding="utf-8")
+                            raise ExecutionStopped("사용자 요청에 따라 에이전트 실행을 중지했습니다.", request_id=cancel_signal.request_id)
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, timeout)
+                        try:
+                            output, _ = process.communicate(input=input_value, timeout=min(0.25, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            input_value = None
+                            continue
+            except subprocess.TimeoutExpired as exc:
+                output = self.timeout_expired_output(exc)
+                self._terminate_agent_process(process)
+                try:
+                    drained_output, _ = process.communicate(timeout=AGENT_OUTPUT_DRAIN_TIMEOUT_SECONDS)
+                    if drained_output:
+                        output = drained_output
+                except subprocess.TimeoutExpired as drain_exc:
+                    drained_output = self.timeout_expired_output(drain_exc)
+                    if drained_output:
+                        output = drained_output
+                    self.close_process_streams(process)
+                output = output or ""
+                output += f"\n[ai-orchestrator] timed out after {timeout:g} seconds\n"
+                if agent.provider_id == "nvidia":
+                    output = redact_nvidia_output(output, environment)
+                elif agent.provider_id == "claude":
+                    output = redact_claude_output(output, self._claude_api_key)
+                output = redact_mcp_output(output, mcp_redactions)
+                log_path.write_text(output, encoding="utf-8")
+                raise ProviderTimedOut(f"agent {agent.id} timed out after {timeout:g} seconds; see {log_path}")
         output = output or ""
         if agent.provider_id == "nvidia":
             output = redact_nvidia_output(output, environment)
@@ -328,7 +349,9 @@ class ProviderRunner:
     def codex_profile(agent: AgentConfig, action: str) -> tuple[str, str] | None:
         if agent.provider_id != "codex":
             return None
-        if action in {"planning", "review"}:
+        if action == "planning":
+            return "read-only", "deny-all"
+        if action == "review":
             return agent.review_sandbox_mode, agent.review_approval_mode
         return agent.sandbox_mode, agent.approval_mode
 

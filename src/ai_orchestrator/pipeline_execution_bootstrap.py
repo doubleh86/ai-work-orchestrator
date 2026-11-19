@@ -15,6 +15,7 @@ from .execution.provider_choices import ProviderAvailability
 from .execution.provider_runtime import ProviderRuntime
 from .execution.task_workflows import TaskWorkflows
 from .execution.verification_commands import VerificationCommands
+from .execution.verification_sandbox import VerificationSandbox
 from .integration.recovery_flow import RecoveryFlow
 from .integration.verification_flow import VerificationFlow
 from .integration.workspace_access import WorkspaceAccess
@@ -142,6 +143,7 @@ def build_execution_runtime(
         read_git=lambda: resources.git,
         execution_settings=lambda: resources.config.execution,
         read_dotnet_executable=lambda: resources.dotnet_executable,
+        sandbox=VerificationSandbox(resources.repo, resources.store.root),
     )
 
     tasks = TaskWorkflows(

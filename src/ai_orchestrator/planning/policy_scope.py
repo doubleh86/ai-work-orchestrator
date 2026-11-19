@@ -72,6 +72,7 @@ class PlanningPolicyScope:
             reasoning_effort=state.planning_reasoning_effort, profile_source=state.planning_profile_source,
             baseline_reasoning_effort=state.planning_effort_baseline_reasoning,
             purpose="planning",
+            configured_model=agent.model,
         )
         if "mode_profile_baseline_missing" in reasoning.unsupported_effects:
             raise PipelineError("Planning effort policy requires the original reasoning profile")

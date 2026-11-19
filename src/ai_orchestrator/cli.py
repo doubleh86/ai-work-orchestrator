@@ -8,13 +8,12 @@ from pathlib import Path
 
 from .codex_sdk import CodexSdkManager
 from .application import create_pipeline
-from .config import ConfigError, create_default_config, load_config
+from .application.project_settings import registered_project_config
+from .config import ConfigError, load_config
+from .git import inspect_git_readiness
 from .models import ProviderStatus, RunLockStatus, RunState, WorkspaceStatus
 from .pipeline import PipelineError
 from .registry import ProjectRegistry, RegisteredProject, RegistryError
-
-DEFAULT_CONFIG = "orchestrator.toml"
-
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -23,7 +22,7 @@ def _parser() -> argparse.ArgumentParser:
             "Orchestrate sequential AI coding tasks in a shared run worktree through verification, branch push, main application, and deploy."
         ),
     )
-    parser.add_argument("--config", default=DEFAULT_CONFIG, help="path to TOML config")
+    parser.add_argument("--config", help="explicit path to a trusted TOML config")
     parser.add_argument("--registry", default="", help="path to project registry JSON")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -257,17 +256,8 @@ def _project_command(args: argparse.Namespace) -> int:
         repo = Path(args.repo).expanduser().resolve()
         if not repo.is_dir():
             raise RegistryError(f"project repository not found: {repo}")
-        if args.project_config:
-            configured = Path(args.project_config).expanduser()
-            config_path = configured.resolve() if configured.is_absolute() else (repo / configured).resolve()
-        else:
-            repository_config = repo / DEFAULT_CONFIG
-            if repository_config.is_file():
-                config_path = repository_config
-            else:
-                config_path = registry.managed_config_path(repo)
-                if not config_path.is_file():
-                    create_default_config(config_path, repo)
+        readiness = inspect_git_readiness(repo)
+        config_path = registry.select_config_path(repo, args.project_config or None, main_branch=readiness.main_branch or "main")
         config = load_config(config_path)
         if config.project.repo != repo:
             raise RegistryError(f"registered repository does not match project.repo in config: {repo} != {config.project.repo}")
@@ -312,12 +302,21 @@ def main(argv: list[str] | None = None) -> int:
             serve(args.mcp_registry or args.registry or None, allow_write=args.allow_write, allow_planning=args.allow_planning,
                   allow_control=args.allow_control, projects_root=args.projects_root, watch_source=args.watch_source)
             return 0
-        config = load_config(args.config)
-        if args.registry:
-            registered = next((project for project in ProjectRegistry(args.registry).list()
-                               if project.repo == config.project.repo and project.config_path == config.path), None)
-            if registered is not None and registered.worker_mcp_servers is not None:
-                config = replace(config, worker_mcp_servers=registered.worker_mcp_servers)
+        registry = ProjectRegistry(args.registry or None)
+        if args.config:
+            config = load_config(args.config)
+            registered = next((project for project in registry.list()
+                               if project.repo == config.project.repo and project.config_path == config.path), None) if args.registry else None
+        else:
+            readiness = inspect_git_readiness(Path.cwd())
+            if not readiness.repository_root:
+                raise ConfigError("프로젝트 저장소에서 실행하거나 신뢰하는 설정 파일을 --config로 지정하세요.")
+            repo = Path(readiness.repository_root)
+            registered = next((project for project in registry.list() if project.repo == repo), None)
+            config = (registered_project_config(registered, registry) if registered else
+                      load_config(registry.select_config_path(repo, main_branch=readiness.main_branch or "main")))
+        if registered is not None and registered.worker_mcp_servers is not None:
+            config = replace(config, worker_mcp_servers=registered.worker_mcp_servers)
         codex_sdk = CodexSdkManager()
         pipeline = create_pipeline(config, codex_sdk=codex_sdk)
         if args.command == "start":

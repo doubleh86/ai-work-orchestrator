@@ -29,7 +29,7 @@ def configured_pipeline(path: Path, *, planning: bool = False) -> Pipeline:
 @pytest.mark.parametrize("mode,model,effort", [(EffortMode.ECONOMY, "sonnet", "low"), (EffortMode.BALANCED, "sonnet", "medium"),
                                               (EffortMode.FOCUSED, "opus", "high")])
 def test_ordinary_claude_work_uses_sonnet_except_in_focused_mode(mode, model, effort):
-    decision = select_claude_model(mode, purpose="task", task=ordinary_task())
+    decision = select_claude_model(mode, task=ordinary_task())
     assert (decision.model, decision.reasoning_effort) == (model, effort)
     assert decision.reason
 
@@ -41,16 +41,18 @@ def test_ordinary_claude_work_uses_sonnet_except_in_focused_mode(mode, model, ef
 ])
 def test_critical_complex_or_unbounded_work_uses_opus_including_economy(changes):
     for mode in EffortMode:
-        decision = select_claude_model(mode, purpose="task", task=ordinary_task(**changes))
+        decision = select_claude_model(mode, task=ordinary_task(**changes))
         assert decision.model == "opus" and decision.reasoning_effort in {"high", "xhigh"}
 
 
 def test_claude_reasoning_and_planning_do_not_silently_select_unsupported_profiles():
     for purpose in ["planning", "chat", "recovery", "conflict_resolution"]:
         for mode in EffortMode:
-            assert select_claude_model(mode, purpose=purpose).model == "opus"
-    assert select_claude_model(EffortMode.BALANCED, purpose="task", task=ordinary_task(), reasoning_effort="high").model == "sonnet"
-    stronger = select_claude_model(EffortMode.BALANCED, purpose="task", task=ordinary_task(), reasoning_effort="xhigh")
+            decision = resolve_reasoning_profile(mode=mode, provider_id="claude", model="sonnet", reasoning_effort="medium",
+                                                 profile_source="routing", purpose=purpose)
+            assert (decision.model, decision.reasoning_effort) == ("sonnet", "medium")
+    assert select_claude_model(EffortMode.BALANCED, task=ordinary_task(), reasoning_effort="high").model == "sonnet"
+    stronger = select_claude_model(EffortMode.BALANCED, task=ordinary_task(), reasoning_effort="xhigh")
     assert (stronger.model, stronger.reasoning_effort) == ("opus", "xhigh")
     with pytest.raises(EffortPolicyError, match="unsupported reasoning effort"):
         resolve_reasoning_profile(mode="balanced", provider_id="claude", model="sonnet", reasoning_effort="ultra",
@@ -165,8 +167,9 @@ def test_automatic_claude_planning_is_pinned_and_matches_invocation_without_chan
                      planning_agent_id="worker", planning_provider_id="claude", planning_model="sonnet",
                      planning_profile_source=ProfileSource.ROUTING)
     pipeline.store.save(state)
-    pipeline._common_runtime.planning.profiles.pin_automatic(state)
-    assert (state.planning_model, state.planning_reasoning_effort) == ("opus", "high")
+    profiles = pipeline._common_runtime.planning.lifecycle.profiles
+    profiles.pin_automatic(state)
+    assert (state.planning_model, state.planning_reasoning_effort) == ("sonnet", "")
     prompt = tmp_path / "planning.md"
     prompt.write_text("fixture plan", encoding="utf-8")
     for source, model in [(ProfileSource.ROUTING, "sonnet"), (ProfileSource.MANUAL, "sonnet"),
@@ -174,7 +177,15 @@ def test_automatic_claude_planning_is_pinned_and_matches_invocation_without_chan
         state.planning_profile_source, state.planning_model, state.planning_reasoning_effort = source, model, "medium"
         with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="plan") as invoke:
             pipeline._common_runtime.planning.ai.invoke(state, pipeline.agents["worker"], "fixture plan", prompt, tmp_path / "planning.log")
-        assert invoke.call_args.kwargs["model"] == ("opus" if source == ProfileSource.ROUTING and model == "sonnet" else model)
+        assert invoke.call_args.kwargs["model"] == model
+        assert invoke.call_args.kwargs["reasoning_effort"] == "medium"
+    state.planning_profile_source = ProfileSource.MODE
+    state.planning_model, state.planning_reasoning_effort, state.planning_effort_baseline_reasoning = "opus", "high", ""
+    with patch.object(pipeline._common_runtime.provider, 'invoke', return_value="plan") as invoke:
+        pipeline._common_runtime.planning.ai.invoke(state, pipeline.agents["worker"], "fixture plan", prompt, tmp_path / "planning.log")
+    assert (invoke.call_args.kwargs["model"], invoke.call_args.kwargs["reasoning_effort"]) == ("sonnet", "")
+    profiles.pin_automatic(state)
+    assert (state.planning_model, state.planning_reasoning_effort, state.planning_profile_source) == ("sonnet", "", ProfileSource.ROUTING)
 
 
 def test_new_claude_plan_is_ready_for_confirmation_without_an_extra_mode_apply(tmp_path):
@@ -189,4 +200,4 @@ def test_new_claude_plan_is_ready_for_confirmation_without_an_extra_mode_apply(t
         pipeline._common_runtime.planning.lifecycle.apply_plan(state, plan)
     preview = pipeline.preview_effort_mode(state.id, "balanced", expected_revision=0)
     assert not preview.requires_plan_review
-    assert state.planning_model == "opus" and state.tasks[0].model == "sonnet"
+    assert state.planning_model == "sonnet" and state.tasks[0].model == "sonnet"

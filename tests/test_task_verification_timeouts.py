@@ -72,7 +72,7 @@ def test_normal_verification_longer_than_five_minutes_can_finish_without_any_age
         clock[0] = 400.0
         return subprocess.CompletedProcess(command, 0, "all tests passed")
 
-    monkeypatch.setattr("ai_orchestrator.execution.verification_commands.run_command", run)
+    monkeypatch.setattr("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", staticmethod(run))
     pipeline._common_runtime.execution.tasks.run_task(state, task, TaskAction.VERIFY)
     assert task.action_results[-1].status == "succeeded"
     assert task.action_results[-1].passed_commands == [["test", "suite"]]
@@ -89,7 +89,7 @@ def test_timeout_is_preserved_as_incomplete_and_never_starts_code_repair(verific
     pipeline, state, task, _ = verification
     worker = Mock()
     monkeypatch.setattr(pipeline._common_runtime.execution.tasks, 'invoke_agent', worker)
-    monkeypatch.setattr("ai_orchestrator.execution.verification_commands.run_command", timeout)
+    monkeypatch.setattr("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", timeout)
     with pytest.raises(TaskVerificationTimeout, match="완료 여부 미확인") as caught:
         pipeline._common_runtime.execution.tasks.run_task(state, task, TaskAction.VERIFY)
     assert isinstance(caught.value.__cause__, GitError)
@@ -116,7 +116,7 @@ def test_unavailable_command_keeps_original_error_and_failure_evidence(verificat
         run = Mock()
     else:
         run = target
-    monkeypatch.setattr("ai_orchestrator.execution.verification_commands.run_command", run)
+    monkeypatch.setattr("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", staticmethod(run))
     with pytest.raises(error_type) as caught:
         pipeline._common_runtime.execution.tasks.run_task_verification(state, task)
     assert caught.value is source_error
@@ -133,7 +133,7 @@ def test_same_timeout_is_not_reexecuted_until_verification_conditions_change(ver
     if change == "environment":
         task.verify_commands = [["dotnet", "test", "Suite.sln"]]
     run = Mock(side_effect=timeout)
-    monkeypatch.setattr("ai_orchestrator.execution.verification_commands.run_command", run)
+    monkeypatch.setattr("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", staticmethod(run))
     with pytest.raises(TaskVerificationTimeout):
         pipeline._common_runtime.execution.tasks.run_task_verification(state, task)
     assert run.call_count == 1
@@ -176,7 +176,7 @@ def test_total_budget_includes_command_preparation_and_does_not_start_an_overdue
 
     monkeypatch.setattr(pipeline._common_runtime.execution.verification_commands, 'prepare_verification_command', prepare)
     run = Mock()
-    monkeypatch.setattr("ai_orchestrator.execution.verification_commands.run_command", run)
+    monkeypatch.setattr("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", staticmethod(run))
     with pytest.raises(TaskVerificationTimeout):
         pipeline._common_runtime.execution.tasks.run_task_verification(state, task)
     run.assert_not_called()
@@ -195,7 +195,7 @@ def test_total_budget_includes_command_preparation_and_does_not_start_an_overdue
 def test_nonzero_test_exit_is_a_real_failure_not_a_timeout(verification, monkeypatch):
     pipeline, state, task, _ = verification
     monkeypatch.setattr(
-        'ai_orchestrator.execution.verification_commands.run_command',
+        'ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute',
         lambda *args, **kwargs: subprocess.CompletedProcess([], 1, 'failed test'),
     )
     with pytest.raises(TaskVerificationFailure):
@@ -247,7 +247,7 @@ def test_policy_refresh_does_not_silently_change_an_existing_run(verification):
     pipeline, state, _, _ = verification
     state.task_verify_command_timeout_seconds = 300
     state.task_verify_total_timeout_seconds = 600
-    pipeline._common_runtime.execution.flow.ensure_verification(state)
+    pipeline._common_runtime.planning.ensure_verification(state)
     assert (state.task_verify_command_timeout_seconds, state.task_verify_total_timeout_seconds) == (300, 600)
     state.task_verify_command_timeout_seconds = 1200
     state.task_verify_total_timeout_seconds = 2400
@@ -290,7 +290,7 @@ def test_timing_noise_is_the_same_failure_but_changed_error_and_command_are_dist
 def test_recovery_capability_reports_real_limits_and_repeat_guard(verification, monkeypatch, limits, expected_kind):
     pipeline, state, task, head = verification
     state.task_verify_command_timeout_seconds, state.task_verify_total_timeout_seconds = limits
-    monkeypatch.setattr("ai_orchestrator.execution.verification_commands.run_command", timeout)
+    monkeypatch.setattr("ai_orchestrator.execution.verification_sandbox.VerificationSandbox.execute", timeout)
     with pytest.raises(TaskVerificationTimeout):
         pipeline._common_runtime.execution.tasks.run_task_verification(state, task)
     current = pipeline.store.load(state.id)

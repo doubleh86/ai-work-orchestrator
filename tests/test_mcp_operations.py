@@ -202,7 +202,7 @@ def test_mcp_reports_manual_checks_separately_even_while_a_group_is_running(tmp_
         repo = tmp_path / name
         repo.mkdir()
         git(repo, "init", "-b", "main")
-        config_path = create_default_config(repo / "orchestrator.toml", repo)
+        config_path = create_default_config(tmp_path / f"{name}.toml", repo)
         registry.add(name, repo, config_path)
         if name == "unavailable":
             config_path.write_text("[broken", encoding="utf-8")
@@ -284,13 +284,14 @@ def test_registry_writers_share_the_same_lock(tmp_path: Path) -> None:
 
 def test_task_draft_reuses_the_reserved_run_and_keeps_existing_plan_gate(tmp_path: Path) -> None:
     registry = ProjectRegistry(tmp_path / "registry.json")
-    (tmp_path / "orchestrator.toml").touch()
-    registry.add("project", tmp_path, planning_source_dir=tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    registry.add("project", repo, planning_source_dir=repo)
     application = DesktopApplication(registry)
     operations = McpOperations(application, allow_write=True)
     request_id = str(uuid.uuid4())
     run_id = "mcp-" + uuid.UUID(request_id).hex
-    planned = RunState(run_id, "plan.md", "digest", str(tmp_path), "main", Stage.PLANNED)
+    planned = RunState(run_id, "plan.md", "digest", str(repo), "main", Stage.PLANNED)
     try:
         with patch.object(application, "runs", side_effect=[[], [Mock(id=run_id, stage=Stage.PLANNED)]]), \
              patch.object(application, "prepare_planning") as prepare, \
@@ -298,13 +299,27 @@ def test_task_draft_reuses_the_reserved_run_and_keeps_existing_plan_gate(tmp_pat
              patch.object(operations, "run", return_value={"run_id": run_id}) as status:
             assert operations.draft_tasks("project", request_id, "existing_structure")["run_id"] == run_id
             assert operations.draft_tasks("project", request_id, "existing_structure")["run_id"] == run_id
-            prepare.assert_called_once_with("project", tmp_path, repository_intent="existing_structure", reserved_run_id=run_id)
+            prepare.assert_called_once_with("project", repo, repository_intent="existing_structure", reserved_run_id=run_id)
             planning.assert_called_once_with("project", run_id)
             status.assert_called_once_with("project", run_id)
             with pytest.raises(ValueError, match="같은 요청 ID"):
                 operations.draft_tasks("project", request_id, "new_project")
     finally:
         application.close()
+
+
+def test_plan_approval_message_includes_each_command_as_argv() -> None:
+    pytest.importorskip("mcp")
+    from ai_orchestrator.mcp_server import _plan_approval_message
+
+    message = _plan_approval_message("fixture", {
+        "summary": "계획", "tasks": [
+            {"id": "lint", "verify_commands": [["npm", "run", "lint"], ["python", "file with spaces.py"]]},
+            {"id": "manual", "verify_commands": []},
+        ],
+    })
+    assert 'lint  ["npm", "run", "lint"]' in message
+    assert 'lint  ["python", "file with spaces.py"]' in message
 
 
 def test_external_plan_submission_is_scoped_replayable_and_requires_app_approval(tmp_path: Path) -> None:

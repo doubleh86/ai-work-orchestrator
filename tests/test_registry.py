@@ -88,6 +88,8 @@ class ProjectRegistryTest(unittest.TestCase):
             project = registry.add("Example", repo)
 
             self.assertEqual(project.name, "Example")
+            self.assertEqual(project.config_path, registry.managed_config_path(repo))
+            self.assertEqual(config.read_text(encoding="utf-8"), "config")
             self.assertEqual(registry.get("example"), project)
             self.assertEqual(registry.list(), [project])
             self.assertFalse(registry.path.with_suffix(".tmp").exists())
